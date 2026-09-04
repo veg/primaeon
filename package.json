@@ -1,0 +1,22 @@
+{
+  "name": "hyphaeon-app",
+  "private": true,
+  "version": "0.0.0",
+  "description": "HyphAeon application: web app, ONNX runtime glue, MCP server, Node server. Consumes @veg/hyphaeon-js.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "runtime",
+    "web",
+    "mcp",
+    "e2e"
+  ],
+  "scripts": {
+    "test": "npm -ws run test --if-present",
+    "build": "npm -w web run build",
+    "e2e": "npm -w e2e run e2e"
+  }
+}

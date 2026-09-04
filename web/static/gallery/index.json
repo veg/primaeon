@@ -1,0 +1,154 @@
+{
+	"schema_version": 1,
+	"engine_commit": "3cb9cc6",
+	"entries": [
+		{
+			"id": "Smc6",
+			"name": "Smc6",
+			"gene": "Structural maintenance of chromosomes 6",
+			"description": "Primate Smc6, an antiviral host-restriction factor. The small, fast example: every pillar has a prebaked result.",
+			"taxa": 20,
+			"codons": 1097,
+			"tree": "file",
+			"kind": "full",
+			"analyses": ["meme", "busted", "epistasis", "dms"],
+			"sources": {
+				"alignment": "Smc6.fasta",
+				"tree": "Smc6.nwk",
+				"results": [
+					"Smc6_results.csv",
+					"expected_results/Smc6_results.json",
+					"Smc6_busted.json",
+					"Smc6_busted.csv",
+					"Smc6_epistasis.json",
+					"Smc6_edges.csv",
+					"Smc6_dms.json",
+					"Smc6_dms.csv"
+				]
+			},
+			"reference_seconds": { "meme": 3.5, "busted": 1.7, "epistasis": 2.0, "dms": 4.4 }
+		},
+		{
+			"id": "bat_oas1",
+			"name": "Bat OAS1",
+			"gene": "2'-5'-oligoadenylate synthetase 1",
+			"description": "Chiropteran OAS1, an innate-immunity gene under pressure from viral escape.",
+			"taxa": 18,
+			"codons": 351,
+			"tree": "file",
+			"kind": "full",
+			"analyses": ["meme", "epistasis"],
+			"sources": {
+				"alignment": "bat_oas1.fasta",
+				"tree": "bat_oas1.nwk",
+				"results": [
+					"bat_oas1_results.csv",
+					"expected_results/bat_oas1_results.json",
+					"bat_oas1_epistasis.json",
+					"bat_oas1_edges.csv"
+				]
+			},
+			"reference_seconds": { "meme": 1.7 }
+		},
+		{
+			"id": "camelid",
+			"name": "Camelid VHH",
+			"gene": "Single-domain antibody heavy-chain variable domain",
+			"description": "Camelid nanobody variable domains: many short sequences, antigenic diversity. Exercises the taxon cap.",
+			"taxa": 212,
+			"codons": 96,
+			"tree": "file",
+			"kind": "full",
+			"analyses": ["meme"],
+			"sources": {
+				"alignment": "camelid.fasta",
+				"tree": "camelid.nwk",
+				"results": ["camelid_results.csv", "expected_results/camelid_results.json"]
+			},
+			"reference_seconds": { "meme": 4.0 }
+		},
+		{
+			"id": "HIV1_RT",
+			"name": "HIV-1 RT",
+			"gene": "Reverse transcriptase polymerase domain",
+			"description": "Retroviral reverse transcriptase: drug resistance and the Q151M and TAM epistatic complexes. The viral-regime example.",
+			"taxa": 476,
+			"codons": 335,
+			"tree": "file",
+			"kind": "full",
+			"analyses": ["busted", "epistasis", "dms"],
+			"sources": {
+				"alignment": "HIV1_RT.fasta",
+				"tree": "HIV1_RT.nwk",
+				"results": [
+					"HIV1_RT_busted.json",
+					"HIV1_RT_busted.csv",
+					"HIV1_RT_epistasis.json",
+					"HIV1_RT_edges.csv",
+					"HIV1_RT_coselection.graphml",
+					"HIV1_RT_dms.json",
+					"HIV1_RT_dms.csv"
+				]
+			},
+			"reference_seconds": { "meme": 17.3, "epistasis": 21.5, "dms": 46.4 }
+		},
+		{
+			"id": "RHO",
+			"name": "Rhodopsin",
+			"gene": "Rhodopsin visual pigment",
+			"description": "Mammalian rhodopsin with a marine foreground (deep-diving sensory adaptation). NEXUS with an embedded tree; the phenotype-association example.",
+			"taxa": 710,
+			"codons": 349,
+			"tree": "embedded",
+			"kind": "full",
+			"analyses": ["phenotype"],
+			"sources": {
+				"alignment": "RHO.fasta",
+				"results": ["RHO_marine_phenotype.json", "RHO_marine_sites.csv"]
+			},
+			"reference_seconds": { "phenotype": 4.8 }
+		},
+		{
+			"id": "bglobin",
+			"name": "β-globin",
+			"gene": "Beta-globin",
+			"description": "Vertebrate β-globin co-evolution network and sectors. Results only: the alignment is not bundled.",
+			"taxa": 17,
+			"codons": 144,
+			"tree": "none",
+			"kind": "results-only",
+			"analyses": ["epistasis"],
+			"sources": {
+				"results": ["bglobin_epistasis.json", "bglobin_edges.csv"]
+			}
+		},
+		{
+			"id": "rbcL",
+			"name": "rbcL",
+			"gene": "RuBisCO large subunit",
+			"description": "Plant rbcL co-evolution network across 483 taxa. Results only: the alignment is not bundled.",
+			"taxa": 483,
+			"codons": 466,
+			"tree": "none",
+			"kind": "results-only",
+			"analyses": ["epistasis"],
+			"sources": {
+				"results": ["rbcL_epistasis.json", "rbcL_edges.csv"]
+			}
+		},
+		{
+			"id": "REDIC1",
+			"name": "REDIC1",
+			"gene": "REDIC1",
+			"description": "REDIC1 co-evolution network and sectors. Results only: the alignment is not bundled.",
+			"taxa": 38,
+			"codons": 653,
+			"tree": "none",
+			"kind": "results-only",
+			"analyses": ["epistasis"],
+			"sources": {
+				"results": ["REDIC1_epistasis.json", "REDIC1_edges.csv"]
+			}
+		}
+	]
+}

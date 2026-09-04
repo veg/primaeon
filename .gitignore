@@ -1,0 +1,10 @@
+node_modules
+.svelte-kit
+build
+web/static/ort
+web/static/models
+web/static/wasm
+playwright-report
+test-results
+.env
+parity/

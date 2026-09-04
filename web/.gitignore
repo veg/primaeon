@@ -1,0 +1,13 @@
+# Build output and SvelteKit's generated types
+node_modules
+build
+.svelte-kit
+vite.config.ts.timestamp-*
+
+# Written by ../scripts/copy-assets.mjs on every build/dev. Never commit: the ORT binary is 13 MB
+# of third-party output pinned by package.json, the models come from the engine repo's manifest,
+# and the HyPhy WASM bundle is DataMonkey's. See the script header for why each is copied.
+static/ort/
+static/models/
+static/wasm/
+static/_headers

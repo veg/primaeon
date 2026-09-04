@@ -1,0 +1,32 @@
+{
+  "name": "@veg/hyphaeon-runtime",
+  "private": true,
+  "version": "0.0.0",
+  "description": "ONNX Runtime sessions (web and Node), model manifest and sha256 verification, and pipeline orchestration over @veg/hyphaeon-js. Shared by web/, mcp/ and server/.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./web": "./src/session-web.js",
+    "./node": "./src/session-node.js",
+    "./prescreen": "./src/prescreen/hitLikelihood.js",
+    "./prescreen/scope": "./src/prescreen/scope.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@veg/hyphaeon-js": "file:../../HyphAeon/js"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "1.23.2",
+    "onnxruntime-web": "^1.27"
+  },
+  "devDependencies": {
+    "vitest": "^3"
+  }
+}

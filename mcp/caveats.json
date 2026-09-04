@@ -1,0 +1,134 @@
+{
+  "_comment": "Model caveats served as hyphaeon://caveats and read by the web app's /methods pages. Keyed by model_version. Numbers transcribed from veg/HyphAeon@3cb9cc6 model_eval/README.md (the 'Current state (hyphaeon_v1)' tables) and from hyphaeon-app/PLAN.md section 2 (model card facts, HuggingFace datamonkey/hyphaeon). Update both places when the model changes.",
+  "v1": {
+    "model_version": "v1",
+    "reference_version": "1.0.0",
+    "reference_commit": "3cb9cc6",
+    "sources": [
+      "HyphAeon/model_eval/README.md",
+      "hyphaeon-app/PLAN.md section 2",
+      "HuggingFace datamonkey/hyphaeon model card",
+      "GitHub issues veg/HyphAeon #7, #8, #9, #13, #16, #33"
+    ],
+    "model_card": {
+      "what_it_is": "A ~1.9M-parameter axial transformer that takes a codon alignment plus a metric tree as four tensors (codon tokens, amino-acid tokens, patristic distance matrix, 4-D MDS coordinates) and emits a per-site MEME-style LRT through a 16-threshold ordinal head.",
+      "is_surrogate": true,
+      "surrogate_for": "MEME",
+      "evaluated_against": "HyPhy MEME, not against known selection",
+      "parameters_suite": 2455128,
+      "heads": ["head_meme", "head_busted", "head_absrel"],
+      "bundled_weights": "backbone + head_meme + head_busted + head_absrel (repo model.safetensors, 9.8 MB); the HuggingFace base file is backbone + head_meme only",
+      "inputs": ["msa_codons", "msa_aas", "dist_matrix", "mds_coords"],
+      "outputs": ["lrt", "mean_root_attns", "root_repr"],
+      "taxon_cap": 512,
+      "default_taxon_cap": 256,
+      "genetic_code": "universal only",
+      "variants": {
+        "general": {
+          "trained_on": "TOGA mammalian, 742 species",
+          "regime": "deep / cross-species",
+          "spearman_vs_meme_unseen_viral": 0.1
+        },
+        "viral": {
+          "trained_on": "base + ~9,300 Datamonkey viral alignments",
+          "regime": "viral / shallow",
+          "spearman_vs_meme_unseen_viral": 0.43,
+          "onnx_sha256_prefix": "de765904"
+        }
+      }
+    },
+    "headline_numbers": [
+      { "claim": "Rank is strong, scale is compressed", "dataset": "HIV-1 RT vs MEME", "spearman_rho": 0.53, "regression_slope": 0.16 },
+      { "claim": "Literature aggregate", "roc_auc": 0.914, "ppv": 0.506, "spearman_rho": 0.49 },
+      { "claim": "Calibration depends on regime", "fpr_alpha_005": { "20_to_50_taxa": "5-7%", "100_taxa_deep": "36%" } },
+      { "claim": "Base vs viral variant on unseen viral families", "general_rho": 0.1, "viral_rho": 0.43 }
+    ],
+    "interpretation_rules": [
+      "Sort by LRT, show rank and percentile within the alignment, show p and BH q but never alone.",
+      "Invariable sites are 'not scored', not zero.",
+      "Every result is a surrogate for MEME; confirm a site of interest with a real MEME run.",
+      "The diagnostics panel classifies the tree regime before the run; on deep trees with >= 100 taxa treat p-values as ordering only.",
+      "Choose the variant from tree depth: general for deep cross-species trees, viral for shallow viral trees.",
+      "Real submissions are unpublished research: the browser path never transmits sequences; any server path says so before sending."
+    ],
+    "model_eval": {
+      "scope": "model_eval covers only `hyphaeon meme`; phenotype and epistasis are tested in tests/methods (Mode I baseline). The paper's Mode II (selection-informed PhyloWAS on the attribution tensor) is described but the README notes it is not what the repo implements.",
+      "invariance_gates": {
+        "grid": "6 datasets (3 real + 3 simulated), shallow to deep trees, 18 to 212 taxa, 26% to 100% variable sites",
+        "results": [
+          { "gate": "permutation sensitivity", "result": "FAILED", "details": "invariant on majority of 6 datasets; sensitive only on sim_100_deep (r=0.77)" },
+          { "gate": "star-tree sensitivity", "result": "FAILED", "details": "invariant on majority of 6 datasets" },
+          { "gate": "zero-distance sensitivity", "result": "FAILED", "details": "invariant on majority of 6 datasets" },
+          { "gate": "scaling x0.1 invariance", "result": "FAILED", "details": "fails on sim_100_deep (r=0.81)" },
+          { "gate": "scaling x10 invariance", "result": "FAILED", "details": "fails on majority of datasets" },
+          { "gate": "scaling x100 invariance", "result": "FAILED", "details": "fails on majority of datasets" },
+          { "gate": "duplicate-taxon invariance", "result": "PASSED", "details": "exact r=1.0000 via default automated duplicate haplotype and tree pruning" }
+        ],
+        "reading": "The model is nearly invariant to the tree topology and sensitive to branch-length scale (issue #13): branch-length units, reading frame, U-vs-T, silently zeroed missing taxa (#9), silent rescale above patristic 10 (#8), and the 2-taxon bug (#7) all matter more than the topology."
+      },
+      "calibration": {
+        "method": "seq-gen neutral simulations, 100 codons unless stated; false-positive rate at alpha = 0.05; threshold <= 10%",
+        "results": [
+          { "config": "small_shallow", "taxa": 20, "tree_depth": 0.1, "fpr_alpha_005": "5-7%", "threshold": "<=10%", "result": "PASSED" },
+          { "config": "moderate", "taxa": 50, "tree_depth": 0.2, "fpr_alpha_005": "5-7%", "threshold": "<=10%", "result": "PASSED" },
+          { "config": "large_deep", "taxa": 100, "tree_depth": 0.5, "fpr_alpha_005": "~36%", "threshold": "<=10%", "result": "FAILED" }
+        ],
+        "power": "Injected amino-acid changes at 10% of sites on 20% of taxa in neutral simulations; true-positive rate reported by the power tests (no headline figure in the README)."
+      },
+      "composition_bias": {
+        "result": "PASSED",
+        "results": [
+          { "composition": "uniform", "target_at": "50%", "fpr_alpha_005": "7-9%", "result": "PASSED" },
+          { "composition": "AT-rich", "target_at": "80%", "fpr_alpha_005": "5-8%", "result": "PASSED" },
+          { "composition": "GC-rich", "target_at": "30%", "fpr_alpha_005": "5-9%", "result": "PASSED" }
+        ],
+        "reading": "Composition is not a confound for the calibration issues seen on large/deep trees."
+      },
+      "alignment_length": {
+        "result": "PASSED",
+        "results": [
+          { "length": "short", "codons": 30, "fpr_alpha_005": "3.3%", "median_lrt": 1.45, "result": "PASSED" },
+          { "length": "medium", "codons": 100, "fpr_alpha_005": "7-9%", "median_lrt": 1.35, "result": "PASSED" },
+          { "length": "long", "codons": 500, "fpr_alpha_005": "4-5%", "median_lrt": 1.27, "result": "PASSED" }
+        ],
+        "cross_length_lrt_ratio": 1.15,
+        "cross_length_lrt_ratio_threshold": 3,
+        "reading": "Output scale is stable across alignment lengths; p-values from different-length alignments are directly comparable."
+      },
+      "concordance": {
+        "method": "Spearman rho on variable sites, Cohen's kappa on significant-call agreement, F1 at matched thresholds, against real HyPhy MEME (hyphy 2.5.101)",
+        "results": [
+          { "dataset": "Smc6", "taxa": 20, "codons": 1097, "spearman_rho": 0.37, "cohens_kappa": -0.03, "f1": 0.0, "result": "PASSED" },
+          { "dataset": "bat_oas1", "taxa": 18, "codons": 351, "spearman_rho": 0.27, "cohens_kappa": 0.09, "f1": 0.14, "result": "PASSED" },
+          { "dataset": "camelid", "taxa": 212, "codons": 96, "spearman_rho": 0.31, "cohens_kappa": 0.05, "f1": 0.3, "result": "PASSED" }
+        ],
+        "reading": "In long real genes (Smc6, 1,097 sites) more than 90% of sites are under neutral or purifying evolution with LRT near 0, so rank correlation across the whole variable background measures baseline noise while concordance on the top positively selected sites remains robust."
+      }
+    },
+    "known_issues": [
+      { "id": "veg/HyphAeon#7", "summary": "Two-taxon alignments produce a degenerate run", "surface_rule": "refuse taxa < 3" },
+      { "id": "veg/HyphAeon#8", "summary": "Maximum patristic distance > 10 is rescaled silently by dividing the matrix by the codon count", "surface_rule": "warn MAX_PATRISTIC_ABOVE_10" },
+      { "id": "veg/HyphAeon#9", "summary": "Alignment taxa missing from the tree are zeroed silently", "surface_rule": "refuse ALIGNMENT_TAXA_MISSING_FROM_TREE" },
+      { "id": "veg/HyphAeon#13", "summary": "Nearly invariant to the tree topology, sensitive to branch-length units, reading frame and U-vs-T", "surface_rule": "one set of pre-run checks on every surface" },
+      { "id": "veg/HyphAeon#16", "summary": "ONNX export needs mean_root_attns and root_repr outputs plus busted_head.onnx (reopened with that scope)", "surface_rule": "Phase 0 bridges to Python until the export lands" },
+      { "id": "veg/HyphAeon#33", "summary": "Shallow single-ancestor panels return nothing, silently", "surface_rule": "warn STAR_LIKE_TREE" }
+    ],
+    "measured_cost_python_reference": {
+      "machine": "Apple M4 Pro, torch 2.10, fp32, bundled suite weights, ~1.5 s start-up included",
+      "rows": [
+        { "analysis": "meme", "dataset": "Smc6", "taxa": 20, "codons": 1097, "wall_sec": 3.5, "peak_rss_gb": 0.5 },
+        { "analysis": "meme", "dataset": "bat_oas1", "taxa": 18, "codons": 351, "wall_sec": 1.7, "peak_rss_gb": 0.5 },
+        { "analysis": "meme", "dataset": "camelid", "taxa": 212, "codons": 96, "wall_sec": 4.0, "peak_rss_gb": 1.5 },
+        { "analysis": "meme", "dataset": "HIV1_RT", "taxa": 476, "codons": 335, "wall_sec": 17.3, "peak_rss_gb": 1.5 },
+        { "analysis": "meme --attribute", "dataset": "Smc6", "taxa": 20, "codons": 1097, "wall_sec": 1.8, "peak_rss_gb": 0.5 },
+        { "analysis": "busted", "dataset": "Smc6", "taxa": 20, "codons": 1097, "wall_sec": 1.7, "peak_rss_gb": 0.5 },
+        { "analysis": "epistasis (10k perms)", "dataset": "Smc6", "taxa": 20, "codons": 1097, "wall_sec": 2.0, "peak_rss_gb": 0.5 },
+        { "analysis": "epistasis (1k perms)", "dataset": "HIV1_RT", "taxa": 475, "codons": 335, "wall_sec": 21.5 },
+        { "analysis": "dms", "dataset": "Smc6", "taxa": 20, "codons": 1097, "wall_sec": 4.4, "peak_rss_gb": 0.5 },
+        { "analysis": "dms", "dataset": "HIV1_RT", "taxa": 475, "codons": 335, "wall_sec": 46.4 },
+        { "analysis": "phenotype (no permulations)", "dataset": "RHO", "taxa": 710, "codons": 349, "wall_sec": 4.8, "peak_rss_gb": 2.7 }
+      ],
+      "scaling": "cost scales as sites x taxa^2"
+    }
+  }
+}

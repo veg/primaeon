@@ -1,0 +1,40 @@
+{
+	"name": "@veg/hyphaeon-web",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "HyphAeon in the browser: SvelteKit static site over @veg/hyphaeon-runtime and @veg/hyphaeon-js.",
+	"scripts": {
+		"predev": "node ../scripts/copy-assets.mjs",
+		"dev": "vite dev",
+		"prebuild": "node ../scripts/copy-assets.mjs",
+		"build": "vite build",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@observablehq/plot": "^0.6.17",
+		"@veg/hyphaeon-runtime": "0.0.0",
+		"d3": "^7.9.0",
+		"onnxruntime-web": "^1.27.0",
+		"pako": "^2.1.0",
+		"phylotree": "^2.2.1"
+	},
+	"devDependencies": {
+		"@playwright/test": "^1.62.0",
+		"@sveltejs/adapter-static": "^3.0.10",
+		"@sveltejs/kit": "^2.70.0",
+		"@sveltejs/vite-plugin-svelte": "^6.2.0",
+		"@types/d3": "^7.4.3",
+		"@types/pako": "^2.0.4",
+		"svelte": "^5.46.0",
+		"svelte-check": "^4.7.0",
+		"typescript": "^5.9.0",
+		"vite": "^7.1.0",
+		"vitest": "^3.2.4"
+	}
+}
