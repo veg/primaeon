@@ -80,6 +80,7 @@ export function createJobStore(opts = {}) {
       out.elapsed_sec = Math.round((end - Date.parse(job.started_at)) / 100) / 10;
     }
     if (job.status === "queued") out.queue_position = queue.indexOf(job.id) + 1;
+    if (job.progress) out.progress = job.progress;
     if (job.error) out.error = job.error;
     out.result_available = job.status === "completed";
     return out;
@@ -109,8 +110,13 @@ export function createJobStore(opts = {}) {
       job.status = "running";
       job.started_at = nowIso();
       running++;
+      // The runner may report progress in the runtime's `(phase, done, total, message)` shape;
+      // the latest report is what job_status shows. Advisory: a throwing sink never fails a run.
+      const report = (phase, done, total, message) => {
+        job.progress = { phase, done, total, message, at: nowIso() };
+      };
       Promise.resolve()
-        .then(() => job._run(job._controller.signal))
+        .then(() => job._run(job._controller.signal, report))
         .then(
           (value) => {
             if (job.status === "cancelled") return; // cancelled while running; already finished

@@ -37,12 +37,14 @@
 import { readFile as fsReadFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
+import { BUSTED_HEAD_INPUT_NAMES, BUSTED_HEAD_OUTPUT_NAMES } from '@veg/hyphaeon-js';
+
 import { DEFAULT_INPUT_NAMES, REQUIRED_OUTPUT_NAMES, isSha256Hex, hashMismatchError } from './manifest.js';
 
-export { runSites, buildFeeds } from './feeds.js';
+export { runSites, buildFeeds, runBustedHead, buildBustedHeadFeeds } from './feeds.js';
 
 /** Option keys a PRODUCTION call may carry; anything else is a seam and bypasses the memo. */
-const MEMO_KEYS = new Set(['modelPath', 'expectedSha256', 'threads', 'expectedInputs']);
+const MEMO_KEYS = new Set(['modelPath', 'expectedSha256', 'threads', 'expectedInputs', 'expectedOutputs', 'kind']);
 
 /** Memoised session promises keyed by modelPath|expectedSha256|threads. */
 const sessions = new Map();
@@ -70,15 +72,26 @@ function normaliseOrt(mod) {
  * Load the ONNX session, importing the native runtime and reading the graph on first call.
  *
  * @param {{modelPath: string, expectedSha256?: string, threads?: number,
- *   expectedInputs?: readonly string[], verifyHash?: boolean, ort?: any,
+ *   expectedInputs?: readonly string[], expectedOutputs?: readonly string[], kind?: string,
+ *   verifyHash?: boolean, ort?: any,
  *   readFileImpl?: (p: string) => Promise<Buffer|Uint8Array>}} options
  *   `modelPath` is required; `expectedSha256` is required unless `verifyHash` is explicitly false.
- *   `ort` and `readFileImpl` are test seams; production passes neither.
+ *   `expectedInputs` / `expectedOutputs` default to the backbone contract (the four inputs, `lrt`);
+ *   `loadBustedHead` below sets them for the head graph. `kind` ('backbone' | 'busted_head') is
+ *   recorded on the handle. `ort` and `readFileImpl` are test seams; production passes neither.
  * @returns {Promise<{session: any, ort: any, sha256: string|null, verified: boolean,
- *   bytes: number, threads: number, modelPath: string, outputNames: string[]}>}
+ *   bytes: number, threads: number, modelPath: string, kind: string, inputNames: string[],
+ *   outputNames: string[]}>}
  */
 export function loadSession(options = {}) {
-	const { modelPath, expectedSha256, threads = 1, expectedInputs = DEFAULT_INPUT_NAMES } = options;
+	const {
+		modelPath,
+		expectedSha256,
+		threads = 1,
+		expectedInputs = DEFAULT_INPUT_NAMES,
+		expectedOutputs = REQUIRED_OUTPUT_NAMES,
+		kind = 'backbone'
+	} = options;
 	if (typeof modelPath !== 'string' || !modelPath) {
 		throw new Error('loadSession: modelPath is required');
 	}
@@ -128,7 +141,7 @@ export function loadSession(options = {}) {
 		if (missing.length) {
 			throw new Error(`HyphAeon model is missing expected inputs: ${missing.join(', ')}`);
 		}
-		const missingOut = REQUIRED_OUTPUT_NAMES.filter((n) => !session.outputNames?.includes(n));
+		const missingOut = expectedOutputs.filter((n) => !session.outputNames?.includes(n));
 		if (missingOut.length) {
 			throw new Error(`HyphAeon model is missing expected outputs: ${missingOut.join(', ')}`);
 		}
@@ -141,6 +154,8 @@ export function loadSession(options = {}) {
 			bytes: buffer.byteLength,
 			threads,
 			modelPath,
+			kind,
+			inputNames: Array.from(session.inputNames ?? []),
 			outputNames: Array.from(session.outputNames ?? [])
 		};
 	})();
@@ -154,9 +169,61 @@ export function loadSession(options = {}) {
 	return promise;
 }
 
+/**
+ * Load `busted_head.onnx`: the same policy as `loadSession` with the head's contract —
+ * inputs `root_repr` [1, L, 384] float32 and `mask` [1, L] bool (all false; feeds.js enforces
+ * it), outputs `cls_prob`, `pred_gene_lrt`, `omega_prop`, `syn_var`, `pred_omega3`, `pred_logp`
+ * (export.py BUSTED_*_NAMES via the library's BUSTED_HEAD_*_NAMES). The hash comes from the
+ * manifest's `busted_head_onnx_sha256`.
+ *
+ * @param {{modelPath: string, expectedSha256?: string, threads?: number, verifyHash?: boolean,
+ *   ort?: any, readFileImpl?: (p: string) => Promise<Buffer|Uint8Array>}} options
+ */
+export function loadBustedHead(options = {}) {
+	return loadSession({
+		...options,
+		expectedInputs: BUSTED_HEAD_INPUT_NAMES,
+		expectedOutputs: BUSTED_HEAD_OUTPUT_NAMES,
+		kind: 'busted_head'
+	});
+}
+
 /** Drop every memoised session. Tests use this; production has no reason to. */
 export function resetSession() {
 	sessions.clear();
+}
+
+/**
+ * Release every memoised ORT session and forget it. This is what a process must call before it
+ * exits: onnxruntime-node 1.23.2 aborts at exit ("libc++abi: terminating due to uncaught
+ * exception of type std::__1::system_error: mutex lock failed: Invalid argument", SIGABRT) when
+ * an InferenceSession is still alive on its thread pool — measured in Phase 1b on the MCP stdio
+ * server at 1 and 4 intra-op threads and in scripts/parity-node.mjs. A caller that releases a
+ * handle by hand must also drop it from the memo, or the next `loadSession` returns a disposed
+ * session ("Session already disposed"); doing both here keeps the two in step. Loads still in
+ * flight are awaited and released; a failed load has nothing to release. After this call
+ * `process.exit()` is safe, though draining the loop (`process.exitCode`) is preferred.
+ *
+ * @returns {Promise<number>} how many sessions were released
+ */
+export async function releaseSessions() {
+	const pending = [...sessions.values()];
+	sessions.clear();
+	let released = 0;
+	for (const promise of pending) {
+		let handle;
+		try {
+			handle = await promise;
+		} catch {
+			continue;
+		}
+		const release = handle?.session?.release;
+		if (typeof release === 'function') {
+			await release.call(handle.session);
+			released += 1;
+		}
+	}
+	return released;
 }
 
 /**

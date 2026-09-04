@@ -8,32 +8,35 @@
  * get_results, cancel_job, list_models. The shape is datamonkey-js-server lib/mcp/tools.js
  * (register-on-a-McpServer, JSON text results, {error, hint} envelopes with isError, a two-class
  * error taxonomy), rewritten as ESM for Node 22 and with the analysis inputs mirroring the
- * Python CLI's options one-to-one (hyphaeon/cli.py, veg/HyphAeon@3cb9cc6; the flag tables are
- * in src/bridge.js).
+ * Python CLI's options one-to-one (hyphaeon/cli.py at veg/HyphAeon phase-1a; the flag tables
+ * are in src/bridge.js and the runtime mapping in src/engine.js).
  *
  * Every analysis tool follows the same path:
  *   1. resolve `file://` inputs (stdio only — a remote server must never read its own disk on a
  *      caller's behalf);
- *   2. parse the alignment ONCE, with the same sniff as the reference (src/validate.js), and
- *      size the run on the LONGEST sequence (src/caps.js) — the probe is not the parse that
- *      feeds the model, exactly as in tools.js:590-629, so it must parse the same text;
+ *   2. parse the alignment ONCE with the library's dataset.py mirror (src/validate.js) and size
+ *      the run on the LONGEST sequence (src/caps.js) — the probe is not the parse that feeds
+ *      the model, exactly as in tools.js:590-629, so it must parse the same text;
  *   3. refuse over the hard caps, answer inside the call under the synchronous caps, otherwise
  *      create a job and return its id;
- *   4. run the Phase 0 bridge (src/bridge.js) and return the CLI's JSON with a `provenance`
- *      block whose `surface` is "python-reference".
+ *   4. run the pillar: hyphaeon_meme, hyphaeon_busted and hyphaeon_evaluate IN THIS PROCESS
+ *      through src/engine.js (runtime/ over onnxruntime-node; `provenance.surface` is
+ *      "mcp-stdio" or "mcp-http"), hyphaeon_epistasis, hyphaeon_dms and hyphaeon_phenotype
+ *      through the Phase 0 Python bridge (src/bridge.js; `provenance.surface` is
+ *      "python-reference") until their ports land (PLAN.md 8, phases 2-3).
  *
  * Output shaping (`fields`, `top`, `summary_only`) is accepted by every analysis tool and by
  * get_results, because an epistasis result for HIV1_RT is 4 MB of JSON and no client wants that
  * in a tool result by default. The ranking keys per collection are in RANKED below and follow
  * Appendix B of PLAN.md.
  *
- * Bridge-then-port: when a pillar's port lands in @veg/hyphaeon-js, its tool switches from
- * `bridge` to `runtime/` and its provenance.surface becomes "mcp-stdio" / "mcp-http". Nothing
- * else in this file changes; that is the point of keeping the schemas identical now.
+ * The tool schemas did not change between the bridge and the engine; that was the point of
+ * keeping them identical in Phase 0. What changed is who runs, and the provenance says which.
  */
 
 import { z } from "zod";
 import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   MAX_ALIGNMENT_CHARS,
@@ -45,8 +48,9 @@ import {
   classifyRun,
   probeSequences
 } from "./caps.js";
-import { diagnose, extractNewick, parseAlignment } from "./validate.js";
+import { diagnose, hasEmbeddedTree, parseAlignment, NATIVE_ANALYSES, BRIDGED_ANALYSES } from "./validate.js";
 import { BridgeError, pythonBin, referenceVersion, runBridge } from "./bridge.js";
+import { EngineError, createEngine } from "./engine.js";
 import { readManifest } from "./models.js";
 
 export const TOOL_NAMES = Object.freeze([
@@ -62,6 +66,8 @@ export const TOOL_NAMES = Object.freeze([
   "cancel_job",
   "list_models"
 ]);
+
+export { NATIVE_ANALYSES, BRIDGED_ANALYSES };
 
 const PRETTY_LIMIT = 20 * 1024;
 
@@ -81,13 +87,16 @@ function fail(kind, error, hint, extra) {
   return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], isError: true };
 }
 
-function bridgeFailure(err) {
+function runFailure(err) {
   if (err instanceof BridgeError) {
     const extra = {};
     if (err.stderr) extra.stderr_tail = err.stderr;
     if (err.exitCode !== undefined && err.exitCode !== null) extra.exit_code = err.exitCode;
     if (err.command) extra.command = err.command;
     return fail(err.kind, err.message, err.hint, extra);
+  }
+  if (err instanceof EngineError) {
+    return fail(err.kind, err.message, err.hint, err.code ? { code: err.code } : undefined);
   }
   const message = (err && err.message) || String(err);
   return fail("server", "Unexpected failure while running the analysis: " + message);
@@ -117,15 +126,15 @@ const treeSchema = z
   .optional()
   .describe(
     "Newick or NEXUS tree text (or a `file://` URL over stdio). Optional when the alignment " +
-      "embeds a tree or when use_tn93 is set. Tips must match sequence names exactly. A tree " +
-      "without branch lengths gets HKY85 lengths from HyPhy if it is on PATH, else 1e-3 everywhere."
+      "embeds a tree. Tips must match sequence names exactly. A tree without branch lengths gets " +
+      "HKY85 lengths from HyPhy when this server has an estimator (see list_models), else 1e-3 everywhere."
   );
 
 const tn93Schema = {
   use_tn93: z
     .boolean()
     .optional()
-    .describe("--use-tn93: skip the tree and estimate pairwise distances from the sequences with TN93."),
+    .describe("--use-tn93: skip the tree and estimate pairwise distances from the sequences with TN93 (bridged pillars only; refused in-process)."),
   no_tree: z.boolean().optional().describe("--no-tree: same as use_tn93 (the CLI offers both spellings).")
 };
 
@@ -146,7 +155,7 @@ const maxSpeciesSchema = z
   .optional()
   .describe("--max-species: cap on taxa fed to the model (2-" + TAXON_CAP + "); above it, Faith's-PD subsampling.");
 
-const cpuSchema = z.boolean().optional().describe("--cpu: force CPU inference in the reference.");
+const cpuSchema = z.boolean().optional().describe("--cpu: force CPU inference (always the case in-process; recorded).");
 
 const shapingSchema = {
   fields: z
@@ -179,7 +188,7 @@ const runAsyncSchema = z
 /** Ranked collections per analysis and the key they are ranked by (PLAN.md Appendix B). */
 const RANKED = {
   meme: { sites: "hyphaeon_lrt" },
-  busted: {},
+  busted: { sites_detail: "hyphaeon_lrt" },
   epistasis: { edges: "cesi", sectors: "spectral_coherence", plasticity: "intrinsic_plasticity" },
   dms: { plasticity: "intrinsic_plasticity" },
   phenotype: { sites: "score", trait_sectors: "spectral_coherence", coselection_pairs: "cesi" },
@@ -234,7 +243,7 @@ export function summarise(analysis, result) {
         artifacts_masked: count(result.artifacts_masked),
         attributed_sites: count(result.attributions),
         top_sites: topBy(sites, "hyphaeon_lrt", 10).map((s) =>
-          pick(s, ["site", "hyphaeon_lrt", "p_value", "q_value", "is_invariable", "top_driver", "top_mutation", "evolutionary_epoch"])
+          pick(s, ["site", "hyphaeon_lrt", "p_value", "q_value", "is_invariable", "call", "percentile", "top_driver", "top_mutation", "evolutionary_epoch"])
         )
       });
     }
@@ -331,8 +340,14 @@ export function shapeResult(analysis, result, provenance, { fields, top, summary
 
 // ── input resolution ────────────────────────────────────────────────────────
 
+/**
+ * Inline text as given, or the contents of a `file://` URL over stdio, with the file's basename
+ * (the document's `alignment` / `tree` label; the bridge scrubbed temp paths to the same).
+ *
+ * @returns {Promise<{text: string|undefined, name: string|null}>}
+ */
 async function resolveText(value, label, allowFilePaths) {
-  if (typeof value !== "string" || !value.startsWith("file://")) return value;
+  if (typeof value !== "string" || !value.startsWith("file://")) return { text: value, name: null };
   if (!allowFilePaths) {
     throw new ToolInputError(
       label + " is a file:// URL, which is only accepted by the stdio server running on your own machine.",
@@ -358,13 +373,11 @@ async function resolveText(value, label, allowFilePaths) {
       "Trim the alignment or submit fewer sequences."
     );
   }
-  return readFile(p, "utf8");
+  return { text: await readFile(p, "utf8"), name: path.basename(p) };
 }
 
-const NON_OPTION_KEYS = new Set([
-  "alignment", "tree", "phenotype_file", "prediction", "meme_result",
-  "fields", "top", "summary_only", "run_async"
-]);
+const INPUT_KEYS = ["alignment", "tree", "phenotype_file", "prediction", "meme_result"];
+const NON_OPTION_KEYS = new Set([...INPUT_KEYS, "fields", "top", "summary_only", "run_async"]);
 
 function optionsOf(args) {
   const out = {};
@@ -378,7 +391,9 @@ function optionsOf(args) {
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
  * @param {object} deps
  * @param {ReturnType<import("./jobs.js").createJobStore>} deps.jobs
- * @param {(req: object) => Promise<{result: object, provenance: object}>} [deps.bridge]  defaults to runBridge
+ * @param {(req: object) => Promise<{result: object, provenance: object}>} [deps.bridge]  defaults to runBridge (bridged pillars)
+ * @param {ReturnType<typeof createEngine>} [deps.engine]  defaults to createEngine({env, logger}) (native pillars)
+ * @param {"mcp-stdio"|"mcp-http"} [deps.surface]  what native results claim; default "mcp-stdio"
  * @param {boolean} [deps.allowFilePaths]  accept file:// inputs (stdio only)
  * @param {object} [deps.env]
  * @param {{info: Function, warn: Function, error: Function, debug: Function}} [deps.logger]
@@ -387,8 +402,10 @@ export function registerTools(server, deps) {
   const jobs = deps.jobs;
   const env = deps.env || process.env;
   const allowFilePaths = !!deps.allowFilePaths;
+  const surface = deps.surface || "mcp-stdio";
   const logger = deps.logger || { info() {}, warn() {}, error() {}, debug() {} };
   const bridge = deps.bridge || ((req) => runBridge(Object.assign({ env }, req)));
+  const engine = deps.engine || createEngine({ env, logger });
 
   // ── hyphaeon_validate ───────────────────────────────────────────────────
   server.registerTool(
@@ -396,12 +413,13 @@ export function registerTools(server, deps) {
     {
       title: "Validate an alignment before running HyphAeon",
       description:
-        "Pre-flight diagnostics without running the model: format sniff (FASTA/NEXUS/PHYLIP), " +
-        "sequence count, unequal lengths, reading frame, internal stops, unknown-codon fraction, " +
-        "tree/alignment name matching (exact), branch-length regime (absent, negative, saturated, " +
-        "max patristic > 10), depth regime (deep+large, shallow, star-like) and a cost estimate. " +
-        "Returns {ok, warnings:[{code, severity, message}], summary}; severity is info | warn | " +
-        "refuse, and ok is false when anything refuses. Codes are stable across surfaces.",
+        "Pre-flight diagnostics without running the model, from the same library the analyses " +
+        "use: format sniff (FASTA/NEXUS/PHYLIP), alphabet, reading frame, internal stops, " +
+        "unknown-codon fraction, duplicate haplotypes, tree/alignment name matching (three tiers), " +
+        "branch-length regime (missing, negative, max patristic > 10 rescaled), depth regime " +
+        "(shallow, deep+large, star-like), a cost estimate, and this server's caps and run mode. " +
+        "Returns {ok, warnings:[{code, severity, message, data}], summary}; severity is info | " +
+        "warn | refuse, and ok is false when anything refuses. Codes are stable across surfaces.",
       inputSchema: Object.assign(
         {
           alignment: alignmentSchema,
@@ -409,7 +427,8 @@ export function registerTools(server, deps) {
           analysis: z
             .enum(["meme", "busted", "epistasis", "dms", "phenotype"])
             .optional()
-            .describe("Which analysis the cost estimate and caps are for (default meme).")
+            .describe("Which analysis the cost estimate and caps are for (default meme)."),
+          max_species: maxSpeciesSchema
         },
         { use_tn93: tn93Schema.use_tn93 }
       ),
@@ -417,9 +436,17 @@ export function registerTools(server, deps) {
     },
     async (args) => {
       try {
-        const alignment = await resolveText(args.alignment, "alignment", allowFilePaths);
-        const tree = await resolveText(args.tree, "tree", allowFilePaths);
-        const out = diagnose({ alignment, tree, analysis: args.analysis || "meme", use_tn93: !!args.use_tn93 });
+        const alignment = (await resolveText(args.alignment, "alignment", allowFilePaths)).text;
+        const tree = (await resolveText(args.tree, "tree", allowFilePaths)).text;
+        const capabilities = await engine.capabilities();
+        const out = diagnose({
+          alignment,
+          tree,
+          analysis: args.analysis || "meme",
+          use_tn93: !!args.use_tn93,
+          max_species: args.max_species,
+          capabilities
+        });
         logger.info("hyphaeon_validate ok=" + out.ok + " sequences=" + out.summary.sequence_count + " codons=" + out.summary.codons);
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], isError: !out.ok };
       } catch (err) {
@@ -430,6 +457,7 @@ export function registerTools(server, deps) {
 
   // ── analysis tools ──────────────────────────────────────────────────────
   function registerAnalysis(name, analysis, config) {
+    const native = NATIVE_ANALYSES.includes(analysis);
     server.registerTool(
       name,
       {
@@ -441,8 +469,13 @@ export function registerTools(server, deps) {
       async (args) => {
         try {
           const inputs = {};
-          for (const k of ["alignment", "tree", "phenotype_file", "prediction", "meme_result"]) {
-            if (args[k] !== undefined) inputs[k] = await resolveText(args[k], k, allowFilePaths);
+          const names = {};
+          for (const k of INPUT_KEYS) {
+            if (args[k] !== undefined) {
+              const r = await resolveText(args[k], k, allowFilePaths);
+              inputs[k] = r.text;
+              if (r.name) names[k] = r.name;
+            }
           }
           const options = optionsOf(args);
           let mode = args.run_async ? "job" : "sync";
@@ -466,12 +499,23 @@ export function registerTools(server, deps) {
             size.work = cls.work;
 
             const wantsTn93 = !!(options.use_tn93 || options.no_tree);
-            if (!wantsTn93 && !(inputs.tree && inputs.tree.trim()) && !extractNewick(inputs.alignment)) {
+            if (wantsTn93 && native) {
+              const caps = await engine.capabilities();
+              if (!caps.tn93) {
+                return fail(
+                  "input",
+                  "use_tn93 / no_tree asks for TN93 pairwise distances instead of a tree; " + name +
+                    " runs in-process here and has no TN93 implementation.",
+                  "Supply `tree` (Newick with branch lengths, or a topology for HyPhy to fit)."
+                );
+              }
+            }
+            if (!wantsTn93 && !(inputs.tree && inputs.tree.trim()) && !hasEmbeddedTree(inputs.alignment)) {
               return fail(
                 "input",
                 "HyphAeon needs a phylogenetic tree and none was supplied or embedded in the alignment.",
-                "Pass `tree` (Newick with branch lengths), or set `use_tn93: true` to estimate distances " +
-                  "from the sequences."
+                "Pass `tree` (Newick with branch lengths)" +
+                  (native ? "." : ", or set `use_tn93: true` to estimate distances from the sequences.")
               );
             }
             if (analysis === "phenotype") {
@@ -487,20 +531,26 @@ export function registerTools(server, deps) {
           }
 
           logger.info(
-            name + " mode=" + mode + (size ? " sequences=" + size.sequences + " codons=" + size.codons + " work=" + size.work.toExponential(2) : "")
+            name + " engine=" + (native ? "in-process" : "python-reference") + " mode=" + mode +
+              (size ? " sequences=" + size.sequences + " codons=" + size.codons + " work=" + size.work.toExponential(2) : "")
           );
 
-          const request = Object.assign({ analysis, options }, inputs);
+          const request = Object.assign({ analysis, options, names }, inputs);
+          const execute = (signal, report) =>
+            native
+              ? engine.run(Object.assign({ signal, surface, progress: report }, request))
+              : bridge(Object.assign({ signal }, request));
 
           if (mode === "job") {
             const job = jobs.create({
               analysis,
               options,
-              run: (signal) => bridge(Object.assign({ signal }, request))
+              run: (signal, report) => execute(signal, report)
             });
             logger.info(name + " queued job_id=" + job.job_id);
             return ok(
               Object.assign(job, {
+                engine: native ? "in-process" : "python-reference",
                 reason: args.run_async
                   ? "run_async requested."
                   : "Above the synchronous caps (" + MAX_SYNC_CODONS + " codon sites, work " + MAX_SYNC_WORK.toExponential(1) + ").",
@@ -509,15 +559,15 @@ export function registerTools(server, deps) {
             );
           }
 
-          const { result, provenance } = await bridge(request);
-          provenance.surface = "python-reference";
+          const { result, provenance } = await execute(undefined, undefined);
+          if (!native) provenance.surface = "python-reference";
           const shaped = shapeResult(analysis, result, provenance, args);
-          logger.info(name + " done in " + provenance.elapsed_sec + "s");
+          logger.info(name + " done in " + provenance.elapsed_sec + "s (surface " + provenance.surface + ")");
           return ok(shaped);
         } catch (err) {
           if (err instanceof ToolInputError) return fail("input", err.message, err.hint);
           logger.error(name + " failed: " + ((err && err.message) || err));
-          return bridgeFailure(err);
+          return runFailure(err);
         }
       }
     );
@@ -527,14 +577,16 @@ export function registerTools(server, deps) {
     title: "HyphAeon site selection (MEME surrogate)",
     description:
       "Per-site episodic positive selection: a predicted MEME-style LRT per codon site, the MEME " +
-      "mixture p-value, Benjamini-Hochberg q, and an invariable flag (\"not scored\", not zero). " +
-      "This is a neural SURROGATE for MEME evaluated against MEME, not against truth: rank is " +
-      "strong (rho ~0.5 on HIV-1 RT), scale is compressed (slope 0.16), and calibration depends " +
-      "on regime (FPR 5-7% at 20-50 taxa, ~36% at 100 taxa on deep trees). Sort by LRT and report " +
-      "rank/percentile; show p and q but never alone; confirm anything you will act on with real " +
-      "MEME on Datamonkey. Answers inside the call under " + MAX_SYNC_CODONS + " codon sites and " +
-      "work sites x taxa^2 <= " + MAX_SYNC_WORK.toExponential(1) + ", otherwise returns a job id. " +
-      "Options mirror `hyphaeon meme`.",
+      "mixture p-value, Benjamini-Hochberg q, and an invariable flag (\"not scored\", not zero); " +
+      "plus this app's rank columns (zScore, percentile and a tier `call` over the variable sites). " +
+      "Runs IN THIS PROCESS (ONNX Runtime; provenance.surface mcp-stdio / mcp-http) with numbers " +
+      "that match `hyphaeon meme` (LRT within 1e-5, p/q float32-identical). This is a neural " +
+      "SURROGATE for MEME evaluated against MEME, not against truth: rank is strong (rho ~0.5 on " +
+      "HIV-1 RT), scale is compressed (slope 0.16), and calibration depends on regime (FPR 5-7% at " +
+      "20-50 taxa, ~36% at 100 taxa on deep trees). Sort by LRT and report rank/percentile; show p " +
+      "and q but never alone; confirm anything you will act on with real MEME on Datamonkey. " +
+      "Answers inside the call under " + MAX_SYNC_CODONS + " codon sites and work sites x taxa^2 <= " +
+      MAX_SYNC_WORK.toExponential(1) + ", otherwise returns a job id. Options mirror `hyphaeon meme`.",
     inputSchema: Object.assign(
       { alignment: alignmentSchema, tree: treeSchema },
       tn93Schema,
@@ -543,7 +595,7 @@ export function registerTools(server, deps) {
         max_species: maxSpeciesSchema,
         filter: z.boolean().optional().describe("--filter: hypergeometric patch scan + counterfactual outlier masking, then re-score."),
         filter_p_thresh: z.number().min(0).max(1).optional().describe("--filter-p-thresh: local patch p-value threshold (default 0.01)."),
-        min_patch_consec: z.number().int().min(1).optional().describe("--min-patch-consec: consecutive radical mutations in one taxon to call an artifact (default 3)."),
+        min_patch_consec: z.number().int().min(1).optional().describe("--min-patch-consec: consecutive radical mutations in one taxon to call an artifact (default 3; in-process only the default is applied, see provenance)."),
         attribute: z.boolean().optional().describe("--attribute: per-taxon counterfactual delta-LRT, driver taxon, evolutionary epoch, adaptation mode."),
         attribution_min_lrt: z.number().min(0).optional().describe("--attribution-min-lrt: only attribute sites at or above this LRT (default 3.84)."),
         no_prune_duplicates: z.boolean().optional().describe("--no-prune-duplicates: keep identical sequences instead of collapsing them."),
@@ -557,11 +609,14 @@ export function registerTools(server, deps) {
     title: "HyphAeon gene-level omnibus test (BUSTED surrogate)",
     description:
       "Alignment-wide episodic selection: Cauchy (ACAT) and Simes combinations of the per-site " +
-      "p-values, the omnibus LRT, the neural BUSTED head's selection probability and predicted " +
-      "gene LRT, a 3-class omega mixture, and synonymous rate variation. `positive_selection_detected` " +
-      "is p_ACAT < 0.05 OR selection_probability > 0.5 — report both numbers, not the flag alone. " +
-      "A surrogate for BUSTED with the same regime caveats as hyphaeon_meme. Options mirror " +
-      "`hyphaeon busted` in single-alignment mode.",
+      "p-values, the omnibus LRT and total selection energy (exact functions of the site LRTs, " +
+      "reproducible against `hyphaeon busted`), and the neural BUSTED head's selection " +
+      "probability, predicted gene LRT, 3-class omega mixture and synonymous rate variation " +
+      "(one seeded draw of a head the reference loads unseeded: NOT reproducible upstream, see " +
+      "provenance.neural_head). `positive_selection_detected` is p_ACAT < 0.05 OR " +
+      "selection_probability > 0.5 — report both numbers, not the flag alone. Runs in this " +
+      "process. A surrogate for BUSTED with the same regime caveats as hyphaeon_meme. Options " +
+      "mirror `hyphaeon busted` in single-alignment mode.",
     inputSchema: Object.assign(
       { alignment: alignmentSchema, tree: treeSchema },
       tn93Schema,
@@ -569,6 +624,7 @@ export function registerTools(server, deps) {
         model_variant: variantSchema,
         max_species: maxSpeciesSchema,
         batch_size: z.number().int().min(1).optional().describe("--batch-size: sites per chunk (default adaptive)."),
+        gene: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/).optional().describe("Gene name recorded in the record (default: the alignment file's stem)."),
         cpu: cpuSchema
       }
     )
@@ -583,7 +639,8 @@ export function registerTools(server, deps) {
       "whose selection signal falls on the same branches; sectors are groups of such sites. " +
       "p_perm is a permutation p-value (statistical parity only across surfaces). Costly on large " +
       "trees (HIV1_RT at 1k permutations ~20 s); set no_dms and lower n_permutations first. " +
-      "Options mirror `hyphaeon epistasis` (which has no --model-variant).",
+      "Runs through the Python reference bridge (provenance.surface python-reference) until its " +
+      "port lands. Options mirror `hyphaeon epistasis` (which has no --model-variant).",
     inputSchema: Object.assign(
       { alignment: alignmentSchema, tree: treeSchema },
       tn93Schema,
@@ -611,7 +668,8 @@ export function registerTools(server, deps) {
       "in the focal taxon (default consensus), the model is re-run, and the change in LRT per " +
       "mutant is reported with an intrinsic plasticity score per site (high = permissive, low = " +
       "rigid). Costs 19 x sites forward passes, so the work cap is 19 x sites x taxa^2 and the " +
-      "site cap is 3,000. Options mirror `hyphaeon dms` (no --model-variant).",
+      "site cap is 3,000. Runs through the Python reference bridge until its port lands. " +
+      "Options mirror `hyphaeon dms` (no --model-variant).",
     inputSchema: Object.assign(
       { alignment: alignmentSchema, tree: treeSchema },
       tn93Schema,
@@ -629,7 +687,8 @@ export function registerTools(server, deps) {
       "foreground vs background attention, association rho, t-test p, BH q, a PARS signature, " +
       "trait sectors with permutation p, and an optional gene-level Brownian-motion permulation " +
       "p (permulations > 0). Define the trait with preset, a foreground list/regex, or a CSV. " +
-      "Options mirror `hyphaeon phenotype`.",
+      "Runs through the Python reference bridge until its port lands. Options mirror " +
+      "`hyphaeon phenotype`.",
     inputSchema: Object.assign(
       { alignment: alignmentSchema, tree: treeSchema },
       tn93Schema,
@@ -660,8 +719,9 @@ export function registerTools(server, deps) {
     description:
       "Concordance of a `hyphaeon meme` CSV against the matching HyPhy MEME JSON for one gene: " +
       "Pearson and Spearman on LRT, ROC-AUC / PPV / FPR and confusion matrices at p <= 0.05 and " +
-      "0.10, per-gene site counts and warnings. Runs no model. Options mirror `hyphaeon evaluate` " +
-      "in direct-file mode.",
+      "0.10, per-gene site counts and warnings. Runs no model; runs in this process with the " +
+      "library's port of evaluation.py (numbers match `hyphaeon evaluate` to 1e-9). Options " +
+      "mirror `hyphaeon evaluate` in direct-file mode.",
     inputSchema: {
       prediction: z.string().min(1).max(MAX_ALIGNMENT_CHARS).describe("CSV text written by hyphaeon meme (site, hyphaeon_lrt, p_value, q_value, is_invariable); file:// over stdio."),
       meme_result: z.string().min(1).max(MAX_ALIGNMENT_CHARS).describe("HyPhy MEME result JSON text; file:// over stdio."),
@@ -676,7 +736,7 @@ export function registerTools(server, deps) {
     "job_status",
     {
       title: "Status of a queued HyphAeon job",
-      description: "Status of a job returned by an analysis tool: queued | running | completed | failed | cancelled, with timestamps and any error.",
+      description: "Status of a job returned by an analysis tool: queued | running | completed | failed | cancelled, with timestamps, the latest progress phase, and any error.",
       inputSchema: { job_id: z.string().regex(/^[0-9a-f]{32}$/).describe("The job_id an analysis tool returned.") },
       annotations: { readOnlyHint: true }
     },
@@ -694,8 +754,8 @@ export function registerTools(server, deps) {
       title: "Results of a completed HyphAeon job",
       description:
         "Fetch a completed job's result with the same fields / top / summary_only shaping the " +
-        "analysis tools accept. Results carry a provenance block with surface \"python-reference\" " +
-        "while the Phase 0 bridge is in place.",
+        "analysis tools accept. Results carry a provenance block whose `surface` says whether " +
+        "the numbers came from this process (mcp-stdio / mcp-http) or the Python reference bridge.",
       inputSchema: Object.assign({ job_id: z.string().regex(/^[0-9a-f]{32}$/).describe("The job_id to fetch.") }, shapingSchema),
       annotations: { readOnlyHint: true }
     },
@@ -711,7 +771,11 @@ export function registerTools(server, deps) {
         );
       }
       const stored = jobs.result(args.job_id);
-      const provenance = Object.assign({}, stored.provenance, { surface: "python-reference", job_id: job.job_id });
+      const storedSurface = stored.provenance && stored.provenance.surface;
+      const provenance = Object.assign({}, stored.provenance, {
+        surface: NATIVE_ANALYSES.includes(job.analysis) ? storedSurface || surface : "python-reference",
+        job_id: job.job_id
+      });
       return ok(shapeResult(job.analysis, stored.result, provenance, args));
     }
   );
@@ -738,11 +802,13 @@ export function registerTools(server, deps) {
   server.registerTool(
     "list_models",
     {
-      title: "Available HyphAeon model variants",
+      title: "Available HyphAeon model variants and engines",
       description:
         "The weights manifest (model_version, variants with training regime and artifact hashes, " +
-        "taxon caps, ONNX contract, PRNG) when models/manifest.json is present, otherwise the " +
-        "variants the Python reference knows about; plus whether the Python bridge is reachable.",
+        "taxon caps, ONNX contract, PRNG) read through the runtime's manifest reader, which " +
+        "pillars run in this process (`native`: models directory, onnxruntime-node, branch-length " +
+        "estimator) and which run through the Python reference bridge (`bridge`: executable, " +
+        "version, reachability).",
       inputSchema: {},
       annotations: { readOnlyHint: true }
     },
@@ -750,10 +816,13 @@ export function registerTools(server, deps) {
       const manifest = await readManifest(env);
       const bin = pythonBin(env);
       const reference_version = await referenceVersion(env);
+      const native = await engine.status();
       return ok(
         Object.assign(manifest, {
+          native: Object.assign({ surface, analyses: [...NATIVE_ANALYSES] }, native),
           bridge: {
             surface: "python-reference",
+            analyses: [...BRIDGED_ANALYSES],
             executable: bin,
             reference_version,
             reachable: reference_version !== "unknown",

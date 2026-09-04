@@ -2,59 +2,74 @@
  * pipeline.js — the site-selection (`meme`) run, end to end, over a session someone else loaded.
  *
  * WHY THIS FILE EXISTS. PLAN.md §3.2: `runtime/` holds "pipeline orchestration (prep → MDS → infer
- * → postprocess) over the library". This is that orchestration for `meme`. It mirrors the phase
- * order of datamonkey3/src/lib/services/AxomemeAnalysisRunner.js (main@fac1330) and of its Node
- * port, datamonkey-js-server/lib/axomeme/predict.js (main@1e84d6f), WITHOUT the
- * BaseAnalysisRunner inheritance, the IndexedDB lifecycle, and the percent-based progress bar:
- * the browser worker, the MCP tool and the job server each wrap this one function and translate
- * `progress(phase, done, total, message)` into whatever their transport wants (PLAN.md §3.5's
- * `{phase, done, total, message}`).
+ * → postprocess) over the library". This is that orchestration for `meme`, rewritten in Phase 1b
+ * over `@veg/hyphaeon-js` at veg/HyphAeon phase-1a so that the numbers it produces are the
+ * numbers `hyphaeon meme` writes. It mirrors `cmd_meme` in hyphaeon/cli.py:51-327 phase for
+ * phase, and keeps the phase-callback shape of datamonkey3's AxomemeAnalysisRunner.js
+ * (main@fac1330) and datamonkey-js-server's predict.js (main@1e84d6f) that the browser worker,
+ * the MCP tool and the job server wrap: `progress(phase, done, total, message)`.
  *
- *   parse        fastaValidation.parseAlignment over stripEmbeddedTrees(alignmentText)
- *   prepare      library prepareAlignment: tree parse, patristic distances, Max-PD cap, tokens,
- *                MDS on the padded matrix (the ~0.6-2 s synchronous step; run this in a worker)
- *   infer        session.run over site batches sized by batchSizeFor; the first bundle is checked
- *                against the model contract (validateInputBundle), later ones cannot differ in the
- *                per-alignment tensors
- *   postprocess  variability over the SELECTED sequences, buildPredictions, provenance
+ *   parse        the alignment is parsed by the library's `parseAlignmentSequences`
+ *                (dataset.py:59-159) to count taxa; < 3 is refused (veg/HyphAeon#7)
+ *   prepare      `loadAlignmentAndTree` (dataset.py:523-730): tree, matching, duplicates, the
+ *                `> 10` rescale, Faith's PD to the cap, MDS, tokens, the invariable mask. A tree
+ *                without branch lengths goes to `options.estimateTree` when the caller gave one
+ *                (the runtime's HyPhy / NJ, PLAN.md D5/D6) and the load is repeated with the
+ *                estimated tree; otherwise the library has already taken dataset.py:609-614's
+ *                "HyPhy not found" branch (1e-3 / 1e-4 defaults) and that fact is recorded
+ *   infer        `predict_site_lrts` (inference.py:162-192): VARIABLE sites only, batched, the
+ *                clamp at 0, float32; invariable sites are never sent to the graph
+ *   stats        cli.py:99-100 — p = float32(pvals_from_lrt_meme(lrt)); q = float32(BH(p))
+ *   filter       cli.py:111-218 (`--filter`), the cmd_meme copy of the OCI screen, through the
+ *                library's `runAlignmentFilter` with `{cliVariant: true}`; when an artifact was
+ *                masked the cleaned LRT / p / q / invariable replace the raw ones (cli.py:214-218)
+ *   attribute    cli.py:257-277 (`--attribute`): `attribute_selection` on the ORIGINAL tokens with
+ *                the (cleaned) LRTs as `base_lrts`
+ *   postprocess  the per-site records of cli.py:280-296 (site, hyphaeon_lrt, p_value, q_value,
+ *                is_invariable, + attribution fields), PLUS the app's own columns — DM3's z-score,
+ *                percentile and tier call (postprocess.js / callModes.js) — attached as extra
+ *                fields and never replacing the Python ones; provenance per PLAN.md §3.5; warnings
+ *                from the library's `diagnose` (PLAN.md §4.3)
  *
- * THE SESSION IS AN ARGUMENT, NOT LOADED HERE. Loading is the surface's business — the browser
- * fetches from static/ with the vendored WASM, Node reads a path — and it is the expensive,
- * memoised, hash-verified step that must not be triggered by a module import. Callers pass the
- * handle `loadSession()` returned ({session, ort, sha256, outputNames}).
+ * THE SESSION IS AN ARGUMENT, NOT LOADED HERE. Loading is the surface's business (createSession.js
+ * or the session modules directly) — it is the expensive, memoised, hash-verified step that must
+ * not be triggered by a module import. Callers pass the handle `loadSession()` returned.
  *
- * TWO GATES BEFORE ANY SCORING, verbatim from predict.js (which took them from DM3's
- * AnalyzeTab.svelte:167-184): a tree is required, and a tree with branch lengths is required.
- * The model reads a patristic distance matrix; a topology-only tree yields an all-zero matrix and
- * an all-zero embedding, from which the model returns confident numbers computed from nothing.
- * PLAN.md D5/D6 put tree inference (NJ, TN93, HKY85) UPSTREAM of this function, in the caller.
- *
- * WHAT THIS DOES NOT DO YET, stated so nobody reads absence as a decision:
- *   - No MEME-mixture p-values or BH q-values. Those are hyphaeon/stats.py, port order 2 in
- *     PLAN.md §5.2; until the library exports them the site rows are DM3's (lrt, z, percentile,
- *     tier call) and the Python's `p_value` / `q_value` columns are absent, not zero.
- *   - No `--filter`, no `--attribute`. Same reason; same phase.
- *   - No taxon dedupe, no `>10` distance rescale, no PHYLIP: library gaps listed in PLAN.md §5.1.
- *   - Invariable sites are still sent through the graph and zeroed afterwards (DM3's behaviour),
- *     where inference.py:170-186 skips them. Same numbers, more work; kept for DM3 parity in
- *     Phase 0 and to be changed together with the library's fixture harness.
+ * WHAT IS MIRRORED AND WHAT IS THE APP'S:
+ *   - Everything a Python field holds (`hyphaeon_lrt`, `p_value`, `q_value`, `is_invariable`, the
+ *     attribution fields, `artifacts_masked`, `taxa_count`, `codon_count`) is the library's
+ *     arithmetic on the library's tensors and is checked against `hyphaeon meme` by
+ *     scripts/parity-node.mjs and test/parity-fixtures.test.js.
+ *   - `zScore`, `percentile`, `call`, `refCodon`, `refAa`, `logLrt` are DM3's result semantics
+ *     (percentile / z / q tiers, PLAN.md D11), computed over the variable sites, and are not in
+ *     the Python. `isVariable` is `!is_invariable` — one source of truth, dataset.py:718-723.
+ *   - The taxon cap defaults to 256 (manifest `default_taxon_cap`, PLAN.md §3.3) where the CLI's
+ *     `--max-species` default is None (cli.py:1025); pass `maxSpecies: Infinity` for the CLI's
+ *     behaviour (no cap — the parity runner does). The hard cap is 512.
+ *   - Two cmd_meme quirks pass through unchanged because the library replicates them and the
+ *     fixtures pin them: with an embedded tree and ≥ 1 masked artifact `--filter` fails at the
+ *     cleaned reload ("No tree specified", cli.py:192), and the cleaned re-score reuses the
+ *     baseline tree cache (cli.py:195-197). Both are upstream issues, not app policy.
  *
  * SURROGATE, NOT MEME. Every result carries `is_surrogate` / `surrogate_for` as data (PLAN.md
  * §2, hard truth 1). Nothing here presents the output as a completed selection analysis.
  */
 
 import {
-	prepareAlignment,
-	batchSizeFor,
-	validateInputBundle,
-	MAX_SPECIES_DEFAULT
+	loadAlignmentAndTree,
+	parseAlignmentSequences,
+	memeSitePq,
+	runAlignmentFilter,
+	attributeSelection,
+	memeSiteRecords,
+	attributionsOneIndexed,
+	diagnose,
+	MAX_SPECIES_DEFAULT,
+	MAX_SPECIES_CAP as LIBRARY_MAX_SPECIES_CAP
 } from '@veg/hyphaeon-js';
 
-import { parseAlignment, stripEmbeddedTrees, findStopCodons } from './fastaValidation.js';
-import { inspectBranchLengths } from './treeSanitation.js';
-import { treeHasBranchLengths } from './prescreen/scope.js';
-import { runSites } from './feeds.js';
-import { buildPredictions, siteVariability, CALL_DEFAULTS } from './postprocess.js';
+import { buildPredictions, CALL_DEFAULTS } from './postprocess.js';
+import { inferSites, predictFromSession, resolveBatchSize, throwIfAborted, yieldToLoop } from './predict.js';
 
 /** PLAN.md §3.5: the provenance block's schema version. */
 export const SCHEMA_VERSION = 1;
@@ -68,8 +83,11 @@ export const SURFACES = Object.freeze([
 	'python-reference'
 ]);
 
-/** Phases, in order. Progress is reported at the start of each and per batch during `infer`. */
-export const PHASES = Object.freeze(['parse', 'prepare', 'infer', 'postprocess']);
+/**
+ * Phases, in order. `filter` and `attribute` are reported only when requested. Progress is
+ * reported at the start and end of each and per batch inside `infer`, `filter` and `attribute`.
+ */
+export const PHASES = Object.freeze(['parse', 'prepare', 'infer', 'stats', 'filter', 'attribute', 'postprocess']);
 
 /**
  * Calling modes buildPredictions understands. An EXPLICIT `callMode` outside this list is refused
@@ -88,32 +106,23 @@ export const NO_BRANCH_LENGTHS_MESSAGE =
 	'neighbor-joining tree or upload one with branch lengths.';
 
 /**
- * Below this magnitude a negative branch length is float noise from NJ's unclamped subtraction,
- * not a broken tree. DM3's threshold for the distance-clamping notice; NJ routinely emits -1e-5.
- */
-const NOISY_NEGATIVE = -0.001;
-
-/**
- * Hard bounds on the taxon cap. 512 is the value the tensors are padded to (the library's
- * MAX_SPECIES_DEFAULT). The floor is 3, not predict.js's 2: PLAN.md §4.3 refuses two-taxon input
- * (veg/HyphAeon#7, the 2-taxon bug) on every surface, and this is the one place every surface
- * passes through.
+ * Hard bounds on the taxon cap. 512 is the model's `taxon_cap` (manifest, MAX_SPECIES_CAP). The
+ * floor is 3, not predict.js's 2: PLAN.md §4.3 refuses two-taxon input (veg/HyphAeon#7) on every
+ * surface, and this is the one place every surface passes through.
  */
 export const MIN_SPECIES = 3;
-export const MAX_SPECIES_CAP = MAX_SPECIES_DEFAULT;
+export const MAX_SPECIES_CAP = LIBRARY_MAX_SPECIES_CAP;
 
-/** dataset.py:709-712 reports unknown codons above this fraction. */
-const UNKNOWN_CODON_WARN_FRACTION = 0.05;
-
-/** Let the event loop turn between batches so a worker can post progress and a cancel can land. */
-const yieldToLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** cli.py:1025 `--attribution-min-lrt` default; cli.py:1030 `--filter-p-thresh` default. */
+export const ATTRIBUTION_MIN_LRT_DEFAULT = 3.84;
+export const FILTER_P_THRESH_DEFAULT = 0.01;
 
 /**
  * Emit progress without letting the sink take the run down with it: a worker's postMessage and an
  * SSE write can both fail for reasons unrelated to the prediction, and a run that has done the
  * expensive work must not be lost to a failed status update. Progress is advisory.
  */
-function report(progress, phase, done, total, message) {
+export function report(progress, phase, done, total, message) {
 	if (typeof progress !== 'function') return;
 	try {
 		progress(phase, done, total, message);
@@ -123,59 +132,277 @@ function report(progress, phase, done, total, message) {
 }
 
 /**
- * Clamp the taxon cap to an integer in [MIN_SPECIES, MAX_SPECIES_CAP]; anything unusable falls
- * back to the default. null is checked BEFORE Number(): Number(null) is 0, so `maxSpecies: null`
- * would otherwise clamp to the floor and silently score a subsample instead of meaning "not set".
+ * Resolve the taxon cap: an integer in [MIN_SPECIES, MAX_SPECIES_CAP]; `null`/`undefined` (not
+ * set) fall back to `fallback`; `Infinity` (or the string 'none') means NO cap, which is the
+ * CLI's `--max-species` default for meme (cli.py:1025, None) — the library then applies no
+ * stride pre-selection and no Faith's PD. Anything unusable falls back too. null is checked
+ * BEFORE Number(): Number(null) is 0, so `maxSpecies: null` would otherwise clamp to the floor.
+ *
+ * @returns {number|null} null = no cap
  */
 export function clampMaxSpecies(value, fallback = MAX_SPECIES_DEFAULT) {
 	if (value == null) return fallback;
+	if (value === Infinity || value === 'none') return null;
 	const n = Math.floor(Number(value));
 	if (!Number.isFinite(n)) return fallback;
 	return Math.min(MAX_SPECIES_CAP, Math.max(MIN_SPECIES, n));
 }
 
-function abortError() {
-	const err = new Error('HyphAeon run cancelled');
-	err.name = 'AbortError';
-	return err;
-}
-
-function throwIfAborted(signal) {
-	if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
-}
-
 /** A warning in PLAN.md §3.5's shape. */
-function warning(code, severity, message, extra = {}) {
-	return { code, severity, message, ...extra };
+function warning(code, severity, message, data = {}) {
+	return { code, severity, message, data };
+}
+
+function now() {
+	return typeof performance !== 'undefined' && typeof performance.now === 'function'
+		? performance.now()
+		: Date.now();
+}
+
+/** The tree argument the library receives: the trimmed text, or null to look inside the alignment. */
+export function treeArgument(treeText) {
+	const t = typeof treeText === 'string' ? treeText.trim() : '';
+	return t ? t : null;
+}
+
+/**
+ * The shared front half of every analysis: parse (taxon count gate), load through the library,
+ * estimate branch lengths through the caller's hook when the tree has none, and describe what
+ * happened in PLAN.md §3.5's `preprocessing` terms.
+ *
+ * @param {{alignmentText: string, treeText?: string|null, options?: object, progress?: Function,
+ *   signal?: AbortSignal, defaultMaxSpecies?: number}} args
+ * @returns {Promise<{loaded: object, names: string[], rawSeqs: Map<string, string>,
+ *   treeArg: string|null, treeSource: string, branchLengthsEstimated: boolean,
+ *   speciesCap: number|null, warnings: object[], preprocessing: object}>}
+ */
+export async function prepareRun({ alignmentText, treeText, options = {}, progress, signal, defaultMaxSpecies = MAX_SPECIES_DEFAULT }) {
+	const warnings = [];
+	const speciesCap = clampMaxSpecies(options.maxSpecies, defaultMaxSpecies);
+	const pruneDuplicates = options.pruneDuplicates !== false;
+
+	// --- parse ---------------------------------------------------------------------------------
+	report(progress, 'parse', 0, 1, 'Reading alignment...');
+	if (typeof alignmentText !== 'string' || !alignmentText.trim()) {
+		throw new Error('No sequence data available in the alignment');
+	}
+	const rawSeqs = parseAlignmentSequences(alignmentText);
+	const names = Array.from(rawSeqs.keys());
+	if (names.length === 0) throw new Error('No sequences found in the alignment');
+	if (names.length < MIN_SPECIES) {
+		throw new Error(
+			`HyphAeon needs at least ${MIN_SPECIES} sequences; this alignment has ${names.length}.`
+		);
+	}
+	report(progress, 'parse', 1, 1, `Alignment read: ${names.length} sequences`);
+	throwIfAborted(signal);
+
+	// --- prepare -------------------------------------------------------------------------------
+	report(progress, 'prepare', 0, 2, 'Computing tree distances and embedding...');
+	await yieldToLoop();
+	let treeArg = treeArgument(treeText);
+	let treeSource = options.treeSource ?? (treeArg ? 'user' : 'embedded');
+	const load = (tree) => {
+		try {
+			return loadAlignmentAndTree(alignmentText, tree, {
+				maxSpecies: speciesCap,
+				pruneDuplicates,
+				referenceName: options.referenceSequence
+			});
+		} catch (err) {
+			if (/No tree specified|Could not parse phylogenetic tree/.test(err?.message ?? '')) {
+				throw new Error(NO_TREE_MESSAGE, { cause: err });
+			}
+			throw err;
+		}
+	};
+	let loaded = load(treeArg);
+	let branchLengthsEstimated = false;
+	if (loaded.notices.branchLengthsMissing) {
+		if (typeof options.estimateTree === 'function') {
+			// dataset.py:601-611 shells out to HyPhy here; the runtime's hook is that call.
+			report(progress, 'prepare', 1, 2, 'Estimating branch lengths...');
+			const est = await options.estimateTree(alignmentText, treeArg);
+			const estText = typeof est === 'string' ? est : est?.treeText;
+			if (typeof estText !== 'string' || !estText.trim()) {
+				throw new Error('estimateTree returned no tree text');
+			}
+			treeArg = estText.trim();
+			treeSource = (typeof est === 'object' && est?.source) || 'hyphy-hky85';
+			branchLengthsEstimated = true;
+			loaded = load(treeArg);
+			if (loaded.notices.branchLengthsMissing) {
+				warnings.push(
+					warning(
+						'BRANCH_LENGTHS_MISSING',
+						'warn',
+						'The estimated tree still has no usable branch lengths; dataset.py defaults (1e-3 / 1e-4) were applied.'
+					)
+				);
+			}
+		} else if (options.requireBranchLengths) {
+			throw new Error(NO_BRANCH_LENGTHS_MESSAGE);
+		} else {
+			// dataset.py:609-614, the "HyPhy not found" branch: enforce defaults and continue. The
+			// library did that; the run is recorded as having done so.
+			warnings.push(
+				warning(
+					'BRANCH_LENGTHS_MISSING',
+					'warn',
+					'The tree has no branch lengths and no estimator was available; dataset.py defaults ' +
+						'(1e-3 for missing, 1e-4 minimum) were applied, as the reference does without HyPhy.',
+					{ recoverable: true }
+				)
+			);
+		}
+	}
+	throwIfAborted(signal);
+	report(progress, 'prepare', 2, 2, `Distances and embedding ready: ${loaded.N} taxa, ${loaded.L} codons`);
+
+	const n = loaded.notices;
+	const usedSet = new Set(loaded.taxa);
+	const preprocessing = {
+		taxa_in_alignment: names.length,
+		taxa_used: loaded.N,
+		dropped_taxa: names.filter((name) => !usedSet.has(name)),
+		taxa_not_in_tree: n.droppedTaxa.alignment,
+		tips_not_in_alignment: n.droppedTaxa.tree,
+		match_tier: n.matchTier,
+		duplicates_collapsed: n.duplicatesCollapsed,
+		pd_subsampled: n.pdSubsampled,
+		stride_preselected: n.stridePreselected,
+		taxon_cap: speciesCap,
+		reference_sequence: referenceNameFor(loaded, options.referenceSequence),
+		tree_source: treeSource,
+		branch_lengths_missing: n.branchLengthsMissing,
+		branch_lengths_estimated: branchLengthsEstimated,
+		distance_rescaled: n.distanceRescaled,
+		raw_dist_max: n.rawDistMax,
+		codons_trimmed: n.codonsTrimmed,
+		unequal_lengths: n.unequalLengths,
+		unknown_codon_fraction: n.unknownCodonFraction,
+		in_frame_stops: n.inFrameStops
+	};
+	return { loaded, names, rawSeqs, treeArg, treeSource, branchLengthsEstimated, speciesCap, warnings, preprocessing };
+}
+
+/**
+ * The sequence whose codons the app shows as `refCodon`: the caller's choice when it was kept,
+ * else the first matched taxon — dataset.py takes L from that one (dataset.py:658).
+ */
+export function referenceNameFor(loaded, requested) {
+	if (requested && loaded.referenceIndex >= 0) return loaded.taxa[loaded.referenceIndex];
+	return loaded.taxa[0];
+}
+
+/**
+ * PLAN.md §4.3 warnings from the library's `diagnose`, merged with the runtime's own (a code the
+ * runtime already raised is not repeated). Diagnostics never take a run down.
+ */
+export function diagnoseWarnings({ alignmentText, treeArg, loaded, speciesCap, runtimeWarnings, enabled }) {
+	const out = [...runtimeWarnings];
+	if (enabled === false) return out;
+	try {
+		const d = diagnose({
+			alignmentText,
+			treeText: treeArg,
+			parsed: loaded,
+			maxSpecies: speciesCap ?? MAX_SPECIES_CAP
+		});
+		const have = new Set(out.map((w) => w.code));
+		for (const w of d.warnings) if (!have.has(w.code)) out.push(w);
+	} catch (err) {
+		out.push(warning('DIAGNOSTICS_FAILED', 'info', `diagnose() failed: ${err?.message ?? err}`));
+	}
+	return out;
+}
+
+/** Everything in `options` that can be serialised, for the provenance block. */
+export function submittedOptions(options) {
+	const out = {};
+	for (const [k, v] of Object.entries(options ?? {})) {
+		if (typeof v === 'function') continue;
+		out[k] = v === Infinity ? 'none' : v;
+	}
+	return out;
+}
+
+/**
+ * The provenance block of PLAN.md §3.5.
+ *
+ * @param {object} args
+ */
+export function provenanceBlock({ surface, session, head = null, surrogateFor, seed, elapsedSec, options, preprocessing, warnings, inputs, overrides = {} }) {
+	return {
+		schema_version: SCHEMA_VERSION,
+		surface,
+		hyphaeon_js_version: overrides.hyphaeon_js_version ?? session.libraryVersion ?? null,
+		reference_version: overrides.reference_version ?? session.referenceVersion ?? null,
+		model_version: overrides.model_version ?? session.modelVersion ?? null,
+		model_variant: overrides.model_variant ?? session.variant ?? null,
+		artifact_sha256: overrides.artifact_sha256 ?? session.sha256 ?? null,
+		artifact_verified: session.verified ?? (session.sha256 != null),
+		...(head
+			? {
+					busted_head_sha256: overrides.busted_head_sha256 ?? head.sha256 ?? null,
+					busted_head_verified: head.verified ?? (head.sha256 != null)
+				}
+			: {}),
+		is_surrogate: true,
+		surrogate_for: surrogateFor,
+		seed: overrides.seed ?? seed ?? null,
+		elapsed_sec: elapsedSec,
+		options: submittedOptions(options),
+		inputs,
+		preprocessing,
+		warnings
+	};
 }
 
 /**
  * Score every codon site of an alignment with the HyphAeon `meme` surrogate.
  *
  * @param {object} args
- * @param {string} args.alignmentText FASTA or NEXUS, gaps intact
- * @param {string} args.treeText newick WITH branch lengths — required, see the gates above
+ * @param {string} args.alignmentText FASTA / NEXUS / PHYLIP, gaps intact; may carry an embedded tree
+ * @param {string|null} [args.treeText] Newick; null/empty to use a tree embedded in the alignment
  * @param {object} [args.options]
+ * @param {number|null} [args.options.maxSpecies] taxon cap, clamped to [3, 512]; default 256;
+ *   `Infinity` = no cap (the CLI's default)
+ * @param {boolean} [args.options.pruneDuplicates] default true (cli.py `--no-prune-duplicates` off)
+ * @param {string} [args.options.referenceSequence] the sequence whose codons are shown as `refCodon`
+ * @param {number} [args.options.batchSize] sites per graph call (default: the reference's adaptive size)
+ * @param {number} [args.options.batchBudgetBytes] tensor budget per batch (`batchSizeFor`)
+ * @param {boolean} [args.options.attention] also return `mean_root_attns` as `attention` [L, N]
+ * @param {boolean} [args.options.rootRepr] also return `root_repr` [L, 384]
+ * @param {boolean} [args.options.filter] cli.py `--filter`
+ * @param {number} [args.options.filterPThresh] cli.py `--filter-p-thresh`, default 0.01
+ * @param {boolean} [args.options.attribute] cli.py `--attribute`
+ * @param {number} [args.options.attributionMinLrt] cli.py `--attribution-min-lrt`, default 3.84
  * @param {string} [args.options.callMode] one of CALL_MODES; anything else throws
  * @param {object} [args.options.calling] extra buildPredictions gate overrides; `callMode` wins
- * @param {number} [args.options.maxSpecies] taxon cap, clamped to [3, 512]
- * @param {string} [args.options.referenceSequence] the sequence that defines the site count
- * @param {number} [args.options.batchBudgetBytes] tensor budget per batch (batchSizeFor's default)
- * @param {string} [args.options.treeSource] 'user' | 'embedded' | 'hyphy-hky85' | 'nj' | 'tn93',
- *   recorded in provenance; default 'user'
+ * @param {(alignmentText: string, treeText: string|null) => Promise<string|{treeText: string, source?: string}>}
+ *   [args.options.estimateTree] called when the tree has no branch lengths (dataset.py:601-611's HyPhy call)
+ * @param {boolean} [args.options.requireBranchLengths] refuse (NO_BRANCH_LENGTHS_MESSAGE) instead of
+ *   taking the reference's "HyPhy not found" branch when no estimator is given
+ * @param {string} [args.options.treeSource] 'user' | 'embedded' | 'hyphy-hky85' | 'nj' | 'tn93' (recorded)
+ * @param {boolean} [args.options.diagnose] run the library's diagnose() for warnings (default true)
+ * @param {string} [args.options.alignmentName] label written as the document's `alignment`
+ * @param {string} [args.options.treeName] label written as the document's `tree`
+ * @param {number} [args.options.seed] recorded; `meme` draws no random numbers
  * @param {{session: any, ort: any, sha256?: string|null, outputNames?: string[]}} args.session
- *   the handle loadSession() returned (session-web or session-node)
+ *   the backbone handle loadSession() / createSession().backbone returned
  * @param {(phase: string, done: number, total: number, message: string) => void} [args.progress]
  * @param {string} [args.surface] one of SURFACES; default 'browser'
- * @param {AbortSignal} [args.signal] checked between batches
- * @param {object} [args.provenance] overrides / additions for the provenance block:
- *   model_version, model_variant, hyphaeon_js_version, reference_version, seed
- * @returns {Promise<object>} { schema_version, method, is_surrogate, surrogate_for, sites,
- *   attention?, root_repr?, summary, provenance }
+ * @param {AbortSignal} [args.signal] checked between phases and between batches
+ * @param {object} [args.provenance] overrides for the provenance block: model_version,
+ *   model_variant, artifact_sha256, hyphaeon_js_version, reference_version, seed
+ * @returns {Promise<object>} { schema_version, method, is_surrogate, surrogate_for, taxa_count,
+ *   codon_count, runtime_sec, filter_enabled, artifacts_masked, attribution_enabled, attributions,
+ *   sites, arrays, filter?, attention?, root_repr?, summary, provenance }
  */
 export async function runMeme({
 	alignmentText,
-	treeText,
+	treeText = null,
 	options = {},
 	session,
 	progress,
@@ -184,324 +411,220 @@ export async function runMeme({
 	provenance: provenanceOverrides = {}
 } = {}) {
 	const t0 = now();
-	const warnings = [];
-
 	if (!session || !session.session || !session.ort) {
 		throw new Error('runMeme: pass the handle returned by loadSession() as `session`');
 	}
 	if (!SURFACES.includes(surface)) {
 		throw new Error(`runMeme: unknown surface "${surface}" (one of ${SURFACES.join(', ')})`);
 	}
-	const { callMode, maxSpecies, referenceSequence, batchBudgetBytes } = options;
+	const { callMode } = options;
 	if (callMode != null && !CALL_MODES.includes(callMode)) {
 		throw new Error(`Unknown callMode "${callMode}". Valid modes: ${CALL_MODES.join(', ')}.`);
 	}
-	const speciesCap = clampMaxSpecies(maxSpecies);
 
-	// --- parse ---------------------------------------------------------------------------------
-	report(progress, 'parse', 0, 1, 'Reading alignment...');
-	if (typeof alignmentText !== 'string' || !alignmentText.trim()) {
-		throw new Error('No sequence data available in the alignment');
-	}
-	// stripEmbeddedTrees first: a trailing newick line in a FASTA upload would otherwise be appended
-	// to the last sequence and quietly corrupt that taxon's codons.
-	const parsed = parseAlignment(stripEmbeddedTrees(alignmentText));
-	const names = parsed.sequences.map((s) => s.header);
-	const sequences = parsed.sequences.map((s) => s.sequence);
-	if (names.length === 0) throw new Error('No sequences found in the alignment');
-	if (names.length < MIN_SPECIES) {
-		throw new Error(
-			`HyphAeon needs at least ${MIN_SPECIES} sequences; this alignment has ${names.length}.`
-		);
-	}
+	// --- parse + prepare -------------------------------------------------------------------------
+	const prep = await prepareRun({ alignmentText, treeText, options, progress, signal });
+	const { loaded, names, rawSeqs, treeArg, speciesCap, preprocessing } = prep;
+	const runtimeWarnings = prep.warnings;
+	const { L, N } = loaded;
 
-	// --- tree gates ----------------------------------------------------------------------------
-	const tree = typeof treeText === 'string' ? treeText.trim() : '';
-	if (!tree) throw new Error(NO_TREE_MESSAGE);
-	if (!treeHasBranchLengths(tree)) throw new Error(NO_BRANCH_LENGTHS_MESSAGE);
-	const treeReport = inspectBranchLengths(tree);
-	report(progress, 'parse', 1, 1, 'Alignment read');
-	throwIfAborted(signal);
-
-	// --- prepare -------------------------------------------------------------------------------
-	report(progress, 'prepare', 0, 1, 'Computing tree distances and embedding...');
-	await yieldToLoop();
-	const prepared = prepareAlignment({
-		names,
-		sequences,
-		treeText: tree,
-		maxSpecies: speciesCap,
-		referenceName: referenceSequence
+	// --- infer (inference.py:162-192) ----------------------------------------------------------
+	const outputs = ['lrt'];
+	if (options.attention) outputs.push('mean_root_attns');
+	if (options.rootRepr) outputs.push('root_repr');
+	const batchSize = resolveBatchSize(N, options);
+	report(progress, 'infer', 0, L, `Scoring variable sites (${L} codons)...`);
+	const inferred = await inferSites(loaded, session, {
+		outputs,
+		batchSize,
+		signal,
+		onProgress: (done, total) =>
+			report(progress, 'infer', done, total, `Scoring variable site ${done} of ${total}...`)
 	});
-	if (prepared.totalCodons === 0) {
-		throw new Error('The reference sequence is shorter than one codon');
-	}
-	report(progress, 'prepare', 1, 1, 'Distances and embedding ready');
+	const numVariable = inferred.siteIndices.length;
+	report(progress, 'infer', numVariable, numVariable, `Scored ${numVariable} variable sites`);
+	// cli.py:97 — `elapsed` is measured from the load to the end of prediction, before p/q.
+	const runtimeSec = (now() - t0) / 1000;
 	throwIfAborted(signal);
 
-	// --- infer ---------------------------------------------------------------------------------
-	const L = prepared.totalCodons;
-	const N = prepared.speciesCount;
-	const budget =
-		Number.isFinite(batchBudgetBytes) && batchBudgetBytes > 0 ? Math.floor(batchBudgetBytes) : undefined;
-	const batch = budget === undefined ? batchSizeFor(N) : batchSizeFor(N, budget);
-	const outputNames = session.outputNames ?? ['lrt'];
+	// --- stats (cli.py:99-100) -----------------------------------------------------------------
+	report(progress, 'stats', 0, 1, 'MEME mixture p-values and BH q-values...');
+	let lrt = inferred.lrt;
+	let { pvals, qvals } = memeSitePq(lrt);
+	let invariable = loaded.invariable;
+	const rawArrays = { lrt, pvals, qvals, invariable };
+	report(progress, 'stats', 1, 1, 'Statistics ready');
 
-	// Preallocated, and filled with `set` rather than `push(...out)`: batchSizeFor scales as 1/N^2,
-	// so a few-taxon alignment gets batches of 10^5-10^6 sites, and spreading that many elements
-	// into a call blows V8's argument limit ("Maximum call stack size exceeded" at ~90% progress —
-	// DM3 measured the throw at 167,772 elements, exactly the batch size for a 10-taxon alignment).
-	const lrt = new Float32Array(L);
-	// The optional heads are allocated when the first batch shows them. `dropped_heads_policy:
-	// "omit"` — a graph without them yields a result without them, never zero-filled ones.
-	let attention = null;
-	let rootRepr = null;
-
-	report(progress, 'infer', 0, L, `Scoring ${L} sites...`);
-	let fullyValidated = false;
-	for (let start = 0; start < L; start += batch) {
-		const bundle = prepared.batch(start, batch);
-		const b = bundle.msa_codons.dims[0];
-		if (!fullyValidated) {
-			// The contract check is cheap next to inference and catches the whole class of errors that
-			// produce a well-formed tensor meaning something the model never saw. Once: dist_matrix and
-			// mds_coords are per-alignment memcpy'd copies, so later batches cannot differ there.
-			const check = validateInputBundle(bundle, {
-				batch: b,
-				numSpecies: N,
-				windowSize: prepared.windowSize
-			});
-			if (!check.ok) {
-				throw new Error(`HyphAeon input check failed: ${check.errors.slice(0, 3).join('; ')}`);
+	// --- filter (cli.py:111-218) ---------------------------------------------------------------
+	let filterResult = null;
+	let artifactsMasked = [];
+	const predict = predictFromSession(session, { signal });
+	if (options.filter) {
+		report(progress, 'filter', 0, 1, 'Screening for alignment artifacts...');
+		filterResult = await runAlignmentFilter(
+			{ alignmentText, treeText: treeArg, loaded, baseLrts: lrt },
+			predict,
+			{
+				cliVariant: true,
+				pLocalThresh: options.filterPThresh ?? FILTER_P_THRESH_DEFAULT,
+				maxSpecies: speciesCap,
+				pruneDuplicates: options.pruneDuplicates !== false,
+				batchSize,
+				onProgress: (p) =>
+					report(progress, 'filter', p.done, p.total, `Re-scoring cleaned alignment: site ${p.done} of ${p.total}...`)
 			}
-			fullyValidated = true;
+		);
+		artifactsMasked = filterResult.artifacts_masked;
+		if (filterResult.num_artifacts_masked > 0 && filterResult.cleaned) {
+			// cli.py:214-218: the cleaned arrays replace the raw ones.
+			lrt = filterResult.cleaned.lrts;
+			pvals = filterResult.cleaned.pvals;
+			qvals = filterResult.cleaned.qvals;
+			invariable = filterResult.cleaned.loaded.invariable;
 		}
-
-		const out = await runSites(session.session, bundle, session.ort, outputNames);
-		lrt.set(out.lrt.subarray ? out.lrt.subarray(0, b) : Array.from(out.lrt).slice(0, b), start);
-		if (out.mean_root_attns) {
-			const width = out.mean_root_attns.length / b;
-			if (!attention) attention = { data: new Float32Array(L * width), dims: [L, width] };
-			attention.data.set(out.mean_root_attns, start * width);
-		}
-		if (out.root_repr) {
-			const width = out.root_repr.length / b;
-			if (!rootRepr) rootRepr = { data: new Float32Array(L * width), dims: [L, width] };
-			rootRepr.data.set(out.root_repr, start * width);
-		}
-
-		const done = Math.min(start + batch, L);
-		report(progress, 'infer', done, L, `Scoring site ${done} of ${L}...`);
-		// Between batches is the only place this loop yields, so it is the only place a cancel can
-		// take effect.
-		await yieldToLoop();
+		report(progress, 'filter', 1, 1, `${filterResult.num_artifacts_masked} artifact patch(es) masked`);
 		throwIfAborted(signal);
 	}
 
-	// --- postprocess ---------------------------------------------------------------------------
+	// --- attribute (cli.py:257-277) ------------------------------------------------------------
+	let attributions = new Map();
+	if (options.attribute) {
+		report(progress, 'attribute', 0, 1, 'Attributing selection to taxa...');
+		attributions = await attributeSelection(loaded, predict, {
+			minLrt: options.attributionMinLrt ?? ATTRIBUTION_MIN_LRT_DEFAULT,
+			baseLrts: lrt,
+			taxa: loaded.taxa,
+			batchSize,
+			onProgress: (p) =>
+				report(progress, 'attribute', p.done, p.total, `Attributing site ${p.done} of ${p.total}...`)
+		});
+		report(progress, 'attribute', 1, 1, `${attributions.size} site(s) attributed`);
+		throwIfAborted(signal);
+	}
+
+	// --- postprocess -----------------------------------------------------------------------------
 	report(progress, 'postprocess', 0, 1, 'Building per-site results...');
-	// Variability is judged over the SELECTED species, which is what the model saw — not over every
-	// sequence in the file, which may include taxa the tree did not contain. BY INDEX, not
-	// `names.indexOf(name)`: with duplicate FASTA headers indexOf returns the FIRST match while
-	// orderSpecies keeps the LAST, so the flags would come from a different sequence than the one
-	// the model was tokenised from.
-	const selectedSeqs = prepared.selectedIndices.map((i) => sequences[i] ?? '');
-	const variable = siteVariability(selectedSeqs, L);
-	const refSeq = sequences[prepared.referenceIndex] ?? sequences[0];
+	const pythonSites = memeSiteRecords(lrt, pvals, qvals, invariable, attributions);
+	const refName = referenceNameFor(loaded, options.referenceSequence);
+	const refSeq = rawSeqs.get(refName) ?? '';
 	const refCodons = Array.from({ length: L }, (_, i) => refSeq.slice(i * 3, i * 3 + 3));
+	const variable = Array.from(invariable, (v) => !v);
 	// ONE source of truth for the calling mode. An explicit callMode wins over calling.mode; when
 	// callMode is absent, calling.mode survives rather than being stomped by a default.
-	const callConfig = {
-		...(options.calling ?? {}),
-		...(callMode ? { mode: callMode } : {})
-	};
-	const sites = buildPredictions({ lrt }, { refCodons, variable }, callConfig);
+	const callConfig = { ...(options.calling ?? {}), ...(callMode ? { mode: callMode } : {}) };
+	const appSites = buildPredictions({ lrt }, { refCodons, variable }, callConfig);
+	const sites = pythonSites.map((py, i) => ({ ...py, ...appSites[i] }));
 
-	// --- warnings ------------------------------------------------------------------------------
-	// Only surface tree problems worth acting on. inspectBranchLengths reports ANY negative branch,
-	// and NJ routinely emits float noise around -1e-5; warning about those trains users to ignore the
-	// warning box. A meaningfully negative tree still gets through, here and via mostNegativeDistance.
-	const minLength = treeReport.min ?? 0;
-	if (treeReport.negative > 0 && minLength <= NOISY_NEGATIVE) {
-		warnings.push(
-			warning(
-				'TREE_NEGATIVE_LENGTHS',
-				'warn',
-				treeReport.reasons.find((r) => /negative/.test(r)) ?? 'negative branch lengths',
-				{ min: treeReport.min, negative: treeReport.negative }
-			)
-		);
-	}
-	if (treeReport.saturated > 0) {
-		warnings.push(
-			warning(
-				'TREE_SATURATION_SENTINEL',
-				'warn',
-				treeReport.reasons.find((r) => /saturation/.test(r)) ?? 'saturated branch lengths',
-				{ saturated: treeReport.saturated }
-			)
-		);
-	}
-	if (prepared.clampedDistances > 0) {
-		// Reported, not hidden. Clamping matches the model's training pipeline, so it is not an
-		// error — but a tree whose distances are meaningfully negative is a different situation from
-		// one carrying float noise, and only the magnitude distinguishes them.
-		warnings.push(
-			warning(
-				'DISTANCES_CLAMPED',
-				prepared.mostNegativeDistance <= NOISY_NEGATIVE ? 'warn' : 'info',
-				`${prepared.clampedDistances} negative patristic distance(s) clamped to 0 ` +
-					`(most negative ${prepared.mostNegativeDistance})`,
-				{ clamped: prepared.clampedDistances, mostNegative: prepared.mostNegativeDistance }
-			)
-		);
-	}
-	const selectedSet = new Set(prepared.selectedIndices);
-	const droppedTaxa = names.filter((_, i) => !selectedSet.has(i));
-	const pdSubsampled = names.length > speciesCap && N === speciesCap;
-	const notInTree = pdSubsampled ? [] : droppedTaxa;
-	if (notInTree.length) {
-		// veg/HyphAeon#9: taxa missing from the tree must not vanish silently. The diagnostics layer
-		// (PLAN.md §4.3) refuses these before a run; this is the last line if it did not.
-		warnings.push(
-			warning(
-				'TAXA_NOT_IN_TREE',
-				'warn',
-				`${notInTree.length} alignment sequence(s) have no tip in the tree and were not scored: ` +
-					notInTree.slice(0, 10).join(', ') +
-					(notInTree.length > 10 ? ', ...' : ''),
-				{ taxa: notInTree }
-			)
-		);
-	}
-	if (!prepared.matchedFromTree) {
-		warnings.push(
-			warning(
-				'TREE_NAMES_UNMATCHED',
-				'warn',
-				'No tree tip matched an alignment sequence name; species order fell back to alignment order'
-			)
-		);
-	}
-	const trailing = refSeq.length % 3;
-	if (trailing !== 0) {
-		warnings.push(
-			warning(
-				'ALIGNMENT_NOT_MULTIPLE_OF_3',
-				'warn',
-				`Reference sequence length (${refSeq.length}) is not a multiple of 3; ${trailing} trailing nucleotide(s) ignored`
-			)
-		);
-	}
-	const unknownCodonFraction = unknownFraction(prepared.codonTokens);
-	if (unknownCodonFraction > UNKNOWN_CODON_WARN_FRACTION) {
-		warnings.push(
-			warning(
-				'UNKNOWN_CODON_FRACTION',
-				'warn',
-				`${(unknownCodonFraction * 100).toFixed(1)}% of codons contain gaps, ambiguities, or unrecognized bases`,
-				{ fraction: unknownCodonFraction }
-			)
-		);
-	}
-	const stops = findStopCodons(alignmentText);
-	const inFrameStops = stops.scanned
-		? stops.affected.reduce((n, seq) => n + seq.hits.length, 0)
-		: null;
-	if (inFrameStops) {
-		warnings.push(
-			warning(
-				'IN_FRAME_STOPS',
-				'info',
-				`${inFrameStops} in-frame stop codon(s) in ${stops.affected.length} sequence(s), excluding each sequence's terminal codon`,
-				{ count: inFrameStops, sequences: stops.affected.length }
-			)
-		);
+	const p05 = Math.fround(0.05);
+	const p10 = Math.fround(0.1);
+	let sigP05 = 0;
+	let sigP10 = 0;
+	let fdrQ05 = 0;
+	let fdrQ10 = 0;
+	for (let i = 0; i < L; i++) {
+		if (pvals[i] <= p05) sigP05++;
+		if (pvals[i] <= p10) sigP10++;
+		if (qvals[i] <= p05) fdrQ05++;
+		if (qvals[i] <= p10) fdrQ10++;
 	}
 
+	const warnings = diagnoseWarnings({
+		alignmentText,
+		treeArg,
+		loaded,
+		speciesCap,
+		runtimeWarnings,
+		enabled: options.diagnose
+	});
 	report(progress, 'postprocess', 1, 1, 'Done');
 
 	const elapsed = (now() - t0) / 1000;
-	const submittedOptions = {};
-	for (const [k, v] of Object.entries(options)) if (typeof v !== 'function') submittedOptions[k] = v;
-
+	const inputs = {
+		alignment: options.alignmentName ?? null,
+		tree: options.treeName ?? (treeArg === null ? 'embedded_in_alignment' : null)
+	};
 	const result = {
 		schema_version: SCHEMA_VERSION,
 		method: 'meme',
 		// Load-bearing for every consumer: these are PREDICTIONS of what MEME would report, not MEME.
 		is_surrogate: true,
 		surrogate_for: 'MEME',
+		// cli.py:298-311 top-level fields.
+		taxa_count: N,
+		codon_count: L,
+		runtime_sec: runtimeSec,
+		filter_enabled: Boolean(options.filter),
+		artifacts_masked: artifactsMasked,
+		attribution_enabled: Boolean(options.attribute),
+		attributions: attributionsOneIndexed(attributions),
 		sites,
+		/** The typed arrays the writers consume (results.js); `raw` is the pre-filter set. */
+		arrays: {
+			lrt,
+			p_value: pvals,
+			q_value: qvals,
+			invariable,
+			raw: filterResult && filterResult.num_artifacts_masked > 0 ? rawArrays : null
+		},
+		attributionRecords: attributions,
 		summary: {
 			totalSites: L,
-			variableSites: sites.filter((s) => s.isVariable).length,
+			variableSites: variable.filter(Boolean).length,
+			invariableSites: L - variable.filter(Boolean).length,
 			calledSites: sites.filter((s) => s.call !== 'Neutral').length,
 			speciesUsed: N,
 			speciesInAlignment: names.length,
-			referenceSequence: prepared.referenceName,
+			referenceSequence: refName,
 			// Named in the footer: it changes what a "call" means, and the default is not the
 			// reference driver's.
 			callMode: callConfig.mode ?? CALL_DEFAULTS.mode,
-			matchedFromTree: prepared.matchedFromTree,
-			duplicateSelections: prepared.duplicateSelections,
-			clampedDistances: prepared.clampedDistances,
-			mostNegativeDistance: prepared.mostNegativeDistance,
-			treeWarnings: treeReport.ok
-				? []
-				: treeReport.reasons.filter((r) => !/negative/.test(r) || minLength <= NOISY_NEGATIVE)
+			matchTier: loaded.notices.matchTier,
+			duplicatesCollapsed: loaded.notices.duplicatesCollapsed,
+			batchSize,
+			// cli.py:220-223 / 104-107, the printed significance counts (float32 comparisons).
+			sigSitesP05: sigP05,
+			sigSitesP10: sigP10,
+			fdrSitesQ05: fdrQ05,
+			fdrSitesQ10: fdrQ10,
+			filterEnabled: Boolean(options.filter),
+			artifactsMasked: artifactsMasked.length,
+			patchesDetected: filterResult ? filterResult.num_patches_detected : 0,
+			attributionEnabled: Boolean(options.attribute),
+			attributedSites: attributions.size
 		},
-		provenance: {
-			schema_version: SCHEMA_VERSION,
+		provenance: provenanceBlock({
 			surface,
-			hyphaeon_js_version: provenanceOverrides.hyphaeon_js_version ?? null,
-			reference_version: provenanceOverrides.reference_version ?? null,
-			model_version: provenanceOverrides.model_version ?? null,
-			model_variant: provenanceOverrides.model_variant ?? null,
-			artifact_sha256: provenanceOverrides.artifact_sha256 ?? session.sha256 ?? null,
-			artifact_verified: session.verified ?? (session.sha256 != null),
-			is_surrogate: true,
-			surrogate_for: 'MEME',
-			// `meme` draws no random numbers; the seed is recorded for the pillars that do.
-			seed: provenanceOverrides.seed ?? null,
-			elapsed_sec: elapsed,
-			options: submittedOptions,
-			preprocessing: {
-				taxa_in_alignment: names.length,
-				taxa_used: N,
-				dropped_taxa: droppedTaxa,
-				// The library does not collapse identical sequences yet (PLAN.md §5.1, dataset.py gaps).
-				duplicates_collapsed: 0,
-				pd_subsampled: pdSubsampled,
-				taxon_cap: speciesCap,
-				reference_sequence: prepared.referenceName,
-				tree_source: options.treeSource ?? 'user',
-				branch_lengths_estimated: false,
-				distances_clamped: prepared.clampedDistances,
-				// dataset.py:680-681 divides by L when max patristic > 10; not in the library yet.
-				distance_rescaled: false,
-				codons_trimmed: trailing === 0 ? 0 : 1,
-				trailing_nucleotides_trimmed: trailing,
-				unknown_codon_fraction: unknownCodonFraction,
-				in_frame_stops: inFrameStops
-			},
-			warnings
-		}
+			session,
+			surrogateFor: 'MEME',
+			seed: options.seed ?? session.defaultSeed ?? null,
+			elapsedSec: elapsed,
+			options,
+			preprocessing,
+			warnings,
+			inputs,
+			overrides: provenanceOverrides
+		})
 	};
-	if (attention) result.attention = attention;
-	if (rootRepr) result.root_repr = rootRepr;
+	if (filterResult) {
+		result.filter = {
+			num_patches_detected: filterResult.num_patches_detected,
+			num_artifacts_masked: filterResult.num_artifacts_masked,
+			masked_codons_count: filterResult.masked_codons_count,
+			patches: filterResult.patches,
+			artifacts: filterResult.artifacts,
+			artifacts_masked: filterResult.artifacts_masked,
+			masked_codon_ranges_1idx_by_taxon: filterResult.masked_codon_ranges_1idx_by_taxon,
+			raw_metrics: filterResult.raw_metrics,
+			cleaned_metrics: filterResult.cleaned_metrics,
+			suppressed_spurious_sites: filterResult.suppressed_spurious_sites,
+			cleaned_fasta: filterResult.cleaned ? filterResult.cleaned.fastaText : null
+		};
+	}
+	if (inferred.mean_root_attns) result.attention = inferred.mean_root_attns;
+	if (inferred.root_repr) result.root_repr = inferred.root_repr;
+	// The loaded tensors, for a consumer that continues the analysis (busted, later epistasis)
+	// without loading twice. Non-enumerable so a JSON.stringify / structured clone of the result
+	// does not drag L·N tokens and an N×N matrix along.
+	Object.defineProperty(result, 'loaded', { value: loaded, enumerable: false, writable: false });
 	return result;
-}
-
-/** Fraction of codon tokens that are the gap (64) or unknown (65) sentinel. */
-function unknownFraction(codonTokens) {
-	if (!codonTokens || codonTokens.length === 0) return 0;
-	let unknown = 0;
-	for (let i = 0; i < codonTokens.length; i++) if (codonTokens[i] >= 64n) unknown++;
-	return unknown / codonTokens.length;
-}
-
-function now() {
-	return typeof performance !== 'undefined' && typeof performance.now === 'function'
-		? performance.now()
-		: Date.now();
 }

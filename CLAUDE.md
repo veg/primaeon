@@ -15,14 +15,25 @@ record: `PLAN.md` (draft v5).
   tree anyway, and the root lockfile (`package-lock.json`) is the only lockfile; per-workspace
   lockfiles were removed at Phase 0 integration and must not come back.
 - `npm test` — `vitest run` in every workspace with a test script (`npm -ws run test --if-present`).
-- `cd runtime && npx vitest run` — the runtime suite alone; `test/pipeline.test.js` scores
-  `../HyphAeon/examples/bat_oas1` through the real viral graph under onnxruntime-node (~3 s).
-- `npm run build` — `web/` static build (adapter-static), which copies the ORT WASM, the graphs and
-  `manifest.json` into `web/static/` first.
+  The MCP's two bridge tests shell to the Python CLI: export `HYPHAEON_PY_BIN=<venv>/bin/hyphaeon`
+  (plus the weights variables below) or `HYPHAEON_MCP_SKIP_BRIDGE=1`.
+- `cd runtime && npx vitest run` — the runtime suite alone; `test/pipeline.test.js` and
+  `test/parity-fixtures.test.js` score the examples through the real general graph under
+  onnxruntime-node, `test/hyphy*.test.js` run HyPhy WASM under Node and in headless Chromium (~8 s).
+- `npm run build` — `web/` static build (adapter-static). Its `prebuild` copies the ORT WASM, the
+  graphs + `manifest.json` and HyPhy WASM into `web/static/` and then prebakes the gallery
+  (`web/scripts/prebake-gallery.mjs`, stamp-cached; `HYPHAEON_PREBAKE=skip` on a machine without
+  `onnxruntime-node` keeps the committed records).
 - `npm run e2e` — Playwright from `e2e/` (`npm -w e2e run e2e`; the built site under `vite preview`
   on port 4173, so run `npm run build` first). `e2e/` is a workspace so `@playwright/test` is
   installed once at the root; its script is named `e2e`, not `test`, so `npm test` never starts a
-  browser.
+  browser. Do not rebuild `web/build` while the suite runs; the preview serves it live.
+- Parity: `node runtime/scripts/parity-node.mjs --examples all --busted-examples all` writes the
+  `node` surface into `../HyphAeon/parity/node/`, the e2e writes bat_oas1's browser run into
+  `parity/browser/` and `parity/web/`, then `cd ../HyphAeon && python scripts/parity.py --examples
+  all --surfaces python,node,web` compares (`browser` is not a surface name it knows).
+- `node mcp/bin/hyphaeon-mcp.js` — the stdio MCP server; `HYPHAEON_MODELS_DIR` defaults to
+  `web/static/models` of the checkout (so build once), `HYPHAEON_MCP_THREADS` to 1.
 
 Python reference, for parity runs (never at product runtime): a venv with `hyphaeon` installed
 editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_HUB_OFFLINE=1`.
@@ -85,6 +96,32 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
 - **The prescreen reads `meme_gate.json` through Vite's `?raw` import** in the browser (bytes
   untransformed, as DM3 does) and falls back to `fs.readFile` of the same file under plain Node
   (the MCP and the server), so both surfaces parse XGBoost's own bytes.
+- **Dynamic imports of Node modules hold their specifier in a variable** (`manifest.js`,
+  `createSession.js`, `web/src/routes/results/[...id]/+page.ts`). A literal
+  `import(/* @vite-ignore */ './session-node.js')` is still followed by Rollup, and
+  `session-node.js`'s `node:crypto` then breaks every browser bundle that imports the runtime's
+  main entry ("createHash is not exported by __vite-browser-external", measured in Phase 1b).
+- **`web/tsconfig.json` has `checkJs: false`.** With it on, `svelte-check` type-checks the linked
+  JavaScript packages (`@veg/hyphaeon-runtime`, `@veg/hyphaeon-js`) under strict and reports ~20
+  errors in code that runs its own typecheck with `checkJs` off. Phase 0's 0-error check only held
+  because nothing imported the runtime yet.
+- **Release ONNX sessions before the process exits.** `onnxruntime-node` 1.23.2 aborts at exit
+  (`libc++abi: … mutex lock failed: Invalid argument`, SIGABRT) when an `InferenceSession` is still
+  alive on its thread pool, at 1 thread as well as 4 (measured on the MCP stdio server and the
+  parity runner). `session-node.js` `releaseSessions()` releases every memoised session AND drops
+  it from the memo (releasing a handle alone hands the next caller a "Session already disposed"
+  session); `mcp` `engine.close()` calls it and the bin sets `process.exitCode` afterwards instead
+  of `process.exit(0)`.
+- **HyPhy WASM is vendored in `runtime/vendor/hyphy/<version>/`** (DM3's 2.5.98 build, 6.4 MB,
+  hashes in `PROVENANCE.md`) so the repository builds and tests without a DM3 checkout;
+  `copy-assets.mjs` copies it to `web/static/wasm/hyphy/` and `runtime/src/hyphy` reads it under
+  Node. The build is `ENVIRONMENT=web,worker`; the Node loader evaluates the glue with a shimmed
+  `self`/`postMessage` (see `runtime/src/hyphy/index.js`), and in a module worker the glue is
+  loaded by fetch + `new Function`, which needs `'unsafe-eval'` in the CSP (DM3's `_headers` grant it).
+- **The gallery records and inputs under `web/static/gallery/` are tracked** (2.8 MB): they are the
+  prebaked demos and let a machine without `onnxruntime-node` build with `HYPHAEON_PREBAKE=skip`.
+  The prebake is stamp-cached on inputs, graph hash, options, library version and runtime sources,
+  so a no-change build costs ~0.4 s and a runtime change rebakes (~30 s, HIV1_RT's HKY85 fit).
 
 ## Working rules
 
@@ -194,3 +231,41 @@ Carried to Phase 1 (details in `PHASE0.md`): the library tokenizer and the `>10`
 (parity with `hyphaeon meme` is Spearman 0.13 until they land); no p/q columns until the stats
 port; `/analyze` has no run path; no CI workflow in this repository yet; the BUSTED neural head is
 non-deterministic upstream; PLAN.md §3.3 still quotes the pre-export viral hash `de765904…`.
+
+### 2026-09-04 — Phase 1: site selection end to end (browser, gallery, MCP), tree tools, parity
+
+Six builders' output (runtime pipeline, HyPhy tree tools, web `/analyze`, web results page, gallery
+prebake, MCP switch) plus the e2e suite integrated; every check in `PHASE1.md` passes, and the
+parity table there is the one to read. Headlines:
+
+- **`runtime/`** reproduces `cmd_meme` phase for phase over `@veg/hyphaeon-js` phase-1a (`runMeme`
+  with `--filter` / `--attribute`, float32 p/q, `estimateTree` hook), adds `runBusted`,
+  `runEvaluate`, `createSession`, `results.js` (Python-byte-equal writers), `predict.js`, the
+  HyPhy WASM driver (`@veg/hyphaeon-runtime/hyphy`: HKY85, NJ, format conversion; Node and browser
+  workers) and `scripts/parity-node.mjs`. 16 files / 235 tests.
+- **`web/`** runs everything in three module workers (prep: `diagnose()` + prescreen; tree: HyPhy
+  WASM; infer: `runMeme` with the session inside, threads = `hardwareConcurrency` ≤ 16 when
+  `crossOriginIsolated`), persists runs in IndexedDB, and renders `/results/local/?id=` and
+  `/results/gallery/<name>/` (Manhattan canvas with entropy overlays, Observable Plot ranked views,
+  table, phylotree site tree with Fitch substitutions, provenance, downloads, MCP snippet). The
+  five README examples are prebaked at build (`web/scripts/prebake-gallery.mjs`). `svelte-check`
+  0 errors; 8 files / 50 tests; Playwright 19/19.
+- **`mcp/` 0.2.0** runs `hyphaeon_meme`, `hyphaeon_busted` and `hyphaeon_evaluate` in-process
+  (`provenance.surface: mcp-stdio | mcp-http`, `reference_command` to reproduce with the CLI);
+  epistasis, DMS and phenotype stay bridged. `hyphaeon_validate` is the library's `diagnose()`;
+  resources gained `hyphaeon://gallery{,/name}`. 5 files / 63 tests + 1 skipped (the LRT clause).
+- **Parity** (`../HyphAeon/parity/report.json`): Smc6 reproduces `hyphaeon meme` at max |ΔLRT|
+  5.7e-6 with p/q bit-exact on node and browser, and the busted statistics at class; bat_oas1 and
+  RHO differ at ~1e-2 relative (ρ ≥ 0.999) because the library's MDS eigenvector signs differ
+  from LAPACK's on two columns and the model is not sign-invariant — the library's to fix (flipping
+  the columns restores 1.8e-6); camelid and HIV1_RT additionally go through HyPhy WASM 2.5.98 vs
+  the fixtures' native 2.5.65 (informational). The BUSTED neural-head fields are unseeded upstream.
+
+Seam fixes at integration (details in `PHASE1.md`): `./hyphy` export, variable-specifier dynamic
+imports (the vite stub plugin is gone), `releaseSessions()` + MCP shutdown without SIGABRT, the
+results route's `node:fs` warning, `_sample.json` removed, root lockfile regenerated.
+
+Carried to Phase 2: the MDS sign convention (upstream), `parity.py`'s 1e-6 graph tolerance and
+neural-head fields, the NJ / filter / attribute paths and RHO's embedded tree not yet driven in the
+browser e2e, TN93 tree-free mode, `server/`, `deploy/`, CI, npm publish of `@veg/hyphaeon-mcp`
+(it depends on `@veg/hyphaeon-js@1.0.0`, resolved by the workspace link today).

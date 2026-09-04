@@ -19,10 +19,13 @@
  *      by `hyphaeon export-onnx`. Absent until upstream PR 1 lands, so a missing directory is a
  *      warning, never a failure: the Phase 0 site has no run path that needs them.
  *
- *   3. HYPHY WASM  (datamonkey3/static/wasm/hyphy/<version>/ → static/wasm/hyphy/)
+ *   3. HYPHY WASM  (runtime/vendor/hyphy/<version>/ → static/wasm/hyphy/<version>/)
  *      HyPhy compiled to WASM, used for HKY85 branch-length fitting, NJ trees and format
- *      conversion (PLAN.md D5/D6). Taken from the DataMonkey 3 checkout beside this repository
- *      until it is published on its own. Missing checkout: warning.
+ *      conversion (PLAN.md D5/D6). Vendored into runtime/vendor/hyphy/ (DataMonkey 3's build,
+ *      provenance and hashes in runtime/vendor/hyphy/PROVENANCE.md) so the site is built from
+ *      this repository alone; runtime/src/hyphy/index.js loads the same files under Node and
+ *      names the version directory (HYPHY_WASM_VERSION), which is why the layout is preserved.
+ *      The DataMonkey checkout is no longer consulted for it. Missing directory: warning.
  *
  *   4. _headers  (datamonkey3/static/_headers → static/_headers, plus COOP/COEP)
  *      DataMonkey's security headers, with Cross-Origin-Opener-Policy: same-origin and
@@ -32,8 +35,9 @@
  *      https://unpkg.com in script-src/style-src and `connect-src https:`, which this app does not
  *      need. Tightening that is a deliberate change to make later, not a side effect of a copy.
  *
- * Sources are resolved relative to this repository (`../HyphAeon`, `../datamonkey3`) and can be
- * overridden with HYPHAEON_ENGINE_DIR and DATAMONKEY3_DIR. onnxruntime-web is located through
+ * Sources are resolved relative to this repository (`../HyphAeon`, `../datamonkey3`,
+ * `runtime/vendor/hyphy`) and can be overridden with HYPHAEON_ENGINE_DIR, DATAMONKEY3_DIR and
+ * HYPHAEON_HYPHY_WASM_DIR. onnxruntime-web is located through
  * Node's resolver from web/, so it is found whether npm hoisted it to the workspace root or not.
  *
  * Wired as web's `predev` and `prebuild`. Runs in well under a second when nothing has changed.
@@ -58,6 +62,7 @@ const staticDir = join(web, 'static');
 
 const engineDir = process.env.HYPHAEON_ENGINE_DIR ?? resolve(repo, '..', 'HyphAeon');
 const dm3Dir = process.env.DATAMONKEY3_DIR ?? resolve(repo, '..', 'datamonkey3');
+const hyphyWasmDir = process.env.HYPHAEON_HYPHY_WASM_DIR ?? join(repo, 'runtime', 'vendor', 'hyphy');
 
 const log = (tag, msg) => console.log(`[copy-assets] ${tag}: ${msg}`);
 const warn = (tag, msg) => console.warn(`[copy-assets] ${tag}: WARNING ${msg}`);
@@ -175,15 +180,27 @@ function findOrtPackage() {
 // 3. HyPhy WASM ---------------------------------------------------------------------------------
 
 {
-	const hyphySrc = join(dm3Dir, 'static', 'wasm', 'hyphy');
+	const hyphySrc = hyphyWasmDir;
 	if (!existsSync(hyphySrc)) {
 		warn('hyphy', `${hyphySrc} does not exist; HyPhy WASM not copied (tree estimation will not run).`);
 	} else {
-		const { files, bytes } = copyTree(hyphySrc, join(staticDir, 'wasm', 'hyphy'));
+		// Only the <version>/ directories: PROVENANCE.md and anything else at the top level is
+		// documentation for the repository, not an asset to serve.
 		const versions = readdirSync(hyphySrc, { withFileTypes: true })
 			.filter((d) => d.isDirectory())
 			.map((d) => d.name);
-		log('hyphy', `copied ${files} files (${mb(bytes)}) [${versions.join(', ')}] to web/static/wasm/hyphy/`);
+		let files = 0;
+		let bytes = 0;
+		for (const version of versions) {
+			const sub = copyTree(join(hyphySrc, version), join(staticDir, 'wasm', 'hyphy', version));
+			files += sub.files;
+			bytes += sub.bytes;
+		}
+		if (versions.length === 0) {
+			warn('hyphy', `${hyphySrc} has no <version>/ directory; HyPhy WASM not copied.`);
+		} else {
+			log('hyphy', `copied ${files} files (${mb(bytes)}) [${versions.join(', ')}] to web/static/wasm/hyphy/`);
+		}
 	}
 }
 

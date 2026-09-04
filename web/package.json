@@ -7,7 +7,7 @@
 	"scripts": {
 		"predev": "node ../scripts/copy-assets.mjs",
 		"dev": "vite dev",
-		"prebuild": "node ../scripts/copy-assets.mjs",
+		"prebuild": "node ../scripts/copy-assets.mjs && node scripts/prebake-gallery.mjs",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",

@@ -8,12 +8,13 @@
  * out to hivtrace (app/hivtrace/*.sh), with the same tool schema and the same result shape it will
  * have after the port, and marks provenance.surface = "python-reference". Once a pillar is ported
  * its branch here is DELETED — this file is temporary by design (PLAN.md D16) and every result it
- * produces says so in `provenance`.
+ * produces says so in `provenance`. Phase 1b deleted the meme, busted and evaluate branches
+ * (src/engine.js runs them in-process); epistasis, dms and phenotype remain until Phase 2-3.
  *
  * What it does, in order:
  *   1. writes the inline inputs to a fresh temp directory (alignment.fasta, tree.nwk,
- *      phenotype.csv, gene.csv, gene.MEME.json) — the CLI takes file paths only
- *      (hyphaeon/cli.py:1017-1160, veg/HyphAeon@3cb9cc6);
+ *      phenotype.csv) — the CLI takes file paths only (hyphaeon/cli.py:1038-1094,
+ *      veg/HyphAeon phase-1a);
  *   2. maps tool options one-to-one onto CLI flags (ARGS below cites the parser lines);
  *   3. spawns the executable from env HYPHAEON_PY_BIN, else `hyphaeon` on PATH, with no shell,
  *      captures stdout/stderr (bounded), and kills it after JOB_TIMEOUT_MS;
@@ -33,7 +34,7 @@
  * they are printed. HYPHAEON_WEIGHTS / HYPHAEON_VARIANT / HF_HUB_OFFLINE are passed through
  * untouched: the operator decides where weights come from, not this file.
  *
- * Note on variants: only meme, busted and phenotype parsers take --model-variant; epistasis and
+ * Note on variants: of the bridged parsers only phenotype takes --model-variant; epistasis and
  * dms do not (cli.py:1062-1094), so those two tools do not expose model_variant. The env var
  * HYPHAEON_VARIANT does not reach them either (their handlers pass variant=None), so the only way
  * to run them on viral weights is HYPHAEON_WEIGHTS pointing at the viral file. Recorded as an
@@ -156,30 +157,6 @@ export function classifyFailure(stdout, stderr, exitCode) {
  * child environment instead. Anything not listed here is not forwarded.
  */
 const ARGS = {
-  // cli.py:1017-1035
-  meme: [
-    ["use_tn93", "--use-tn93", "flag"],
-    ["no_tree", "--no-tree", "flag"],
-    ["model_variant", "--model-variant", "value"],
-    ["batch_size", "--batch-size", "value"],
-    ["max_species", "--max-species", "value"],
-    ["no_prune_duplicates", "--no-prune-duplicates", "flag"],
-    ["cpu", "--cpu", "flag"],
-    ["filter", "--filter", "flag"],
-    ["filter_p_thresh", "--filter-p-thresh", "value"],
-    ["min_patch_consec", "--min-patch-consec", "value"],
-    ["attribute", "--attribute", "flag"],
-    ["attribution_min_lrt", "--attribution-min-lrt", "value"]
-  ],
-  // cli.py:1097-1112 (single-alignment mode only; --dir/--pattern/--tree-dir are batch-only)
-  busted: [
-    ["use_tn93", "--use-tn93", "flag"],
-    ["no_tree", "--no-tree", "flag"],
-    ["model_variant", "--model-variant", "value"],
-    ["max_species", "--max-species", "value"],
-    ["batch_size", "--batch-size", "value"],
-    ["cpu", "--cpu", "flag"]
-  ],
   // cli.py:1062-1082 (no --model-variant on this parser)
   epistasis: [
     ["use_tn93", "--use-tn93", "flag"],
@@ -221,11 +198,6 @@ const ARGS = {
     ["n_permutations", "--n-permutations", "value"],
     ["max_perm_p", "--max-perm-p", "value"],
     ["cpu", "--cpu", "flag"]
-  ],
-  // evaluation.py:556-608, direct-file mode
-  evaluate: [
-    ["variable_only", "--variable-only", "flag"],
-    ["allow_site_mismatch", "--allow-site-mismatch", "flag"]
   ]
 };
 
@@ -361,12 +333,6 @@ function runCapture(cmd, args, { env, cwd, timeoutMs, signal, onLine }) {
 export function buildArgv(analysis, options, files) {
   if (!ARGS[analysis]) throw new BridgeError("input", "Unknown analysis '" + analysis + "'.");
   const argv = [analysis];
-  if (analysis === "evaluate") {
-    argv.push("--prediction", files.prediction, "--meme-result", files.meme_result);
-    argv.push(...optionArgs(analysis, options));
-    argv.push("-o", files.output, "--format", "json");
-    return argv;
-  }
   argv.push("-a", files.alignment);
   if (files.tree) argv.push("-t", files.tree);
   if (analysis === "phenotype" && files.phenotype_file) argv.push("--phenotype-file", files.phenotype_file);
@@ -379,12 +345,10 @@ export function buildArgv(analysis, options, files) {
  * Run one analysis through the Python CLI.
  *
  * @param {object} req
- * @param {string} req.analysis          meme | busted | epistasis | dms | phenotype | evaluate
+ * @param {string} req.analysis          epistasis | dms | phenotype
  * @param {string} [req.alignment]       alignment text (FASTA/NEXUS/PHYLIP)
  * @param {string} [req.tree]            Newick/NEXUS tree text
  * @param {string} [req.phenotype_file]  CSV/TSV text for phenotype
- * @param {string} [req.prediction]      hyphaeon meme CSV text for evaluate
- * @param {string} [req.meme_result]     HyPhy MEME JSON text for evaluate
  * @param {object} [req.options]         tool options, mapped by ARGS
  * @param {AbortSignal} [req.signal]
  * @param {object} [req.env]             defaults to process.env
@@ -409,31 +373,18 @@ export async function runBridge(req) {
   const t0 = Date.now();
   let argv;
   try {
-    if (analysis === "evaluate") {
-      if (typeof req.prediction !== "string" || typeof req.meme_result !== "string") {
-        throw new BridgeError("input", "evaluate needs both `prediction` (hyphaeon meme CSV) and `meme_result` (HyPhy MEME JSON).");
-      }
-      // evaluate_files() pairs the two by gene name after removing the suffixes, so the two
-      // temp files must share a stem (evaluation.py:227-235 in the tests).
-      const stem = safeStem(options.gene || "gene");
-      files.prediction = path.join(dir, stem + ".csv");
-      files.meme_result = path.join(dir, stem + ".MEME.json");
-      await writeFile(files.prediction, req.prediction, "utf8");
-      await writeFile(files.meme_result, req.meme_result, "utf8");
-    } else {
-      if (typeof req.alignment !== "string" || !req.alignment.trim()) {
-        throw new BridgeError("input", "An alignment is required.");
-      }
-      files.alignment = path.join(dir, "alignment.fasta");
-      await writeFile(files.alignment, req.alignment, "utf8");
-      if (typeof req.tree === "string" && req.tree.trim()) {
-        files.tree = path.join(dir, "tree.nwk");
-        await writeFile(files.tree, req.tree, "utf8");
-      }
-      if (analysis === "phenotype" && typeof req.phenotype_file === "string" && req.phenotype_file.trim()) {
-        files.phenotype_file = path.join(dir, "phenotype.csv");
-        await writeFile(files.phenotype_file, req.phenotype_file, "utf8");
-      }
+    if (typeof req.alignment !== "string" || !req.alignment.trim()) {
+      throw new BridgeError("input", "An alignment is required.");
+    }
+    files.alignment = path.join(dir, "alignment.fasta");
+    await writeFile(files.alignment, req.alignment, "utf8");
+    if (typeof req.tree === "string" && req.tree.trim()) {
+      files.tree = path.join(dir, "tree.nwk");
+      await writeFile(files.tree, req.tree, "utf8");
+    }
+    if (analysis === "phenotype" && typeof req.phenotype_file === "string" && req.phenotype_file.trim()) {
+      files.phenotype_file = path.join(dir, "phenotype.csv");
+      await writeFile(files.phenotype_file, req.phenotype_file, "utf8");
     }
     argv = buildArgv(analysis, options, files);
 
@@ -523,24 +474,19 @@ export async function runBridge(req) {
       bridge: "python-cli",
       reference_version: await referenceVersion(env),
       hyphaeon_mcp_version: PKG.version,
-      model_variant: analysis === "evaluate" ? null : options.model_variant || env.HYPHAEON_VARIANT || "general",
-      weights_source: analysis === "evaluate" ? null : env.HYPHAEON_WEIGHTS ? "local-file" : "huggingface-or-package",
-      is_surrogate: analysis !== "evaluate",
-      surrogate_for: analysis === "evaluate" ? null : "MEME",
+      model_variant: options.model_variant || env.HYPHAEON_VARIANT || "general",
+      weights_source: env.HYPHAEON_WEIGHTS ? "local-file" : "huggingface-or-package",
+      is_surrogate: true,
+      surrogate_for: "MEME",
       elapsed_sec: Math.round(elapsed * 1000) / 1000,
       command,
       options: Object.assign({}, options),
-      note: "Phase 0 bridge to the Python reference; replaced pillar by pillar by @veg/hyphaeon-js."
+      note: "Bridge to the Python reference; replaced pillar by pillar by @veg/hyphaeon-js (meme, busted, evaluate run in-process since Phase 1b)."
     };
     return { result, provenance };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-}
-
-function safeStem(s) {
-  const clean = String(s).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64);
-  return clean || "gene";
 }
 
 function redact(argv, dir) {
@@ -550,7 +496,7 @@ function redact(argv, dir) {
 /** The CLI records the input paths in its JSON (cli.py:296-298, :513); those are temp paths here. */
 function scrubPaths(obj, dir) {
   if (!obj || typeof obj !== "object") return;
-  for (const key of ["alignment", "tree", "phenotype_file", "prediction", "meme_result"]) {
+  for (const key of ["alignment", "tree", "phenotype_file"]) {
     if (typeof obj[key] === "string" && obj[key].startsWith(dir)) obj[key] = path.basename(obj[key]);
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@veg/hyphaeon-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for HyphAeon: site selection, omnibus, epistasis, digital DMS, phenotype association and MEME concordance over stdio or streamable HTTP",
   "type": "module",
   "license": "MIT",
@@ -17,6 +17,7 @@
     ".": "./src/server.js",
     "./http": "./src/http.js",
     "./tools": "./src/tools.js",
+    "./engine": "./src/engine.js",
     "./bridge": "./src/bridge.js",
     "./caps": "./src/caps.js"
   },
@@ -35,6 +36,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@veg/hyphaeon-js": "1.0.0",
+    "@veg/hyphaeon-runtime": "0.0.0",
+    "onnxruntime-node": "1.23.2",
     "zod": "^4.5.4"
   },
   "devDependencies": {

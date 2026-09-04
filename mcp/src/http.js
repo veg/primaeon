@@ -26,12 +26,16 @@
 import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer, createLogger } from "./server.js";
+import { createEngine } from "./engine.js";
 
 /**
  * @param {object} app  an Express-style app with post/get/delete(path, handler)
  * @param {object} [opts]
  * @param {string} [opts.path]               mount path, default "/mcp"
- * @param {object} [opts.serverOptions]      options for createServer (allowFilePaths is forced false)
+ * @param {object} [opts.serverOptions]      options for createServer (allowFilePaths is forced false,
+ *                                           surface is "mcp-http")
+ * @param {object} [opts.engine]             a shared in-process engine; default: one for the mount,
+ *                                           so every session reuses the same loaded ONNX sessions
  * @param {object} [opts.logger]
  * @param {string[]} [opts.allowedHosts]     enables the SDK's DNS-rebinding host check
  * @param {string[]} [opts.allowedOrigins]   enables the SDK's origin check
@@ -41,6 +45,8 @@ import { createServer, createLogger } from "./server.js";
 export function mountHttp(app, opts = {}) {
   const mountPath = opts.path || "/mcp";
   const logger = opts.logger || createLogger(process.env);
+  const ownsEngine = !opts.engine;
+  const engine = opts.engine || createEngine({ env: (opts.serverOptions && opts.serverOptions.env) || process.env, logger });
   const sessions = new Map();
 
   function teardown(sessionId, reason) {
@@ -53,7 +59,7 @@ export function mountHttp(app, opts = {}) {
   }
 
   async function startSession(req, res, stale) {
-    const handle = createServer(Object.assign({ logger }, opts.serverOptions || {}, { allowFilePaths: false }));
+    const handle = createServer(Object.assign({ logger, engine }, opts.serverOptions || {}, { allowFilePaths: false, surface: "mcp-http" }));
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: !!opts.enableJsonResponse,
@@ -120,12 +126,16 @@ export function mountHttp(app, opts = {}) {
 
   return {
     sessions,
+    engine,
     async close() {
       for (const [sid, s] of sessions) {
         sessions.delete(sid);
         await s.transport.close().catch(() => {});
         await s.handle.close().catch(() => {});
       }
+      // The shared engine outlives every session; release its ONNX sessions only when this
+      // mount created it (see engine.close: onnxruntime-node aborts at exit otherwise).
+      if (ownsEngine) await engine.close().catch(() => {});
     }
   };
 }

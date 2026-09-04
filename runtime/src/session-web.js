@@ -45,9 +45,11 @@
  * thread count actually used is returned so the UI and the e2e can assert that threads engaged.
  */
 
+import { BUSTED_HEAD_INPUT_NAMES, BUSTED_HEAD_OUTPUT_NAMES } from '@veg/hyphaeon-js';
+
 import { DEFAULT_INPUT_NAMES, REQUIRED_OUTPUT_NAMES, isSha256Hex, sha256Hex, hashMismatchError } from './manifest.js';
 
-export { runSites, buildFeeds } from './feeds.js';
+export { runSites, buildFeeds, runBustedHead, buildBustedHeadFeeds } from './feeds.js';
 
 /** Where the vendored ORT WASM lives when the caller does not say (DM3's default). */
 export const DEFAULT_ORT_WASM_PATH = '/ort/';
@@ -56,7 +58,7 @@ export const DEFAULT_ORT_WASM_PATH = '/ort/';
  * Option keys a PRODUCTION call may carry. Any other key — `ort`, `fetchImpl`, `verifyHash`, or
  * anything added later — marks the call as a seam and bypasses the memo in both directions.
  */
-const MEMO_KEYS = new Set(['modelUrl', 'expectedSha256', 'ortWasmPath', 'numThreads', 'expectedInputs']);
+const MEMO_KEYS = new Set(['modelUrl', 'expectedSha256', 'ortWasmPath', 'numThreads', 'expectedInputs', 'expectedOutputs', 'kind']);
 
 /** Memoised session promises, keyed by the production options. Empty until the first load. */
 const sessions = new Map();
@@ -80,12 +82,15 @@ export function resolveThreads(requested) {
  * Load the ONNX session, downloading the runtime and the graph on first call.
  *
  * @param {{modelUrl: string, expectedSha256?: string, ortWasmPath?: string, numThreads?: number,
- *   expectedInputs?: readonly string[], verifyHash?: boolean, ort?: any,
- *   fetchImpl?: typeof fetch}} options
+ *   expectedInputs?: readonly string[], expectedOutputs?: readonly string[], kind?: string,
+ *   verifyHash?: boolean, ort?: any, fetchImpl?: typeof fetch}} options
  *   `modelUrl` is required; `expectedSha256` is required unless `verifyHash` is explicitly false.
- *   `ort` and `fetchImpl` exist for tests; production passes neither.
+ *   `expectedInputs` / `expectedOutputs` default to the backbone contract (the four inputs, `lrt`);
+ *   `loadBustedHead` below sets them for the head graph. `kind` ('backbone' | 'busted_head') is
+ *   recorded on the handle. `ort` and `fetchImpl` exist for tests; production passes neither.
  * @returns {Promise<{session: any, ort: any, sha256: string|null, verified: boolean,
- *   bytes: number, numThreads: number, modelUrl: string, outputNames: string[]}>}
+ *   bytes: number, numThreads: number, modelUrl: string, kind: string, inputNames: string[],
+ *   outputNames: string[]}>}
  */
 export function loadSession(options = {}) {
 	const {
@@ -93,7 +98,9 @@ export function loadSession(options = {}) {
 		expectedSha256,
 		ortWasmPath = DEFAULT_ORT_WASM_PATH,
 		numThreads = 1,
-		expectedInputs = DEFAULT_INPUT_NAMES
+		expectedInputs = DEFAULT_INPUT_NAMES,
+		expectedOutputs = REQUIRED_OUTPUT_NAMES,
+		kind = 'backbone'
 	} = options;
 	if (typeof modelUrl !== 'string' || !modelUrl) {
 		throw new Error('loadSession: modelUrl is required');
@@ -145,7 +152,7 @@ export function loadSession(options = {}) {
 		if (missing.length) {
 			throw new Error(`HyphAeon model is missing expected inputs: ${missing.join(', ')}`);
 		}
-		const missingOut = REQUIRED_OUTPUT_NAMES.filter((n) => !session.outputNames?.includes(n));
+		const missingOut = expectedOutputs.filter((n) => !session.outputNames?.includes(n));
 		if (missingOut.length) {
 			throw new Error(`HyphAeon model is missing expected outputs: ${missingOut.join(', ')}`);
 		}
@@ -158,6 +165,8 @@ export function loadSession(options = {}) {
 			bytes: buffer.byteLength,
 			numThreads: threads,
 			modelUrl,
+			kind,
+			inputNames: Array.from(session.inputNames ?? []),
 			outputNames: Array.from(session.outputNames ?? [])
 		};
 	})();
@@ -169,6 +178,24 @@ export function loadSession(options = {}) {
 		});
 	}
 	return promise;
+}
+
+/**
+ * Load `busted_head.onnx` in the browser: `loadSession`'s policy with the head's contract —
+ * inputs `root_repr` [1, L, 384] float32 and `mask` [1, L] bool (all false; feeds.js enforces
+ * it), outputs `cls_prob`, `pred_gene_lrt`, `omega_prop`, `syn_var`, `pred_omega3`, `pred_logp`.
+ * The hash comes from the manifest's `busted_head_onnx_sha256`.
+ *
+ * @param {{modelUrl: string, expectedSha256?: string, ortWasmPath?: string, numThreads?: number,
+ *   verifyHash?: boolean, ort?: any, fetchImpl?: typeof fetch}} options
+ */
+export function loadBustedHead(options = {}) {
+	return loadSession({
+		...options,
+		expectedInputs: BUSTED_HEAD_INPUT_NAMES,
+		expectedOutputs: BUSTED_HEAD_OUTPUT_NAMES,
+		kind: 'busted_head'
+	});
 }
 
 /** Drop every memoised session. Tests use this; production has no reason to. */

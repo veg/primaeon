@@ -37,7 +37,7 @@
  * Source: predict_regression_nexus.py:1386-1466.
  */
 
-import { GENETIC_CODE, isSiteVariable, siteVariability } from '@veg/hyphaeon-js';
+import { CODON_TO_AA, isSiteVariable, siteVariability } from '@veg/hyphaeon-js';
 import { CALL_DEFAULTS } from './callModes.js';
 
 /**
@@ -91,13 +91,14 @@ export function buildPredictions(outputs, sites, callOptions = {}) {
 		const isVar = Boolean(sites.variable[i]);
 		const refCodon = (sites.refCodons[i] ?? '').toUpperCase();
 		// translate_codon() rejects gaps, N and '?' before the table lookup, so a gapped reference
-		// codon has no amino acid rather than an accidental one.
+		// codon has no amino acid rather than an accidental one. CODON_TO_AA is dataset.py's codon
+		// -> amino-acid table (the library's GENETIC_CODE is codon -> TOKEN, unlike DM3's).
 		const refAa =
 			refCodon.length === 3 &&
 			!refCodon.includes('-') &&
 			!refCodon.includes('N') &&
 			!refCodon.includes('?')
-				? (GENETIC_CODE.get(refCodon) ?? '?')
+				? (CODON_TO_AA.get(refCodon) ?? '?')
 				: '?';
 
 		if (!isVar) {

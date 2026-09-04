@@ -62,6 +62,13 @@ function crossOriginIsolation(): Plugin {
 
 export default defineConfig({
 	plugins: [crossOriginIsolation(), sveltekit()],
+	// The analysis workers (src/lib/workers/*.worker.ts) are module workers whose imports contain
+	// dynamic `import()`s — the runtime's `import('onnxruntime-web/wasm')` inside loadSession(),
+	// the prescreen's `?raw` model read — so Rollup must code-split the worker bundle, which the
+	// default 'iife' worker format refuses ("UMD and IIFE output formats are not supported for
+	// code-splitting builds"). 'es' emits the worker as an ES module with chunks under
+	// _app/immutable/workers/, which `new Worker(url, { type: 'module' })` loads.
+	worker: { format: 'es' },
 	test: {
 		include: ['src/**/*.{test,spec}.ts'],
 		environment: 'node'

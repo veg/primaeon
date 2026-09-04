@@ -1,5 +1,5 @@
 /**
- * server.js — builds one HyphAeon McpServer with its tools, prompts, resources and job store.
+ * server.js — builds one HyphAeon McpServer with its tools, prompts, resources, engine and job store.
  *
  * WHY THIS FILE EXISTS
  *
@@ -8,9 +8,12 @@
  * datamonkey-js-server builds it twice, in stdio.js and in index.js createMcpServer(); here it is
  * built once so the two transports cannot drift.
  *
- * `allowFilePaths` is the one behavioural switch between the transports: over stdio the server
- * runs on the caller's own machine and may read `file://` inputs (PLAN.md 3.6, "Accepts file://
- * paths as well as inline text"); over HTTP it must not.
+ * Two things differ between the transports and are passed in: `allowFilePaths` (over stdio the
+ * server runs on the caller's own machine and may read `file://` inputs, PLAN.md 3.6; over HTTP
+ * it must not) and `surface`, the name native results claim in `provenance.surface`
+ * ("mcp-stdio" | "mcp-http", PLAN.md 3.5). The in-process engine (src/engine.js) is created once
+ * per process and shared by every HTTP session through `opts.engine`, so the memoised ONNX
+ * sessions are loaded once, not once per client.
  *
  * Job-completion notifications are sent as MCP logging messages, best-effort, the way
  * datamonkey-js-server lib/mcp/job-notifier.js describes: the standalone SSE stream may not be
@@ -25,6 +28,7 @@ import { createJobStore } from "./jobs.js";
 import { registerTools } from "./tools.js";
 import { registerPrompts } from "./prompts.js";
 import { registerResources } from "./resources.js";
+import { createEngine } from "./engine.js";
 
 const PKG = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -57,23 +61,32 @@ export const INSTRUCTIONS =
   "epistatic sectors, digital deep mutational scanning, and phenotype association. Run " +
   "hyphaeon_validate before any analysis. Results are rankings evaluated against MEME, not " +
   "truth: rank is strong, scale is compressed, calibration depends on tree regime. Every " +
-  "result carries a provenance block; while provenance.surface is \"python-reference\" the " +
-  "numbers come from the Python reference through a bridge. Sequences submitted to a remote " +
-  "server are unpublished research: say so before sending them.";
+  "result carries a provenance block: surface \"mcp-stdio\" / \"mcp-http\" means the numbers were " +
+  "computed in this process by the JavaScript port (hyphaeon_meme, hyphaeon_busted, " +
+  "hyphaeon_evaluate); surface \"python-reference\" means the Python reference ran through a " +
+  "bridge (hyphaeon_epistasis, hyphaeon_dms, hyphaeon_phenotype). Sequences submitted to a " +
+  "remote server are unpublished research: say so before sending them.";
 
 /**
  * @param {object} [opts]
  * @param {boolean} [opts.allowFilePaths]   accept file:// inputs (stdio only)
+ * @param {"mcp-stdio"|"mcp-http"} [opts.surface]  default "mcp-stdio"
  * @param {object} [opts.env]               defaults to process.env
  * @param {object} [opts.logger]            defaults to createLogger(env)
+ * @param {object} [opts.engine]            a shared createEngine() (HTTP sessions); default: a new one
  * @param {Function} [opts.bridge]          override the Python bridge (tests)
  * @param {object} [opts.jobStore]          override the job store options
  * @param {string} [opts.name]
- * @returns {{server: McpServer, jobs: object, logger: object, close: () => Promise<void>}}
+ * @returns {{server: McpServer, jobs: object, logger: object, engine: object, close: () => Promise<void>}}
  */
 export function createServer(opts = {}) {
   const env = opts.env || process.env;
   const logger = opts.logger || createLogger(env);
+  const surface = opts.surface || "mcp-stdio";
+  // An engine passed in is shared (HTTP sessions) and outlives this server; one created here is
+  // ours to release on close (its ONNX sessions must be released before the process exits).
+  const ownsEngine = !opts.engine;
+  const engine = opts.engine || createEngine({ env, logger });
   const server = new McpServer(
     { name: opts.name || "hyphaeon", version: PKG.version, websiteUrl: "https://github.com/veg/HyphAeon" },
     { capabilities: { tools: {}, prompts: {}, resources: {}, logging: {} }, instructions: INSTRUCTIONS }
@@ -103,6 +116,8 @@ export function createServer(opts = {}) {
     jobs,
     env,
     logger,
+    surface,
+    engine,
     allowFilePaths: !!opts.allowFilePaths,
     bridge: opts.bridge
   });
@@ -113,9 +128,11 @@ export function createServer(opts = {}) {
     server,
     jobs,
     logger,
+    engine,
     async close() {
       jobs.close();
       await server.close().catch(() => {});
+      if (ownsEngine) await engine.close().catch(() => {});
     }
   };
 }

@@ -151,3 +151,33 @@ describe('runSites (node)', () => {
 		expect(out.lrt).toHaveLength(B);
 	});
 });
+
+// releaseSessions needs a MEMOISED session, and every seam above bypasses the memo, so this one
+// loads the real general graph from the engine checkout (as pipeline.test.js does) and skips
+// when it is absent. What it pins: the release goes through the memo (isSessionLoaded flips),
+// the ORT session is really disposed (a second release rejects with ORT's own message), and a second call is a no-op.
+describe('releaseSessions (node, real onnxruntime-node)', () => {
+	it('releases every memoised session and forgets it, so the process can exit', async (ctxt) => {
+		const { existsSync } = await import('node:fs');
+		const { join, dirname } = await import('node:path');
+		const { fileURLToPath } = await import('node:url');
+		const { loadManifest, pickVariant } = await import('../src/manifest.js');
+		const { releaseSessions } = await import('../src/session-node.js');
+		const engine = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'HyphAeon');
+		const modelPath = join(engine, 'models', 'general.onnx');
+		const manifestPath = join(engine, 'models', 'manifest.json');
+		if (!existsSync(modelPath) || !existsSync(manifestPath)) {
+			ctxt.skip(`engine models not found under ${engine}`);
+			return;
+		}
+		resetSession();
+		const manifest = await loadManifest(manifestPath);
+		const variant = pickVariant(manifest, 'general');
+		const handle = await loadSession({ modelPath, expectedSha256: variant.onnxSha256, threads: 1 });
+		expect(isSessionLoaded()).toBe(true);
+		expect(await releaseSessions()).toBe(1);
+		expect(isSessionLoaded()).toBe(false);
+		await expect(handle.session.release()).rejects.toThrow(/disposed/i);
+		expect(await releaseSessions()).toBe(0);
+	});
+});

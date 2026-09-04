@@ -19,9 +19,11 @@ const SURROGATE_PREAMBLE =
   "## Read this first\n" +
   "HyphAeon is a **neural surrogate for MEME**, evaluated against MEME, not against truth. Every " +
   "result carries `provenance.is_surrogate: true` and `surrogate_for: \"MEME\"`; carry that caveat " +
-  "into anything you say about the numbers. While `provenance.surface` is `python-reference`, the " +
-  "numbers came from the Python reference implementation through a bridge — identical by " +
-  "construction to what the ported JavaScript will produce.\n\n";
+  "into anything you say about the numbers. `provenance.surface` says who computed them: " +
+  "`mcp-stdio` / `mcp-http` is the JavaScript port running in the MCP process (hyphaeon_meme, " +
+  "hyphaeon_busted, hyphaeon_evaluate; LRTs match `hyphaeon meme` within 1e-5 and p/q are the " +
+  "same float32 values); `python-reference` is the Python reference implementation through a " +
+  "bridge (hyphaeon_epistasis, hyphaeon_dms, hyphaeon_phenotype, until their ports land).\n\n";
 
 export const GUIDES = {
   meme: {

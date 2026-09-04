@@ -1,21 +1,27 @@
 /**
- * resources.js — the four HyphAeon MCP resources.
+ * resources.js — the HyphAeon MCP resources.
  *
  * WHY THIS FILE EXISTS
  *
  * PLAN.md 3.6: hyphaeon://models, hyphaeon://methods/requirements, hyphaeon://caveats,
- * hyphaeon://examples/{name}. Modelled on datamonkey-js-server lib/mcp/resources.js (static
- * resources plus one ResourceTemplate), in ESM.
+ * hyphaeon://examples/{name}; Phase 1b adds hyphaeon://gallery and hyphaeon://gallery/{name}.
+ * Modelled on datamonkey-js-server lib/mcp/resources.js (static resources plus ResourceTemplates),
+ * in ESM.
  *
- *   models        the same view list_models returns (src/models.js);
+ *   models        the manifest as the runtime's reader validates it (src/models.js over
+ *                 runtime/src/manifest.js `loadManifest`), with per-variant graph paths;
  *   requirements  per-pillar requirements: tree rules, options with the CLI defaults from
- *                 hyphaeon/cli.py (veg/HyphAeon@3cb9cc6), the caps from src/caps.js, and the
- *                 warning codes hyphaeon_validate can emit — so a client can plan a call without
- *                 trial and error;
+ *                 hyphaeon/cli.py (veg/HyphAeon phase-1a), the caps from src/caps.js, the warning
+ *                 codes hyphaeon_validate can emit, and which pillars run in-process — so a client
+ *                 can plan a call without trial and error;
  *   caveats       mcp/caveats.json: the model card facts of PLAN.md 2 and the numbers of
  *                 HyphAeon/model_eval/README.md, keyed by model_version;
  *   examples      the bundled example files from HyphAeon/examples (env HYPHAEON_EXAMPLES_DIR),
- *                 listed through the template's list callback and served by bare file name.
+ *                 listed through the template's list callback and served by bare file name;
+ *   gallery       the prebaked site-selection records web/scripts/prebake-gallery.mjs writes under
+ *                 web/static/gallery (env HYPHAEON_GALLERY_DIR): the index, and one record per
+ *                 example by id (`bat_oas1`, `Smc6`, ...) — the same documents the /gallery page
+ *                 opens, so a client can read a result without running anything.
  */
 
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -34,20 +40,23 @@ import {
   MIN_TAXA,
   TAXON_CAP
 } from "./caps.js";
-import { CODES } from "./validate.js";
-import { listExamples, readExample, readManifest } from "./models.js";
+import { CODES, NATIVE_ANALYSES, BRIDGED_ANALYSES } from "./validate.js";
+import { listExamples, listGalleryRecords, readExample, readGalleryIndex, readGalleryRecord, readManifest } from "./models.js";
 
 const CAVEATS_URL = new URL("../caveats.json", import.meta.url);
 
 const TREE_RULE =
-  "Optional: a Newick/NEXUS tree in `tree`, or a tree embedded in the alignment, or use_tn93 " +
-  "(TN93 distances from the sequences). Tips must match sequence names exactly. Topology-only " +
-  "trees get HKY85 branch lengths from HyPhy when it is on PATH; max patristic > 10 is rescaled.";
+  "Optional: a Newick/NEXUS tree in `tree`, or a tree embedded in the alignment. Tips must match " +
+  "sequence names (exact, then quote-stripped, then case-insensitive). Topology-only trees get " +
+  "HKY85 branch lengths from HyPhy when the server has an estimator (list_models reports it), else " +
+  "dataset.py's 1e-3 defaults; max patristic > 10 is rescaled. use_tn93 (TN93 distances instead of " +
+  "a tree) is accepted by the bridged pillars only.";
 
 export const METHOD_REQUIREMENTS = {
   meme: {
     name: "Site selection (MEME surrogate)",
     tool: "hyphaeon_meme",
+    engine: "in-process",
     cli: "hyphaeon meme (aliases predict, site-selection)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
@@ -56,39 +65,44 @@ export const METHOD_REQUIREMENTS = {
     options: {
       model_variant: { cli: "--model-variant", default: "general", values: ["general", "viral"] },
       max_species: { cli: "--max-species", default: null, range: [2, TAXON_CAP] },
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process (no TN93 implementation)" },
       filter: { cli: "--filter", default: false },
       filter_p_thresh: { cli: "--filter-p-thresh", default: 0.01 },
-      min_patch_consec: { cli: "--min-patch-consec", default: 3 },
+      min_patch_consec: { cli: "--min-patch-consec", default: 3, note: "recorded; only the default is applied in-process" },
       attribute: { cli: "--attribute", default: false },
       attribution_min_lrt: { cli: "--attribution-min-lrt", default: 3.84 },
       no_prune_duplicates: { cli: "--no-prune-duplicates", default: false },
       batch_size: { cli: "--batch-size", default: "adaptive" },
-      cpu: { cli: "--cpu", default: false }
+      cpu: { cli: "--cpu", default: false, note: "always CPU in-process" }
     },
-    result_keys: ["taxa_count", "codon_count", "runtime_sec", "filter_enabled", "artifacts_masked", "attribution_enabled", "attributions", "sites[]"],
-    site_keys: ["site", "hyphaeon_lrt", "p_value", "q_value", "is_invariable", "evolutionary_epoch?", "adaptation_mode?", "top_driver?", "top_mutation?", "attribution_details?"]
+    result_keys: ["alignment", "tree", "taxa_count", "codon_count", "runtime_sec", "filter_enabled", "artifacts_masked", "attribution_enabled", "attributions", "sites[]", "summary"],
+    site_keys: ["site", "hyphaeon_lrt", "p_value", "q_value", "is_invariable", "evolutionary_epoch?", "adaptation_mode?", "top_driver?", "top_mutation?", "attribution_details?", "refCodon", "refAa", "isVariable", "logLrt", "zScore", "percentile", "call"]
   },
   busted: {
     name: "Gene-level omnibus (BUSTED surrogate)",
     tool: "hyphaeon_busted",
+    engine: "in-process",
     cli: "hyphaeon busted (aliases omnibus, gene-selection)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
-    model_outputs: ["lrt", "root_repr -> head_busted"],
+    model_outputs: ["lrt", "root_repr -> busted_head.onnx"],
     surrogate_for: "BUSTED",
     options: {
-      model_variant: { cli: "--model-variant", default: "general", values: ["general", "viral"] },
+      model_variant: { cli: "--model-variant", default: "general", values: ["general", "viral"], note: "the busted head ships for general only; viral gives the statistical fields with null neural fields" },
       max_species: { cli: "--max-species", default: 512, range: [2, TAXON_CAP] },
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
       batch_size: { cli: "--batch-size", default: "adaptive" },
+      gene: { default: "the alignment file's stem" },
       cpu: { cli: "--cpu", default: false }
     },
-    result_keys: ["gene", "taxa", "sites", "p_value_acat", "p_value_simes", "omnibus_lrt", "predicted_gene_lrt", "selection_probability", "synonymous_rate_variation", "total_selection_energy", "sig_sites_p05", "sig_sites_p10", "rate_distributions{omega_k, proportion_k}", "positive_selection_detected", "elapsed_seconds"]
+    result_keys: ["alignment", "gene", "taxa", "sites", "p_value_acat", "p_value_simes", "omnibus_lrt", "predicted_gene_lrt", "selection_probability", "synonymous_rate_variation", "total_selection_energy", "sig_sites_p05", "sig_sites_p10", "rate_distributions{omega_k, proportion_k}", "positive_selection_detected", "elapsed_seconds", "sites_detail[]", "statistics", "summary"],
+    reproducible_fields: ["p_value_acat", "p_value_simes", "omnibus_lrt", "total_selection_energy", "sig_sites_p05", "sig_sites_p10"],
+    neural_fields_note: "predicted_gene_lrt, selection_probability, synonymous_rate_variation, omega_3 and proportion_* come from one seeded draw of a head the reference loads unseeded (provenance.neural_head.deterministic_upstream false)."
   },
   epistasis: {
     name: "Co-selection network and epistatic sectors",
     tool: "hyphaeon_epistasis",
+    engine: "python-reference",
     cli: "hyphaeon epistasis (aliases coselection, sector, network)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
@@ -117,6 +131,7 @@ export const METHOD_REQUIREMENTS = {
   dms: {
     name: "Digital deep mutational scan",
     tool: "hyphaeon_dms",
+    engine: "python-reference",
     cli: "hyphaeon dms (aliases essm, digital-dms)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
@@ -134,6 +149,7 @@ export const METHOD_REQUIREMENTS = {
   phenotype: {
     name: "Phenotype association (PhyloWAS)",
     tool: "hyphaeon_phenotype",
+    engine: "python-reference",
     cli: "hyphaeon phenotype (aliases phylowas, trait)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
@@ -163,6 +179,7 @@ export const METHOD_REQUIREMENTS = {
   evaluate: {
     name: "Concordance with HyPhy MEME",
     tool: "hyphaeon_evaluate",
+    engine: "in-process",
     cli: "hyphaeon evaluate --prediction --meme-result",
     requires_codon_alignment: false,
     tree: "none",
@@ -173,7 +190,7 @@ export const METHOD_REQUIREMENTS = {
       variable_only: { cli: "--variable-only", default: false },
       allow_site_mismatch: { cli: "--allow-site-mismatch", default: false }
     },
-    result_keys: ["matched_genes", "total_sites", "evaluated_sites", "evaluation_scope", "pearson_r", "spearman_rho", "thresholds{\"0.05\",\"0.10\" -> roc_auc, ppv, fpr, confusion}", "per_gene[]", "warnings[]"]
+    result_keys: ["input_mode", "prediction_file", "meme_result_file", "matched_genes", "genes", "total_sites", "evaluated_sites", "variable_sites", "invariable_sites", "evaluation_scope", "pearson_r", "spearman_rho", "thresholds{\"0.05\",\"0.10\" -> roc_auc, ppv, fpr, confusion}", "per_gene[]", "warnings[]"]
   }
 };
 
@@ -204,7 +221,7 @@ export function registerResources(server, deps = {}) {
     "hyphaeon://models",
     {
       title: "HyphAeon model manifest",
-      description: "Model variants, training regime, artifact hashes and caps from models/manifest.json (or the reference's known variants when the manifest is absent).",
+      description: "Model variants, training regime, artifact hashes, graph paths and caps from models/manifest.json as the runtime validates it (or the reference's known variants when the manifest is absent).",
       mimeType: "application/json"
     },
     async (uri) => ({
@@ -217,7 +234,7 @@ export function registerResources(server, deps = {}) {
     "hyphaeon://methods/requirements",
     {
       title: "HyphAeon method requirements",
-      description: "Per-pillar inputs, options with CLI defaults, result keys, size caps, and the warning codes hyphaeon_validate emits.",
+      description: "Per-pillar inputs, options with CLI defaults, result keys, size caps, which pillars run in-process, and the warning codes hyphaeon_validate emits.",
       mimeType: "application/json"
     },
     async (uri) => ({
@@ -231,8 +248,8 @@ export function registerResources(server, deps = {}) {
               caps: CAPS,
               validation_codes: CODES,
               provenance: {
-                surface_now: "python-reference",
-                note: "Phase 0: every analysis runs through the Python CLI bridge; provenance.surface says so. Ported pillars will report mcp-stdio / mcp-http."
+                native: { surfaces: ["mcp-stdio", "mcp-http"], analyses: [...NATIVE_ANALYSES], note: "Computed in the MCP process by @veg/hyphaeon-js through @veg/hyphaeon-runtime over onnxruntime-node." },
+                bridged: { surface: "python-reference", analyses: [...BRIDGED_ANALYSES], note: "Run through the Python reference CLI until the port lands (PLAN.md 8, phases 2-3)." }
               }
             },
             null,
@@ -289,6 +306,79 @@ export function registerResources(server, deps = {}) {
       try {
         const ex = await readExample(name, env);
         return { contents: [{ uri: uri.href, mimeType: mimeFor(ex.name), text: ex.text }] };
+      } catch (err) {
+        return { contents: [{ uri: uri.href, mimeType: "text/plain", text: "Error: " + err.message }] };
+      }
+    }
+  );
+
+  server.registerResource(
+    "gallery-index",
+    "hyphaeon://gallery",
+    {
+      title: "Prebaked gallery index",
+      description: "The gallery index (web/static/gallery/index.json): one prebaked site-selection run per bundled example, with the card numbers and which entries have a record.",
+      mimeType: "application/json"
+    },
+    async (uri) => {
+      try {
+        const found = await readGalleryIndex(env);
+        if (!found) {
+          return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify({ available: false, note: "No gallery found; web/scripts/prebake-gallery.mjs writes it at build (set HYPHAEON_GALLERY_DIR to point at one)." }, null, 2) }] };
+        }
+        const { entries } = await listGalleryRecords(env);
+        const index = Object.assign({}, found.index, {
+          records: entries.map((e) => ({ id: e.id, name: e.name, status: e.status, uri: e.result ? "hyphaeon://gallery/" + e.id : null, bytes: e.bytes }))
+        });
+        return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(index, null, 2) }] };
+      } catch (err) {
+        return { contents: [{ uri: uri.href, mimeType: "text/plain", text: "Error: " + err.message }] };
+      }
+    }
+  );
+
+  server.registerResource(
+    "gallery",
+    new ResourceTemplate("hyphaeon://gallery/{name}", {
+      list: async () => {
+        let entries = [];
+        try {
+          entries = (await listGalleryRecords(env)).entries;
+        } catch {
+          entries = [];
+        }
+        return {
+          resources: entries
+            .filter((e) => e.servable)
+            .map((e) => ({
+              uri: "hyphaeon://gallery/" + e.id,
+              name: e.name,
+              description: "prebaked site-selection record for " + e.id + ", " + e.bytes + " bytes",
+              mimeType: "application/json"
+            }))
+        };
+      },
+      complete: {
+        name: async (value) => {
+          try {
+            const { entries } = await listGalleryRecords(env);
+            return entries.filter((e) => e.servable && e.id.startsWith(value || "")).map((e) => e.id);
+          } catch {
+            return [];
+          }
+        }
+      }
+    }),
+    {
+      title: "Prebaked gallery records",
+      description: "The prebaked site-selection result document for a bundled example, by gallery id (e.g. bat_oas1, Smc6); the same document the /gallery page opens.",
+      mimeType: "application/json"
+    },
+    async (uri, variables) => {
+      const name = Array.isArray(variables.name) ? variables.name[0] : variables.name;
+      try {
+        const rec = await readGalleryRecord(name, env);
+        return { contents: [{ uri: uri.href, mimeType: "application/json", text: rec.text }] };
       } catch (err) {
         return { contents: [{ uri: uri.href, mimeType: "text/plain", text: "Error: " + err.message }] };
       }

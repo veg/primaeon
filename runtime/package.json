@@ -9,12 +9,14 @@
     ".": "./src/index.js",
     "./web": "./src/session-web.js",
     "./node": "./src/session-node.js",
+    "./hyphy": "./src/hyphy/index.js",
     "./prescreen": "./src/prescreen/hitLikelihood.js",
     "./prescreen/scope": "./src/prescreen/scope.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "src"
+    "src",
+    "vendor"
   ],
   "scripts": {
     "test": "vitest run"
