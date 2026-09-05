@@ -22,7 +22,7 @@
 	panel says so as soon as one is typed and shows the names the pattern actually matched.
 
 	PERMULATIONS NEED A TREE WITH BRANCH LENGTHS, and a tree-free report has none — the tree beside
-	it is a neighbour-joining display tree on the same TN93 distances, and a Brownian-motion null
+	it is a display-only tree (the uploaded topology with unit lengths, or NJ on the TN93 distances), and a Brownian-motion null
 	drawn from that would test the distances against themselves. The control is disabled with that
 	sentence rather than hidden, so the absence is legible.
 
@@ -271,6 +271,11 @@
 				{/if}
 			{:else if kind === 'tree'}
 				{#if tree.newick}
+					{#if tree.source === 'user-topology'}
+						<p class="hint tree-caption">
+							<strong>This is your uploaded topology, drawn for display only</strong> — {tree.label.replace(/^Display only — /, '')}
+						</p>
+					{/if}
 					<TreePicker newick={tree.newick} {taxa} selected={picked} treeSource={tree.source} onChange={(names) => (picked = names)} />
 				{:else}
 					<p class="hint">This report carries no tree to pick on.</p>

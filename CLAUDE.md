@@ -135,9 +135,11 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   of `process.exit(0)`.
 - **There is no tree tool and no HyPhy (D22, Phase 3).** A tree with usable branch lengths is used
   as given; no tree, or a tree without them, takes the library's tree-free path — pairwise TN93
-  distances straight into the MDS, the reference's own `--use-tn93` — and `runtime/src/nj.js`
-  builds a neighbour-joining tree on those same distances for DISPLAY ONLY (site trees, foreground
-  picking); the model never sees a topology in that case. `runtime/src/hyphy/`,
+  distances straight into the MDS, the reference's own `--use-tn93` — and the report gets a tree
+  for DISPLAY ONLY (site trees, foreground picking): since Phase 4 (D6) the reader's own topology
+  with unit branch lengths when the upload carried one (`display_tree_source: 'user-topology'`,
+  labelled `USER_TOPOLOGY_LABEL`), otherwise `runtime/src/nj.js`'s neighbour-joining tree on the
+  same distances (`'nj'`); the model never sees a topology in either case. `runtime/src/hyphy/`,
   `runtime/vendor/hyphy/` (a 6.4 MB tracked WebAssembly build), the `./hyphy` export and
   `web/static/wasm/` are deleted, `runtime/test/no-hyphy.test.js` and `e2e/smoke.spec.ts` keep them
   deleted, and the bare `'unsafe-eval'` its glue needed in a module worker is out of both
@@ -159,6 +161,56 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   ported from (file + commit), and the measurement behind any non-obvious constant.
 - Reference checkouts, read-only: `../datamonkey3` (`main@fac1330`), `../datamonkey-js-server`
   (`main@1e84d6f`), `../axomeme3`, `../datamonkey-metrics`.
+
+## CI
+
+`.github/workflows/ci.yml`, on every push to `main` and every pull request (one run per ref at a
+time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
+
+- **Both repositories are checked out, as siblings.** `runtime/package.json` links the library by
+  `file:../../HyphAeon/js`, the runtime tests resolve `../../../HyphAeon` from `runtime/test/`,
+  the web build copies `../HyphAeon/models/` and the e2e reads `../HyphAeon/fixtures/e2e/`, so
+  the workflow checks this repository out into `$GITHUB_WORKSPACE/hyphaeon-app` and `veg/HyphAeon`
+  into `$GITHUB_WORKSPACE/HyphAeon` (actions/checkout refuses a `path` outside the workspace, which
+  is why this repository is not at the workspace root). Every `run` step has
+  `working-directory: hyphaeon-app` by default.
+- **The engine is private**, so its checkout uses the repository secret **`ENGINE_TOKEN`**: a
+  fine-grained personal access token with *Contents: read* on `veg/HyphAeon` (Settings → Secrets
+  and variables → Actions). It is the only secret the workflow needs. Pull requests from forks do
+  not receive secrets and fail at that step by design.
+- **`ENGINE_REF`** (workflow `env`, `phase-3a` today) is the engine commit CI runs against — a
+  tag, branch or SHA. It is bumped in the same change that moves the app onto a new library, never
+  by itself; a push to the engine's default branch cannot break this repository's CI. Once the
+  library is a published npm version the `file:` link goes away, but the models and fixtures the
+  suites read still come from this checkout, so the ref stays.
+- **Job `app`**: `npm ci` (root; `node_modules` cached on the lockfile + `.nvmrc` hash, restored
+  whole on a hit and `npm ci` skipped — the library link inside it is a relative symlink and
+  survives), `npm run test --workspaces --if-present` with `HYPHAEON_MODELS_DIR` and
+  `HYPHAEON_ENGINE_DIR` pointing into the engine checkout, `cd web && npm run check && npm run
+  build` (the FULL prebuild: asset copy, gallery prebake, caveats check; the prebake is
+  stamp-cached against the committed records and rebakes all five examples under onnxruntime-node
+  when a runtime source or the library changed, 3–5 min on a 4-vCPU runner), then `npx playwright
+  install --with-deps chromium` (the browser cached under `~/.cache/ms-playwright` on the
+  playwright-core version; on a hit only `install-deps` runs) and `cd e2e && npx playwright test
+  --reporter=github,html`. `playwright-report/` and `test-results/` are uploaded on failure.
+- **Job `parity`** (PLAN.md §5.4, `../HyphAeon/PARITY.md`): `npm ci`, Python 3.11 with CPU torch
+  and `pip install -e ".[all]"` of the engine (the `tn93` extra is the pure-Python fallback
+  `dataset.py --use-tn93` takes when no `tn93` binary is on PATH), then
+  `node runtime/scripts/parity-node.mjs --engine $ENGINE_DIR --examples all --analyses
+  meme,busted,epistasis,dms,phenotype --busted-examples all --threads $(nproc)` (writes
+  `parity/node/` and `parity/node-tn93/` in the engine checkout), then from the engine
+  `HYPHAEON_WEIGHTS=$ENGINE_DIR/model.safetensors HF_HUB_OFFLINE=1 python scripts/parity.py
+  --examples all --surfaces python,node,node-tn93`. Exit 0 is no violation at the plan's classes,
+  1 a violation, 2 a failed reference run; `parity/report.json`, both `summary.json` files and the
+  CLI logs are uploaded whether or not it passed.
+- **`ONNXRUNTIME_NODE_INSTALL=skip`** is set for the whole workflow: onnxruntime-node 1.23.2's
+  postinstall metadata lists `cuda12` as a requirement on `linux/x64` and would download the CUDA
+  execution-provider binaries from NuGet on every uncached `npm ci`; the CPU binding is bundled and
+  is all this repository uses.
+- Budget: `app` is bounded at 45 min, `parity` at 60. Measured locally at this change: the four
+  vitest suites 82 s in all (runtime 32 s, web 2 s, mcp 33 s, server 15 s); Phase 3 measured the
+  node parity surfaces at 2:28 with 6 threads and the Python reference at ~1.5 min of CLI time,
+  before the torch install; a 4-vCPU runner is slower per pass.
 
 ---
 
@@ -391,3 +443,74 @@ no `dms` comparator, and still prints FAIL on its 1e-6 absolute tolerance and th
 head fields; the browser's phenotype run cannot be compared element-wise with the RHO fixture while
 the app caps at 256 taxa and the fixture used 655; the over-budget DMS → server handoff; one
 caveats file; permulation cost in the browser; CI, npm publish and deployment.
+
+### 2026-09-05 — Phase 4: CI and repository hygiene for the first public push
+
+- **`.github/workflows/ci.yml`** (new; the section "CI" above is the reference): two jobs on every
+  push to `main` and every pull request, one run per ref. `app` installs, runs every workspace's
+  vitest suite, `svelte-check`, the full web build (asset copy, gallery prebake, caveats check,
+  vite build) and Playwright against the built site; `parity` writes the `node` and `node-tn93`
+  surfaces with `runtime/scripts/parity-node.mjs` and then runs the engine's `scripts/parity.py
+  --surfaces python,node,node-tn93` (the Python reference on the same examples, compared at
+  PLAN.md §5.4's classes), uploading `parity/report.json` either way. Both jobs check out
+  `veg/HyphAeon` at `ENGINE_REF` (`phase-3a`) beside this repository with the `ENGINE_TOKEN`
+  secret — the engine is private and the `file:` link, the runtime tests, the build and the e2e
+  all resolve `../HyphAeon`. `node_modules` and the Playwright browser are cached;
+  `ONNXRUNTIME_NODE_INSTALL=skip` keeps `npm ci` from downloading CUDA binaries on linux/x64.
+- **`.nvmrc`** (new): `22`, read by `actions/setup-node` and by `nvm use`.
+- **`README.md`** rewritten for a public reader: what the repository is (web, runtime, mcp,
+  server, e2e, deploy), the two-repository rule (D9, §5.5), how to run locally (the engine as a
+  sibling checkout, the environment variables, the commands), the MCP install line, the server,
+  the parity commands, what CI runs, and links to `PLAN.md`, the phase reports and the engine's
+  documents.
+- Verified at this change: `HYPHAEON_MODELS_DIR=… npm run test --workspaces --if-present` (the
+  CI step as written) passes runtime 22 files / 294 tests, web 11 / 79, mcp 10 / 113, server
+  5 / 57; `ci.yml` parses (PyYAML); `HYPHAEON_PREBAKE=skip npm run build` in `web/` still builds.
+  Nothing under `package.json` scripts changed: `check`, `build` and `e2e` already existed.
+- The `parity` job's step was run in its exact shape against the engine's rewritten
+  `scripts/parity.py` (landed in the `feat/js-port` working tree during this change, not yet in a
+  tag) on a copy of `parity/`: `--examples camelid,Smc6 --surfaces python,node,node-tn93` ran the
+  reference for both (a `python-tn93` reference for the tree-free example, the `tn93` binary hidden
+  so the pure-Python package computes the distances — the reason the job installs `.[all]`),
+  compared 7 files in 48 s, and exited 1: meme, busted and epistasis pass on `node` (Smc6) and
+  `node-tn93` (camelid), the new DMS comparator fails on `mutant_deltas` (Smc6 dms 5 violations at
+  1.48× its bound; camelid's sector DMS 34 at 2.24×). That is the job doing its work, and an
+  engine/runtime question to settle, not a workflow one.
+- Carried: `ENGINE_REF` is `phase-3a`, whose `parity.py` refuses `node-tn93` ("unknown surface"),
+  so the `parity` job fails at that step until the ref is bumped to one carrying the rewrite; the
+  `ENGINE_TOKEN` secret must be created in the repository settings before the first run; npm
+  publish of `@veg/hyphaeon-mcp` and deployment remain open.
+
+### 2026-09-05 — Phase 4 integrated (`PHASE4.md`)
+
+The CI, the four report polish items and `HANDOFF.md` integrated; every check in `PHASE4.md`
+passes and its parity table is the one to read. Headlines:
+
+- **D6 is done.** A tree-free run whose upload carried a topology draws the READER'S topology,
+  pruned to the loaded taxa with unit branch lengths (`display_tree_source: 'user-topology'`,
+  `display_tree.label` = `USER_TOPOLOGY_LABEL`, runtime `unitTopologyNewick`); neighbour joining is
+  for no tree at all. The modal, the provenance panel, the foreground picker and the diagnostics
+  strip all say so; a Phase 3 record that drew NJ keeps saying NJ. The gallery was rebaked: camelid
+  and HIV1_RT carry the reader's topology.
+- **Site views work on a locally run report.** The `{names, sequences}` block is derived on read
+  from the stored alignment text minus `dropped_taxa` (`web/src/lib/report/alignmentBlock.ts`);
+  measured against storing it (+3 % Smc6, +15 % HIV1_RT) before choosing. `/mcp` reads the mcp
+  workspace's version and `TOOL_NAMES` at build. The MCP's TN93 refusal is an INPUT error,
+  `TN93_UNCOMPUTABLE`.
+- **Parity, all app surfaces, on the engine's rewritten `parity.py`**: `reference runs: 23 (0
+  failed); self-check violations: 0; comparisons: 20 (20 pass, 0 fail); violations: 0` — `PASS`,
+  exit 0. DMS (Smc6, node) and phenotype (RHO, node) now have comparators and pass them; the CI
+  builder's earlier `mutant_deltas` excursion is gone on the final script. The browser's RHO
+  phenotype stays incomparable (256-taxon cap vs 655).
+- **Suites**: runtime 22 files / 297 tests, web 13 / 93, mcp 10 / 113, server 5 / 57;
+  `svelte-check` 577 files 0 errors; Playwright 62/62 in 28.5 s; `ci.yml` parses and
+  `actionlint` is clean.
+- Seam fixes at integration: `runtime/test/parity-fixtures.test.js` compared the busted record's
+  keys to a fixture that the engine's regeneration had given two CLI-absent arrays (`site_lrts`,
+  `is_invariable`); they are now dropped from the key check and the per-site LRTs compared at the
+  graph class instead. `ProvenancePanel`, `TreePicker` and `diagnostics/panel.ts` still described
+  the `user-topology` source as the model's tree or as NJ. Four e2e specs asserted `'nj'` for
+  topology-only uploads, and the "a live run cannot draw the tree" comment was false.
+- Carried (details in `PHASE4.md` and `HANDOFF.md`): `ENGINE_REF` must be bumped past `phase-3a`
+  once the engine tags the Phase 4a rewrite; `ENGINE_TOKEN` and the `veg/hyphaeon-app` repository
+  do not exist yet; nothing is published or deployed; the packages do not carry the models.

@@ -16,8 +16,9 @@
  *                under PLAN.md D22, the reference's own TREE-FREE path (dataset.py:598-636):
  *                pairwise TN93 distances straight into the MDS whenever there is no usable tree.
  *                `decideTreePolicy` makes that call here, before the library, so the run records
- *                WHY (`tree_source`, `tree_free.reason`); a display-only NJ tree on the same
- *                distances is attached as `displayTree` (nj.js) and the model never sees it
+ *                WHY (`tree_source`, `tree_free.reason`); a display-only tree is attached as
+ *                `displayTree` — the user's own topology with unit lengths when the upload
+ *                carried one, else NJ on the same distances (nj.js) — and the model never sees it
  *   infer        `predict_site_lrts` (inference.py:162-192): VARIABLE sites only, batched, the
  *                clamp at 0, float32; invariable sites are never sent to the graph
  *   stats        cli.py:99-100 — p = float32(pvals_from_lrt_meme(lrt)); q = float32(BH(p))
@@ -85,7 +86,7 @@ import {
 
 import { buildPredictions, CALL_DEFAULTS } from './postprocess.js';
 import { inferSites, predictFromSession, resolveBatchSize, throwIfAborted, yieldToLoop } from './predict.js';
-import { njTreeFromLoaded, newickFromTree } from './nj.js';
+import { njTreeFromLoaded, newickFromTree, newickLabel } from './nj.js';
 
 /** PLAN.md §3.5: the provenance block's schema version. */
 export const SCHEMA_VERSION = 1;
@@ -264,26 +265,121 @@ export function decideTreePolicy(alignmentText, treeArg, options = {}) {
 	};
 }
 
+/** `display_tree.source` / `preprocessing.display_tree_source` values (PLAN.md §3.5, D22, D6). */
+export const DISPLAY_TREE_SOURCES = Object.freeze(['user', 'user-topology', 'nj']);
+
+/**
+ * The caption a UI prints under a `user-topology` display tree. One string, shared with the web
+ * report through `display_tree.label`, so the modal and the foreground picker say the same thing.
+ */
+export const USER_TOPOLOGY_LABEL = 'your topology; branch lengths not estimated (model used TN93 distances)';
+
+/**
+ * The user's topology as a Newick with UNIT branch lengths, pruned to the taxa the model saw.
+ *
+ * PLAN.md D6 ("its topology is kept only for display"): a tree without usable branch lengths is
+ * not a phylogram, so it cannot be drawn as one — but its topology is still the reader's own
+ * statement about how the sequences relate, and a reader who uploaded it wants to see parsimony
+ * substitutions on IT, not on an inferred neighbour-joining tree. Every non-root branch is written
+ * as `:1`, whatever fraction of lengths the file did carry (below `hasNonzeroBranchLengths`'s
+ * threshold they are not distances the model could have used, and mixing real and unit lengths
+ * would draw a tree that is neither). Tips that are not among `keep` (dropped by the taxon cap,
+ * duplicate collapse or an unmatched name) are removed, internal nodes left with one child are
+ * collapsed, and internal labels (a name, or the support value the parser filed under
+ * `confidence` as Bio.Phylo does) survive only on nodes that keep two children.
+ *
+ * Iterative post-order over the library's array-shaped PhyloTree (`root`, `children[node]`,
+ * `name[node]`, `confidence[node]`), so a 2,000-tip tree does not recurse.
+ *
+ * @param {{root: number, children: number[][], name: (string|null)[], confidence?: (number|null)[]}} tree
+ *   the library's parsed tree
+ * @param {Iterable<string>} keep the taxon names the model saw (`loaded.taxa`)
+ * @returns {{newick: string, tips: number, pruned: number}|null} null when fewer than two tips remain
+ */
+export function unitTopologyNewick(tree, keep) {
+	if (!tree || !Array.isArray(tree.children) || !Array.isArray(tree.name)) return null;
+	const wanted = new Set();
+	for (const k of keep) wanted.add(String(k));
+	// dataset.py:233/309 strips quotes from tip names before matching; nothing else is normalised.
+	const stripQuotes = (s) => String(s ?? '').replace(/^['"]+|['"]+$/g, '');
+	/** @type {(string|null)[]} text per node: a subtree WITHOUT its own `:1`, or null when pruned away */
+	const text = new Array(tree.children.length).fill(null);
+	/** @type {number[]} surviving tips per node */
+	const tips = new Array(tree.children.length).fill(0);
+	let pruned = 0;
+	/** @type {Array<[number, number]>} */
+	const stack = [[tree.root, 0]];
+	while (stack.length > 0) {
+		const frame = stack[stack.length - 1];
+		const [node, visited] = frame;
+		const kids = tree.children[node] ?? [];
+		if (visited < kids.length) {
+			frame[1] = visited + 1;
+			stack.push([kids[visited], 0]);
+			continue;
+		}
+		stack.pop();
+		const label = tree.name[node];
+		if (kids.length === 0) {
+			const name = stripQuotes(label);
+			if (wanted.has(name) || wanted.has(String(label ?? ''))) {
+				text[node] = newickLabel(name);
+				tips[node] = 1;
+			} else {
+				pruned++;
+			}
+			continue;
+		}
+		const alive = kids.filter((k) => text[k] !== null);
+		if (alive.length === 0) continue;
+		tips[node] = alive.reduce((s, k) => s + tips[k], 0);
+		if (alive.length === 1) {
+			// A unary node is not a split: hand the child up unchanged (its own `:1` is written by
+			// the parent, so the collapsed path costs one unit, not two).
+			text[node] = text[alive[0]];
+			continue;
+		}
+		const inner = alive.map((k) => `${text[k]}:1`).join(',');
+		const confidence = Array.isArray(tree.confidence) ? tree.confidence[node] : null;
+		const internal = label ? newickLabel(String(label)) : confidence != null ? String(confidence) : '';
+		text[node] = `(${inner})${internal}`;
+	}
+	const rootText = text[tree.root];
+	if (rootText === null || tips[tree.root] < 2) return null;
+	// A root left with one child was collapsed into a bare tip or subtree; wrap so the result is a
+	// tree and not a label.
+	const newick = rootText.startsWith('(') ? `${rootText};` : `(${rootText}:1);`;
+	return { newick, tips: tips[tree.root], pruned };
+}
+
 /**
  * The Newick a UI may draw for this run — the site-tree modal and the phenotype foreground
- * picker (PLAN.md §4.5, D22). DISPLAY ONLY; see nj.js.
+ * picker (PLAN.md §4.5, D22, D6). DISPLAY ONLY; see nj.js.
  *
- *   the tree path      the user's own tree: the uploaded text verbatim, or the embedded tree
- *                      serialised back out of the parse (`source: 'user'`)
- *   tree-free          neighbour joining on the TN93 matrix the model was actually given, over
- *                      the taxa it actually saw (`source: 'nj'`)
+ *   the tree path        the user's own tree: the uploaded text verbatim, or the embedded tree
+ *                        serialised back out of the parse (`source: 'user'`)
+ *   tree-free, with a    THE USER'S TOPOLOGY, pruned to the taxa the model saw and written with
+ *   topology-only tree   unit branch lengths (`source: 'user-topology'`, `unitTopologyNewick`),
+ *                        captioned `USER_TOPOLOGY_LABEL`: the model read TN93 distances, and
+ *                        nothing estimated lengths for this tree — the `:1`s are a drawing
+ *                        convention, not a fit
+ *   tree-free, no tree   neighbour joining on the TN93 matrix the model was actually given, over
+ *                        the taxa it actually saw (`source: 'nj'`)
  *
- * A tree-free run whose upload DID carry a topology-only tree still gets the NJ tree: the display
- * tree has to carry branch lengths and has to be over the taxa that survived duplicate collapse
- * and the PD cap, and the supplied topology is neither. What the upload carried is recorded
- * separately as `preprocessing.tree_provided`, so a UI that prefers the user's topology can ask.
+ * NJ is the fallback, never the first choice when a topology exists (PLAN.md D6 as written: "its
+ * topology is kept only for display"). The topology is still handed to NJ in two cases where it
+ * cannot be drawn: fewer than two of its tips name taxa the model saw (the names did not match
+ * the alignment's), and a tree-free run that was REQUESTED (`useTn93`, or 'tn93' / 'none' as the
+ * tree text) — the reference's own flag ignores the tree, `decideTreePolicy` does not parse it,
+ * and the display follows the analysis. What the upload carried is recorded separately as
+ * `preprocessing.tree_provided`.
  *
  * @param {object} loaded the library's LoadedAlignment
  * @param {TreePolicy} policy
  * @param {string|null} treeArg
  * @param {{maxTaxa?: number}} [options]
- * @returns {{newick: string, source: 'user'|'nj', from: 'tree-text'|'alignment'|'tn93', taxa: number,
- *   clampedBranches?: number}|null}
+ * @returns {{newick: string, source: 'user'|'user-topology'|'nj', from: 'tree-text'|'alignment'|'tn93',
+ *   taxa: number, label?: string, prunedTips?: number, clampedBranches?: number}|null}
  */
 export function displayTreeFor(loaded, policy, treeArg, options = {}) {
 	const treeFree = loaded?.notices?.treeFree ?? null;
@@ -309,6 +405,21 @@ export function displayTreeFor(loaded, policy, treeArg, options = {}) {
 			}
 		}
 		return null;
+	}
+	if (policy.tree && Array.isArray(loaded?.taxa)) {
+		// The reader's own topology (reason 'no_branch_lengths'): drawn as given, pruned to the
+		// taxa the model saw, with unit lengths. See unitTopologyNewick.
+		const topology = unitTopologyNewick(policy.tree, loaded.taxa);
+		if (topology && topology.tips >= 2) {
+			return {
+				newick: topology.newick,
+				source: 'user-topology',
+				from: policy.treeSupplied === 'embedded' ? 'alignment' : 'tree-text',
+				taxa: topology.tips,
+				prunedTips: topology.pruned,
+				label: USER_TOPOLOGY_LABEL
+			};
+		}
 	}
 	const nj = njTreeFromLoaded(loaded, options);
 	if (!nj) return null;
@@ -480,7 +591,7 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		stride_preselected: n.stridePreselected,
 		taxon_cap: speciesCap,
 		reference_sequence: referenceNameFor(loaded, options.referenceSequence),
-		/** PLAN.md §3.5: 'user' | 'embedded' | 'tn93' (D22 removed 'hyphy-hky85'; 'nj' is display only). */
+		/** PLAN.md §3.5: 'user' | 'embedded' | 'tn93' (D22 removed 'hyphy-hky85'; 'nj' / 'user-topology' are display only). */
 		tree_source: treeSource,
 		/** What the UPLOAD carried, whether or not the model used it. */
 		tree_provided: policy.treeSupplied,
@@ -489,6 +600,7 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		branch_lengths_missing: n.branchLengthsMissing,
 		/** D22: nothing estimates branch lengths any more. Kept so the block's shape does not move. */
 		branch_lengths_estimated: false,
+		/** DISPLAY_TREE_SOURCES: 'user' | 'user-topology' | 'nj' (D6: a topology-only upload is drawn as given). */
 		display_tree_source: displayTree ? displayTree.source : null,
 		distance_rescaled: n.distanceRescaled,
 		raw_dist_max: n.rawDistMax,

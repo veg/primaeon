@@ -331,10 +331,22 @@ describe.skipIf(!ready)('fixtures/e2e/busted_Smc6.json through runBusted (sessio
 		expect(result.provenance.neural_head).toMatchObject({ enabled: true, deterministic_upstream: false, artifact_sha256: head.sha256 });
 		expect(result.provenance.busted_head_sha256).toBe(head.sha256);
 		expect(result.provenance.surrogate_for).toBe('BUSTED');
-		// Record keys in the CLI's order.
-		expect(Object.keys(r)).toEqual(Object.keys(ref));
+		// Record keys in the CLI's order. The fixture carries two arrays the CLI does NOT write
+		// (`site_lrts`, `is_invariable`: gen_fixtures.py busted_site_lrts, a `hyphaeon meme` run on
+		// the same inputs whose float32 sums reproduce omnibus_lrt and total_selection_energy), so
+		// they are dropped from the key comparison and checked against the per-site results instead.
+		const FIXTURE_ONLY = ['site_lrts', 'is_invariable'];
+		const cliKeys = Object.keys(ref).filter((k) => !FIXTURE_ONLY.includes(k));
+		expect(Object.keys(r)).toEqual(cliKeys);
 		const text = bustedJsonText(result, { provenance: false });
-		expect(Object.keys(JSON.parse(text))).toEqual(Object.keys(ref));
+		expect(Object.keys(JSON.parse(text))).toEqual(cliKeys);
+		if (Array.isArray(ref.site_lrts)) {
+			expect(result.sites).toHaveLength(ref.site_lrts.length);
+			expect(result.sites.map((s) => s.is_invariable)).toEqual(ref.is_invariable);
+			const { max, at } = maxRelLrtDiff(ref.site_lrts.map((lrt, i) => ({ site: i + 1, hyphaeon_lrt: lrt })), result.sites.map((s) => s.hyphaeon_lrt));
+			console.log(`[parity-fixtures] busted Smc6 site_lrts: max relative |dLRT| ${max.toExponential(2)} at site ${at}`);
+			expect(max, `busted site_lrts at site ${at}`).toBeLessThanOrEqual(LRT_REL_TOL);
+		}
 		console.log(`[parity-fixtures] busted Smc6: p_acat ${r.p_value_acat} (ref ${ref.p_value_acat}), omnibus ${r.omnibus_lrt} (ref ${ref.omnibus_lrt}), head prob ${r.selection_probability}`);
 	});
 

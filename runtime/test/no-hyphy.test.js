@@ -144,7 +144,7 @@ describe.skipIf(!ready)('runEverything on camelid, the old HyPhy case', () => {
 		return record;
 	}
 
-	it('produces a complete report from TN93 distances alone, with an NJ tree for the UI', async () => {
+	it('produces a complete report from TN93 distances alone, drawing the uploaded topology for the UI', async () => {
 		const r = await report();
 		const pp = r.diagnostics.preprocessing;
 		expect(pp.tree_source).toBe('tn93');
@@ -152,10 +152,19 @@ describe.skipIf(!ready)('runEverything on camelid, the old HyPhy case', () => {
 		expect(pp.tree_free.reason).toBe('no_branch_lengths');
 		expect(pp.branch_lengths_estimated).toBe(false);
 		expect(r.diagnostics.warnings.map((w) => w.code)).toContain('TREE_FREE_TN93');
-		// The display tree: NJ over the taxa the model actually saw, and it parses.
-		expect(r.diagnostics.display_tree.source).toBe('nj');
-		expect(r.diagnostics.display_tree.taxa).toBe(r.diagnostics.taxa_used);
-		expect(r.diagnostics.display_tree.newick.endsWith(');')).toBe(true);
+		// The display tree (PLAN.md D6): camelid.nwk is a topology with no branch lengths, so the
+		// reader's OWN topology is drawn — pruned to the taxa the model actually saw, unit lengths,
+		// the runtime's caption — and it parses. NJ is only for an upload with no topology at all.
+		const dt = r.diagnostics.display_tree;
+		expect(dt.source).toBe('user-topology');
+		expect(pp.display_tree_source).toBe('user-topology');
+		expect(dt.from).toBe('tree-text');
+		expect(dt.taxa).toBe(r.diagnostics.taxa_used);
+		expect(dt.prunedTips).toBe(0);
+		expect(dt.label).toMatch(/your topology; branch lengths not estimated/);
+		expect(dt.newick.endsWith(');')).toBe(true);
+		expect(dt.newick).toMatch(/:1[,)]/);
+		expect(dt.newick).not.toMatch(/:0\.\d/);
 		// Every automatic section ran; phenotype is the offer, not the analysis.
 		expect(r.sections.sites.taxa_count).toBe(212);
 		expect(r.sections.sites.codon_count).toBe(96);

@@ -33,7 +33,7 @@
  */
 
 import { expect, test } from '@playwright/test';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { APP_DIR, HEAVY_ASSET, HYPHY_ANY, trackRequests } from './helpers';
 
@@ -153,6 +153,38 @@ test.describe('methods and mcp pages', () => {
 		await expect(page.getByText('claude mcp add hyphaeon -- npx @veg/hyphaeon-mcp').first()).toBeVisible();
 		const firstTool = page.locator('table.tools tbody tr').first();
 		await expect(firstTool).toContainText('hyphaeon_analyze');
+		await page.waitForLoadState('networkidle');
+		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
+		expect(requests.matching(HEAVY_ASSET)).toEqual([]);
+	});
+
+	test('/mcp/ is current with the mcp/ workspace: its version and one row per registered tool, no bridge', async ({ page, baseURL }) => {
+		// Phase 4: web/src/routes/mcp/+page.server.ts reads mcp/package.json and mcp/src/tools.js
+		// TOOL_NAMES at build, so the page cannot describe a release other than the one beside it.
+		// The same two sources are read here, independently, and held against the rendered page.
+		const requests = trackRequests(page);
+		const version = JSON.parse(readFileSync(resolve(APP_DIR, 'mcp/package.json'), 'utf8')).version as string;
+		const toolsSource = readFileSync(resolve(APP_DIR, 'mcp/src/tools.js'), 'utf8');
+		const block = toolsSource.match(/export const TOOL_NAMES = Object\.freeze\(\[([\s\S]*?)\]\)/);
+		expect(block, 'mcp/src/tools.js exports TOOL_NAMES').not.toBeNull();
+		const toolNames = [...block![1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+		expect(toolNames.length).toBeGreaterThanOrEqual(10);
+		expect(toolNames[0]).toBe('hyphaeon_validate');
+
+		await page.goto('/mcp/');
+		await expect(page.getByText(`@veg/hyphaeon-mcp ${version}`).first()).toBeVisible();
+		await expect(page.getByText(`with the ${toolNames.length} tools listed below`)).toBeVisible();
+		// One tool per row; the "Job control" group heading is a `tr.tools__group` with no tool in it.
+		const rows = page.locator('table.tools tbody tr:not(.tools__group)');
+		await expect(rows).toHaveCount(toolNames.length);
+		const rendered = (await rows.locator('td:first-child').allInnerTexts()).map((t) => t.trim());
+		expect([...rendered].sort()).toEqual([...toolNames].sort());
+		// The Phase 3 "Runs" column marked tools "bridged" to the Python reference; the table has
+		// neither now (the prose may still say, historically, that nothing is marked so).
+		const table = await page.locator('table.tools').innerText();
+		expect(table).not.toMatch(/\bRuns\b|bridged|python/i);
+		const body = await page.locator('body').innerText();
+		expect(body).not.toMatch(/to be written|TODO|lorem ipsum/i);
 		await page.waitForLoadState('networkidle');
 		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
 		expect(requests.matching(HEAVY_ASSET)).toEqual([]);

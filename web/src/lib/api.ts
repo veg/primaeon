@@ -55,8 +55,21 @@ export type CallMode = 'percentile' | 'zscore' | 'pvalue';
  */
 export type TreeSource = 'user' | 'embedded' | 'tn93';
 
-/** Where the tree DRAWN in the report came from: the user's, or the app's NJ tree on TN93 distances. */
-export type DisplayTreeSource = 'user' | 'embedded' | 'nj';
+/**
+ * Where the tree DRAWN in the report came from (runtime `display_tree.source` /
+ * `preprocessing.display_tree_source`, PLAN.md D6 / D22):
+ *
+ *   user           the uploaded tree, used by the model as given
+ *   embedded       the tree carried in the alignment, used by the model as given
+ *   user-topology  the reader's own topology from a tree WITHOUT usable branch lengths, drawn with
+ *                  unit lengths for display only; the model read TN93 distances
+ *   nj             the app's neighbour-joining tree on those TN93 distances, when the upload had
+ *                  no tree at all (or its topology named none of the taxa the model saw)
+ *
+ * The runtime writes 'user' for both of the first two and says which in `display_tree.from`;
+ * `lib/report/displayTree.ts` splits them using `tree_source`.
+ */
+export type DisplayTreeSource = 'user' | 'embedded' | 'user-topology' | 'nj';
 
 /** One line naming a run's distance source, for the strip, the provenance block and the tree modal. */
 export function treeSourceLabel(source: string | null | undefined): string {
@@ -282,9 +295,19 @@ export interface ReportInputs {
 	alignmentName: string;
 	treeName: string | null;
 	demo?: string;
-	/** Kept in IndexedDB for "Re-run with…"; absent from gallery records and stripped from downloads. */
+	/**
+	 * Kept in IndexedDB for "Re-run with…" and for the site views: the site-tree modal, the entropy
+	 * overlays and the phenotype panel derive the taxa and sequences the model saw from this text
+	 * (`lib/report/alignmentBlock.ts`), so a browser run draws exactly as a prebaked record, which
+	 * stores the same taxa as `sections.sites.alignment` instead. Absent from gallery records and
+	 * stripped from downloads; a record from before Phase 2 has neither, and the views say so.
+	 */
 	alignmentText?: string;
-	/** The tree the model was given (with branch lengths; estimated when the input had none). */
+	/**
+	 * The tree text handed to the runtime, as uploaded (D22: nothing is estimated; a tree without
+	 * usable branch lengths is still passed through so the record can say `no_branch_lengths` and
+	 * draw the reader's own topology). Null when no tree was uploaded.
+	 */
 	treeText?: string | null;
 }
 

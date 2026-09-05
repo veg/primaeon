@@ -591,6 +591,14 @@ changes the port needs:
 
 ## 8. Phases
 
+**Status (2026-09-05):** all five phases are built and tagged. Engine (`feat/js-port`): `phase-0`,
+`phase-1a`, `phase-2a`, `phase-3a`, `phase-4a`. App (`main`): `phase-0`, `phase-1`, `phase-2`,
+`phase-3`, `phase-4`. Final check matrix: engine 1,067 library tests, 252 Python tests, 48/48
+fixtures replayed, parity harness PASS with 0 violations over 20 comparisons; app 297 runtime, 93
+web, 113 MCP, 57 server tests, 62 Playwright specs. Nothing was pushed, published, or deployed, and
+no other repository was touched; every such step, and every decision still owed by the ML team
+(D2, D20), is in `HANDOFF.md`, with the Python bugs found during the port in the engine's `UPSTREAM.md`.
+
 | Phase | Scope | Exit criterion |
 |---|---|---|
 | **0 — Decide, scaffold, fixtures** (≈1 week) | Answers to §9; `js/` in `veg/HyphAeon` seeded from DM3's pure preprocessing port with its tests and provenance headers; `js.yml` and `release.yml` workflows; PRs 1–8 of §7 opened; fixture harness and numeric kernel started; manifest with the viral ONNX; `veg/hyphaeon-app` scaffolded as workspaces (`web/`, `runtime/` with the ORT sessions from DM3 and datamonkey-js-server, `mcp/` skeleton with the Python bridge) consuming the library by a `file:` link | Smc6 scores in the browser from the app repo, through the library from the methods repo, with per-site parity to DM3; scipy fixtures pass in JS |

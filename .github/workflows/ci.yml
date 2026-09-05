@@ -1,0 +1,271 @@
+# WHY THIS FILE EXISTS
+#
+# This repository is the application half of HyphAeon (PLAN.md D9): web/, runtime/, mcp/, server/
+# and e2e/, all consuming @veg/hyphaeon-js, the library that lives in veg/HyphAeon beside the
+# Python reference it mirrors. Nothing here can be tested without that other repository:
+#
+#   - runtime/package.json links the library by `file:../../HyphAeon/js`, so `npm ci` needs a
+#     checkout of veg/HyphAeon at `../HyphAeon` relative to this repository's root;
+#   - the runtime, MCP and server suites score the bundled examples through the real ONNX graphs
+#     in `../HyphAeon/models/` and replay `../HyphAeon/fixtures/`;
+#   - the web build copies those graphs and the manifest into web/static/ and prebakes the gallery
+#     with them; the e2e compares what the browser stored against `../HyphAeon/fixtures/e2e/`.
+#
+# So every job checks out BOTH repositories as siblings under $GITHUB_WORKSPACE:
+#
+#     $GITHUB_WORKSPACE/hyphaeon-app    this repository
+#     $GITHUB_WORKSPACE/HyphAeon        veg/HyphAeon at ENGINE_REF
+#
+# actions/checkout refuses a `path` outside the workspace, which is why this repository is itself
+# checked out into a subdirectory rather than the workspace root. veg/HyphAeon is private, so its
+# checkout needs a token with read access to it: the repository secret ENGINE_TOKEN (a fine-grained
+# personal access token, "Contents: read" on veg/HyphAeon). Pull requests from forks do not receive
+# secrets and will fail at that step; that is the expected outcome, not a bug to route around.
+#
+# ENGINE_REF pins the engine commit these tests run against (a tag, branch or SHA of veg/HyphAeon).
+# It is bumped deliberately, in the same change that bumps the library the app consumes, so a
+# change on the engine's default branch cannot break this repository's CI by itself; a
+# workflow_dispatch can point one run at another ref without editing the file.
+#
+# Two jobs:
+#
+#   app     the fast gate: `npm ci`, every workspace's vitest suite, svelte-check, the full web
+#           build (asset copy, gallery prebake, caveats check, vite build), Chromium, Playwright.
+#           The prebake is stamp-cached against the committed gallery records; when a runtime
+#           source or the library changed it rebakes all five examples under onnxruntime-node,
+#           which costs 3-5 minutes on a 4-vCPU runner. node_modules and the Playwright browser
+#           are cached so the rest of the job does not pay for them twice.
+#
+#   parity  the slow gate (PLAN.md 5.4, PARITY.md): runtime/scripts/parity-node.mjs writes the
+#           `node` surface (and `node-tn93` for the tree-free runs, PLAN.md D22) into the engine
+#           checkout's parity/ directory, then the engine's scripts/parity.py runs the Python
+#           reference on the same examples and compares. Exit 0 means no violation at the plan's
+#           classes; parity/report.json is uploaded either way so a failure can be read.
+#
+# Both run on every push to main and on every pull request; one run per ref at a time.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: "veg/HyphAeon ref to check out beside this repository (default: ENGINE_REF below)"
+        required: false
+        default: ""
+
+env:
+  # The engine commit these tests run against. Bump together with the library the app consumes.
+  ENGINE_REF: phase-4a
+  # The engine checkout in the sibling layout every path below assumes (see the header).
+  ENGINE_DIR: ${{ github.workspace }}/HyphAeon
+  # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on
+  # linux/x64 unless told not to; the CPU binding is bundled and is all this repository uses.
+  ONNXRUNTIME_NODE_INSTALL: skip
+  # Where every consumer finds the graphs and the manifest (mcp/, server/ and the e2e read it;
+  # runtime/ resolves ../HyphAeon relative to itself and needs the sibling layout regardless).
+  HYPHAEON_MODELS_DIR: ${{ github.workspace }}/HyphAeon/models
+  HYPHAEON_ENGINE_DIR: ${{ github.workspace }}/HyphAeon
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: test, check, build, e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: hyphaeon-app
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: hyphaeon-app
+
+      - name: Check out veg/HyphAeon (the engine, private) beside it
+        uses: actions/checkout@v4
+        with:
+          repository: veg/HyphAeon
+          ref: ${{ inputs.engine_ref || env.ENGINE_REF }}
+          token: ${{ secrets.ENGINE_TOKEN }}
+          path: HyphAeon
+
+      - name: Set up Node (.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: hyphaeon-app/.nvmrc
+          cache: npm
+          cache-dependency-path: hyphaeon-app/package-lock.json
+
+      # node_modules is restored whole when the lockfile and the Node line are unchanged; the
+      # library link inside it (node_modules/@veg/hyphaeon-js -> ../../HyphAeon/js) is a relative
+      # symlink, so it survives the round trip and points at the fresh engine checkout.
+      - name: Cache node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            hyphaeon-app/node_modules
+            hyphaeon-app/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('hyphaeon-app/package-lock.json', 'hyphaeon-app/.nvmrc') }}
+
+      - name: Install (npm ci at the root; links @veg/hyphaeon-js from ../HyphAeon/js)
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Unit tests (vitest in every workspace with a test script)
+        run: npm run test --workspaces --if-present
+
+      - name: svelte-check
+        working-directory: hyphaeon-app/web
+        run: npm run check
+
+      # prebuild: copy-assets.mjs (ORT WASM, graphs, manifest, _headers), prebake-gallery.mjs
+      # (stamp-cached; a full rebake is ~3-5 min here), check-caveats.mjs; then vite build.
+      - name: Build the site (full prebake)
+        working-directory: hyphaeon-app/web
+        run: npm run build
+
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium and its system libraries
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      # The browser binary came from the cache; only the apt packages are missing on a fresh VM.
+      - name: Install Chromium's system libraries
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      # e2e/playwright.config.ts serves web/build under `vite preview` and uses the `github`
+      # reporter under CI; `html` is added here so a failure leaves a report to download.
+      - name: e2e (Playwright against the built site)
+        working-directory: hyphaeon-app/e2e
+        env:
+          PLAYWRIGHT_HTML_OPEN: never
+        run: npx playwright test --reporter=github,html
+
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            hyphaeon-app/e2e/playwright-report
+            hyphaeon-app/e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  parity:
+    name: parity (python reference vs node, node-tn93)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: hyphaeon-app
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: hyphaeon-app
+
+      - name: Check out veg/HyphAeon (the engine, private) beside it
+        uses: actions/checkout@v4
+        with:
+          repository: veg/HyphAeon
+          ref: ${{ inputs.engine_ref || env.ENGINE_REF }}
+          token: ${{ secrets.ENGINE_TOKEN }}
+          path: HyphAeon
+
+      - name: Set up Node (.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: hyphaeon-app/.nvmrc
+          cache: npm
+          cache-dependency-path: hyphaeon-app/package-lock.json
+
+      - name: Cache node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            hyphaeon-app/node_modules
+            hyphaeon-app/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('hyphaeon-app/package-lock.json', 'hyphaeon-app/.nvmrc') }}
+
+      - name: Install (npm ci at the root)
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # The Python reference, set up the way the engine's own parity.yml does it: CPU torch first
+      # (the default wheel is the CUDA one), then the package with every extra -- `tn93` is the
+      # pure-Python Tamura-Nei package `dataset.py --use-tn93` falls back to when no `tn93` binary
+      # is on PATH, which is the path the node-tn93 surface's reference takes.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: HyphAeon/pyproject.toml
+
+      - name: Install CPU torch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install the hyphaeon package (editable, all extras)
+        working-directory: HyphAeon
+        run: pip install -e ".[all]"
+
+      # The node surface: every example, every analysis this runtime has, into the engine
+      # checkout's parity/node/ (tree runs) and parity/node-tn93/ (tree-free runs, D22); exit 1 if
+      # any run failed. B = 10,000 and seed 42 are the runner's defaults and parity.py's (D17).
+      - name: Node surface (runtime/scripts/parity-node.mjs)
+        run: >
+          node runtime/scripts/parity-node.mjs
+          --engine "$ENGINE_DIR"
+          --examples all
+          --analyses meme,busted,epistasis,dms,phenotype
+          --busted-examples all
+          --threads "$(nproc)"
+
+      # The reference and the comparison (PARITY.md): parity.py runs the Python CLI on the same
+      # examples with the bundled suite weights and compares every surface file present. Exit 0
+      # is no violation at PLAN.md 5.4's classes, 1 a violation, 2 a failed reference run.
+      - name: Python reference and comparison (scripts/parity.py)
+        working-directory: HyphAeon
+        env:
+          HYPHAEON_WEIGHTS: ${{ github.workspace }}/HyphAeon/model.safetensors
+          HF_HUB_OFFLINE: "1"
+        run: python scripts/parity.py --examples all --surfaces python,node,node-tn93
+
+      - name: Upload the parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-report
+          path: |
+            HyphAeon/parity/report.json
+            HyphAeon/parity/node/summary.json
+            HyphAeon/parity/node-tn93/summary.json
+            HyphAeon/parity/python*/*.log
+          if-no-files-found: warn
+          retention-days: 30

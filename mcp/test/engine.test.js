@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { loadAlignmentAndTree, memeSitePq } from "@veg/hyphaeon-js";
 import { connect, parseText, example, examplesDir, HERE } from "./helpers.js";
-import { mapOptions, referenceCommand, cliOptionsFor, treeSourceFor, classifyEngineError, EngineError } from "../src/engine.js";
+import { mapOptions, referenceCommand, cliOptionsFor, treeSourceFor, classifyEngineError, tn93Refusal, TN93_UNCOMPUTABLE, EngineError } from "../src/engine.js";
 import { readManifest } from "../src/models.js";
 
 const ENGINE_ROOT = path.resolve(examplesDir(), "..");
@@ -141,8 +141,27 @@ describe("engine option mapping (no model)", () => {
     expect(classifyEngineError(new Error("HyphAeon needs at least 3 sequences; this alignment has 2.")).kind).toBe("input");
     expect(classifyEngineError(new Error("No matching taxa between tree and alignment")).kind).toBe("input");
     expect(classifyEngineError(new Error("Insufficient foreground taxa (1) matching criteria among 18 taxa.")).kind).toBe("input");
-    // The runtime's wrap of the tn93 package's ValueError on a saturated pair (pipeline.js prepareRun).
-    expect(classifyEngineError(new Error("TN93 distances could not be computed for this alignment: tn93: ValueError: math domain error")).kind).toBe("input");
+    // The runtime's wrap of the tn93 package's ValueError on a saturated pair (pipeline.js prepareRun):
+    // an INPUT error, with its own code and a message that names the data problem and not the package.
+    const saturated = classifyEngineError(
+      new Error(
+        "TN93 distances could not be computed for this alignment: tn93: ValueError: math domain error — at least one pair of sequences is saturated (no shared history the model can read) or shares no overlapping unambiguous position. Supply a tree with branch lengths, or drop the sequences the diagnostics flag."
+      )
+    );
+    expect(saturated.kind).toBe("input");
+    expect(saturated.code).toBe(TN93_UNCOMPUTABLE);
+    expect(saturated.message).toMatch(/saturated/);
+    expect(saturated.message).toMatch(/not of the server/);
+    expect(saturated.message).not.toMatch(/ValueError|tn93:|operator/);
+    expect(saturated.hint).toMatch(/tree with branch lengths/);
+    expect(saturated.hint).toMatch(/TN93_SATURATED_PAIRS/);
+    expect(saturated.cause).toBeInstanceOf(Error);
+    // The other tn93 exception the reference lets through: a pair with no overlapping position.
+    const overlap = tn93Refusal("TN93 distances could not be computed for this alignment: tn93: ZeroDivisionError: float division by zero — ...");
+    expect(overlap.kind).toBe("input");
+    expect(overlap.code).toBe(TN93_UNCOMPUTABLE);
+    expect(overlap.message).toMatch(/no overlapping unambiguous position/);
+    expect(tn93Refusal("HyphAeon model read failed")).toBeNull();
     const abort = new Error("HyphAeon run cancelled");
     abort.name = "AbortError";
     expect(classifyEngineError(abort).message).toMatch(/cancelled/);

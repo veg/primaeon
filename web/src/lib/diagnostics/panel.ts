@@ -122,9 +122,10 @@ export interface PanelModel {
  * tree as given, or tree-free TN93 distances with the library's own reason for it.
  *
  * `TREE_FREE_TN93.data.treeKeptForDisplay` says whether a topology was supplied at all (a tree
- * without branch lengths). Either way the runtime draws a neighbour-joining tree built from the
- * TN93 distances (runtime/src/pipeline.js displayTreeFor, nj.js) — a topology without lengths is
- * not drawable as a phylogram — and the model sees distances, never any topology.
+ * without branch lengths). When it was, the runtime draws THAT topology with unit branch lengths
+ * (runtime/src/pipeline.js displayTreeFor, `source: 'user-topology'`, PLAN.md D6); when it was
+ * not, a neighbour-joining tree built from the TN93 distances (nj.js). Either way the model sees
+ * distances, never any topology.
  */
 export function treePlan(diagnosis: DiagnosisSnapshot | null): TreePlan {
 	if (!diagnosis) return { kind: 'none' };
@@ -292,7 +293,7 @@ export function treePlanText(plan: TreePlan): string {
 			return 'Tree embedded in the alignment, with branch lengths, used as given.';
 		case 'tree-free':
 			return plan.reason === 'no_branch_lengths'
-				? `Tree-free: the tree has no usable branch lengths, so pairwise TN93 distances feed the MDS instead${plan.treeKeptForDisplay ? '; the report draws a neighbour-joining tree built from those distances, and the model sees neither topology' : ''}.`
+				? `Tree-free: the tree has no usable branch lengths, so pairwise TN93 distances feed the MDS instead${plan.treeKeptForDisplay ? '; the report draws your topology with unit branch lengths, for display only, and the model sees distances, not the topology' : ''}.`
 				: plan.reason === 'requested'
 					? 'Tree-free: TN93 distances were requested, so they feed the MDS directly.'
 					: 'Tree-free: no tree was supplied, so pairwise TN93 distances feed the MDS and a neighbour-joining tree is built from them for display only.';

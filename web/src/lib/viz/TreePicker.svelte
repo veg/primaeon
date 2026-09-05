@@ -165,7 +165,10 @@
 	</div>
 	<p class="hint">
 		Click a tip to add or remove it; click an internal node to take or drop its whole clade.
-		{#if displayOnly}
+		{#if treeSource === 'user-topology'}
+			<strong>This tree is display only: your topology, drawn with unit branch lengths</strong> — the run was tree-free,
+			so the model was given TN93 distances from the alignment; the lengths here are a convention, not a fit.
+		{:else if displayOnly}
 			<strong>This tree is display only, built from the TN93 distances</strong> — the run was tree-free, so the model
 			was given those distances and never a topology.
 		{/if}

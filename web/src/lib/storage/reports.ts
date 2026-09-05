@@ -19,6 +19,14 @@
  * this store (a gallery example, a server job, a Phase 1 run) is left alone and says so by
  * returning false rather than minting a local copy of something the reader did not run.
  *
+ * WHAT A STORED REPORT CARRIES FOR THE SITE VIEWS (Phase 4). A browser record keeps the input
+ * TEXTS (`inputs.alignmentText`, `inputs.treeText`) and no `sections.sites.alignment` block: the
+ * site-tree modal, the entropy overlays and the phenotype panel derive the taxa and sequences the
+ * model saw from the text on read (lib/report/alignmentBlock.ts, which records the measurement
+ * behind that choice). Nothing here migrates older rows: a record from before Phase 2 has neither
+ * text nor block, `alignmentBlockFor()` returns null for it, and the views show their existing
+ * "this record does not carry the sequences" notices rather than a rewritten row.
+ *
  * MIGRATION OF PHASE 1 RUNS. The v1 `runs` store holds `ResultRecord`s (one `meme` run each).
  * They are not rewritten: `getReport(id)` looks in `reports` first and, when the id is a v1 run,
  * returns `wrapLegacyRun()` — a ReportRecord whose only section is `sites` (the v1 `result`),

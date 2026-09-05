@@ -59,6 +59,13 @@ export const MODELS_DIR = resolve(ENGINE_DIR, 'models');
 /** The bundled inputs the gallery prebake and the server tests read. */
 export const GALLERY_INPUTS = resolve(APP_DIR, 'web/static/gallery/inputs');
 
+/**
+ * runtime/src/pipeline.js `USER_TOPOLOGY_LABEL`, carried as `display_tree.label` on a tree-free run
+ * whose upload had a topology (PLAN.md D6); web/src/lib/report/displayTree.ts prints it after
+ * "Display only — " in the site-tree modal and the foreground picker.
+ */
+export const USER_TOPOLOGY_LABEL = 'your topology; branch lengths not estimated (model used TN93 distances)';
+
 /** Model graphs, any ONNX Runtime WASM artefact, and anything whose URL mentions HyPhy at all. */
 export const HEAVY_ASSET = /\.onnx(\?|$)|ort-wasm[^/]*\.(wasm|mjs)(\?|$)|ort-[^/]*\.wasm(\?|$)|hyphy/i;
 export const ONNX = /\.onnx(\?|$)/i;
@@ -360,8 +367,12 @@ export interface StoredReport {
 	treeFree: { reason: string; taxa_order?: string } | null;
 	/** Pairs at the TN93 saturation sentinel, when the distances were computed. */
 	saturatedPairs: number | null;
-	/** What the report DRAWS (runtime `displayTreeFor`): never what the model saw on a tree-free run. */
-	displayTree: { newick: string | null; source: string | null; from: string | null; taxa: number | null } | null;
+	/**
+	 * What the report DRAWS (runtime `displayTreeFor`): never what the model saw on a tree-free run.
+	 * Since Phase 4 (PLAN.md D6) a topology-only upload is drawn as given with unit lengths
+	 * (`source: 'user-topology'`, `label: USER_TOPOLOGY_LABEL`); NJ is for no tree at all.
+	 */
+	displayTree: { newick: string | null; source: string | null; from: string | null; taxa: number | null; label: string | null } | null;
 	displayTreeSource: string | null;
 	sites: CliSite[];
 	siteCount: number;
@@ -427,7 +438,7 @@ export async function readStoredReport(page: Page, id: string): Promise<StoredRe
 			treeSource: pre.tree_source ?? record.inputs?.treeSource ?? null,
 			treeFree: pre.tree_free ? { reason: pre.tree_free.reason, taxa_order: pre.tree_free.taxa_order } : null,
 			saturatedPairs: typeof pre.tn93_saturated_pairs === 'number' ? pre.tn93_saturated_pairs : null,
-			displayTree: dt ? { newick: dt.newick ?? null, source: dt.source ?? null, from: dt.from ?? null, taxa: dt.taxa ?? null } : null,
+			displayTree: dt ? { newick: dt.newick ?? null, source: dt.source ?? null, from: dt.from ?? null, taxa: dt.taxa ?? null, label: dt.label ?? null } : null,
 			displayTreeSource: pre.display_tree_source ?? null,
 			sites: sites.map((r: any) => ({
 				site: Number(r.site),

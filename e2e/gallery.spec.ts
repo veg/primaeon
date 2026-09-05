@@ -26,7 +26,7 @@
  */
 
 import { expect, test } from '@playwright/test';
-import { COMPUTED_SECTIONS, HEAVY_ASSET, HYPHY_ANY, compareEpistasis, referenceEpistasis, section, trackRequests, type CliEpistasis } from './helpers';
+import { COMPUTED_SECTIONS, HEAVY_ASSET, HYPHY_ANY, USER_TOPOLOGY_LABEL, compareEpistasis, referenceEpistasis, section, trackRequests, type CliEpistasis } from './helpers';
 
 const EXAMPLES = ['Smc6', 'bat_oas1', 'camelid', 'HIV1_RT', 'RHO'];
 /** D22: the two bundled examples whose tree file carries no branch lengths. */
@@ -98,9 +98,15 @@ test.describe('gallery', () => {
 				expect(pre.tree_source, `${id} carries a topology without branch lengths`).toBe('tn93');
 				expect(pre.tree_free?.reason).toBe('no_branch_lengths');
 				expect(entry.branch_length_method).toBe('tn93');
-				// The report still has a tree to draw; it is the app's, on the same distances.
-				expect(pre.display_tree_source).toBe('nj');
-				expect(record.sections.sites.display_tree?.newick ?? '').toMatch(/^\(/);
+				// The report still has a tree to draw. Since Phase 4 (PLAN.md D6) it is the READER'S
+				// topology with unit branch lengths, labelled so the lengths are not read as a fit;
+				// neighbour-joining is for an upload with no tree at all (treefree.spec.ts, Smc6 pasted).
+				expect(pre.display_tree_source).toBe('user-topology');
+				const dt = record.sections.sites.display_tree;
+				expect(dt?.newick ?? '').toMatch(/^\(/);
+				expect(dt?.source).toBe('user-topology');
+				expect(dt?.from).toBe('tree-text');
+				expect(dt?.label).toBe(USER_TOPOLOGY_LABEL);
 			} else {
 				expect(pre.tree_free ?? null, `${id} has usable branch lengths and must not be tree-free`).toBeNull();
 			}

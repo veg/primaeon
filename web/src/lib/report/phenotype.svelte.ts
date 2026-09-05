@@ -40,6 +40,7 @@
 import type { PhenotypeRunOptions, ReportRecord, TraitSpec, TreeSource } from '$lib/api';
 import { PHENOTYPE_DEFAULTS, traitToPhenotypeOptions } from '$lib/api';
 import type { PhenotypeSection } from './types';
+import { alignmentBlockFor } from './alignmentBlock';
 import { analyzeClient } from '$lib/workers/clients';
 import type { PhenotypeResponse } from '$lib/workers/protocol';
 import { savePhenotypeSection } from '$lib/storage/reports';
@@ -73,11 +74,14 @@ export function phenotypeInputs(record: ReportRecord): PhenotypeInputs | null {
 	const treeSource = record.inputs.treeSource;
 	const alignmentText = record.inputs.alignmentText;
 	if (alignmentText && alignmentText.trim()) {
+		// The taxa the model saw: the stored block when the producer wrote one, else derived from
+		// this same text minus the taxa the runtime dropped (alignmentBlock.ts) — a browser run has
+		// no stored block, and an empty list here would leave the presets with nothing to match.
 		return {
 			alignmentText,
 			treeText: record.inputs.treeText ?? '',
 			treeSource,
-			taxa: sites?.alignment?.names ?? [],
+			taxa: alignmentBlockFor(record)?.names ?? [],
 			from: 'inputs'
 		};
 	}
@@ -115,7 +119,7 @@ export function permulationsAvailable(record: ReportRecord): boolean {
 }
 
 export const PERMULATIONS_UNAVAILABLE =
-	'Permulations need a tree with branch lengths. This report ran tree-free (TN93 distances), and the tree drawn beside it is a neighbour-joining display tree built from those same distances — drawing a Brownian-motion null from it would test the distances against themselves. The gene-level p_evd is reported; the empirical one is not.';
+	'Permulations need a tree with branch lengths. This report ran tree-free (TN93 distances), and the tree drawn beside it is display only — the uploaded topology with unit lengths, or a neighbour-joining tree built from those same distances — so drawing a Brownian-motion null from it would test either a convention or the distances against themselves. The gene-level p_evd is reported; the empirical one is not.';
 
 // ---- presets ------------------------------------------------------------------------------------
 

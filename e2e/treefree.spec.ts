@@ -11,6 +11,9 @@
  * app draws is display-only.
  *
  *   camelid — `?demo=camelid&autorun=1`. camelid.nwk is a TOPOLOGY: no branch lengths anywhere.
+ *     Since Phase 4 (PLAN.md D6) the report DRAWS that topology, pruned to the taxa the model saw
+ *     and with unit branch lengths (`display_tree.source: 'user-topology'`, labelled
+ *     USER_TOPOLOGY_LABEL); the model still reads TN93 distances and never the topology.
  *     Phase 2 fitted HKY85 for it in HyPhy WASM; now the runtime reports `tree_free.reason =
  *     'no_branch_lengths'`, the strip says so in the reader's words, and the run is the analysis
  *     `hyphaeon meme -a camelid.fasta --use-tn93` produces — so the parity comparison is against
@@ -37,6 +40,7 @@ import {
 	GALLERY_INPUTS,
 	HYPHY_ANY,
 	ONNX,
+	USER_TOPOLOGY_LABEL,
 	compareLrt,
 	downloadText,
 	readStoredReport,
@@ -81,7 +85,7 @@ test.describe('tree-free: camelid, a topology without branch lengths', () => {
 		await expect(page.locator('#sites .table .count')).toHaveText('96 of 96 sites');
 	});
 
-	test('the stored record: tree_source tn93, the library’s reason, and a display tree beside it', async () => {
+	test('the stored record: tree_source tn93, the library’s reason, and the reader’s topology drawn beside it', async () => {
 		await expect
 			.poll(async () => (await readStoredReport(page, reportId))?.sectionKeys.sites === true, { timeout: 60_000 })
 			.toBe(true);
@@ -90,16 +94,35 @@ test.describe('tree-free: camelid, a topology without branch lengths', () => {
 		expect(stored.treeFree, 'the runtime recorded the library’s notice').not.toBeNull();
 		expect(stored.treeFree!.reason).toBe('no_branch_lengths');
 		expect(stored.preprocessing.branch_lengths_estimated, 'nothing estimates branch lengths any more (D22)').toBe(false);
-		// The reader supplied a topology, but a tree-free run draws the neighbour-joining tree on the
-		// distances the model actually saw (runtime `displayTreeFor`: a tree-free policy always
-		// takes the NJ branch), so the picture and the numbers come from the same object.
+		// The reader supplied a topology, so the report draws THAT (runtime `displayTreeFor`, D6):
+		// pruned to the loaded taxa, unit branch lengths, and a label that says the lengths were not
+		// estimated. The model saw TN93 distances; the picture is the reader's own object.
 		expect(stored.displayTree, 'a display tree is attached to the sites section').not.toBeNull();
 		expect(stored.displayTree!.newick ?? '').toMatch(/^\(/);
-		expect(stored.displayTreeSource).toBe('nj');
-		expect(stored.displayTree!.source).toBe('nj');
-		expect(stored.displayTree!.from).toBe('tn93');
+		expect(stored.displayTreeSource).toBe('user-topology');
+		expect(stored.displayTree!.source).toBe('user-topology');
+		expect(stored.displayTree!.from).toBe('tree-text');
+		expect(stored.displayTree!.label).toBe(USER_TOPOLOGY_LABEL);
+		expect(stored.displayTree!.taxa).toBe(212);
 		expect(stored.preprocessing.taxa_used).toBe(212);
 		expect(stored.siteCount).toBe(96);
+	});
+
+	test('the site tree modal draws the reader’s topology on the LIVE record, with the unit-length caption', async () => {
+		// Phase 4: the modal derives the {names, sequences} block from the stored alignment text
+		// (web/src/lib/report/alignmentBlock.ts), so a record run in this browser draws its tree
+		// with labelled tips exactly as a prebaked one does; nothing is fetched for it.
+		await page.locator('#sites table tbody tr.row').first().click();
+		const modal = page.locator('div.modal[role="dialog"]');
+		await expect(modal).toBeVisible();
+		await expect(modal.locator('p.treesource')).toContainText(`Display only — ${USER_TOPOLOGY_LABEL}`);
+		await expect(modal.locator('p.treesource')).toContainText(/unit branch lengths drawn here are a convention, not a fit/i);
+		await expect(modal.locator('.tree svg')).toBeVisible({ timeout: 30_000 });
+		await expect(modal.locator('.notice--error')).toHaveCount(0);
+		await expect(modal.locator('p.notice')).toHaveCount(0);
+		await expect(modal.locator('.facts')).toContainText(/Codon site/);
+		await modal.getByRole('button', { name: 'Close' }).click();
+		await expect(modal).toHaveCount(0);
 	});
 
 	test('parity: LRTs match `hyphaeon meme --use-tn93` within the graph class, strict', async () => {
@@ -189,22 +212,24 @@ test.describe('tree-free: an alignment pasted with no tree at all', () => {
 		await expect(modal.locator('p.treesource')).toContainText(/display only, built from the TN93 distances/i);
 		await expect(modal.locator('p.treesource')).toContainText(/the model was given those distances and never this topology/i);
 		await expect(modal.locator('.notice--error')).toHaveCount(0);
-		// A LIVE run does not keep the alignment in IndexedDB (only the prebaked and server records
-		// carry `sections.sites.alignment`), and the modal needs the sequences to label the tips, so
-		// here it says so rather than drawing a bare topology. The drawing itself is asserted on the
-		// gallery's tree-free record below, which does carry them.
-		await expect(modal.locator('.tree svg, p.notice')).toBeVisible({ timeout: 30_000 });
+		// Since Phase 4 a LIVE run draws too: the record keeps the alignment text and the modal
+		// derives the sequence block from it (web/src/lib/report/alignmentBlock.ts), so the 20 tips
+		// are labelled and the parsimony substitutions are placed; no notice stands in for a tree.
+		await expect(modal.locator('.tree svg')).toBeVisible({ timeout: 30_000 });
+		await expect(modal.locator('p.notice')).toHaveCount(0);
+		await expect(modal.locator('.facts')).toContainText(/Codon site/);
 		await modal.getByRole('button', { name: 'Close' }).click();
 		await expect(modal).toHaveCount(0);
 	});
 
-	test('and it draws that tree on the gallery’s tree-free record, which carries its alignment', async () => {
+	test('and the gallery’s tree-free record (camelid) draws the reader’s topology with the same caption', async () => {
 		await page.goto('/report/gallery/camelid/');
 		await expect(section(page, 'sites')).toHaveAttribute('data-state', 'done', { timeout: 60_000 });
 		await page.locator('#sites table tbody tr.row').first().click();
 		const modal = page.locator('div.modal[role="dialog"]');
 		await expect(modal).toBeVisible();
-		await expect(modal.locator('p.treesource')).toContainText(/display only, built from the TN93 distances/i);
+		// camelid.nwk is a topology, so the prebaked record (D6) draws it, not a neighbour-joining tree.
+		await expect(modal.locator('p.treesource')).toContainText(`Display only — ${USER_TOPOLOGY_LABEL}`);
 		// phylotree draws into `.tree`; the substitution count beside it is Fitch on the states.
 		await expect(modal.locator('.tree svg')).toBeVisible({ timeout: 30_000 });
 		await expect(modal.locator('.notice--error')).toHaveCount(0);

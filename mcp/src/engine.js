@@ -575,10 +575,11 @@ const INPUT_PATTERNS = [
   /Alignment too short/i,
   /input check failed/i,
   /Unknown callMode/i,
-  // phenotype.py's own refusals (phenotype.py:274, 231-236, :404-406) through the library.
   // runtime/src/pipeline.js prepareRun: the tn93 package raised on a saturated or non-overlapping
-  // pair (PHASE3A.md quirks); that is the alignment's property, not the engine's.
+  // pair (PHASE3A.md quirks); that is the alignment's property, not the engine's. Classified with
+  // its own message and code by `tn93Refusal` below; the pattern stays here as the backstop.
   /TN93 distances could not be computed/i,
+  // phenotype.py's own refusals (phenotype.py:274, 231-236, :404-406) through the library.
   /Insufficient foreground taxa/i,
   /Unknown preset/i,
   /Provide one of|no trait/i,
@@ -592,6 +593,50 @@ const INPUT_PATTERNS = [
   /cancelled/i
 ];
 
+/** `EngineError.code` for the one tree-free refusal an alignment can earn. */
+export const TN93_UNCOMPUTABLE = "TN93_UNCOMPUTABLE";
+
+/**
+ * The runtime's tree-free refusal (runtime/src/pipeline.js `prepareRun`), as an INPUT error with
+ * a message for the person who uploaded the alignment, or null when `message` is something else.
+ *
+ * The runtime's sentence begins "TN93 distances could not be computed for this alignment:" and
+ * then quotes the tn93 package's own exception (`tn93: ValueError: math domain error`, or a
+ * ZeroDivisionError for a pair with no overlapping unambiguous position — PHASE3A.md, "Python
+ * quirks replicated") before explaining it. The quoted exception is a package name and a Python
+ * error class the caller never invoked, so it is dropped here and the explanation kept; what is
+ * left says what is true of the DATA — a saturated pair, or two sequences that share no readable
+ * position — and what to do about it. Before Phase 3 integration this message fell through to the
+ * server class ("report it to the operator"), which was wrong: nothing about the engine changes
+ * it, and `hyphaeon_validate` reports the same pairs as TN93_SATURATED_PAIRS.
+ *
+ * @param {string} message
+ * @param {unknown} [cause]
+ * @returns {EngineError|null}
+ */
+export function tn93Refusal(message, cause) {
+  const text = String(message || "");
+  if (!/TN93 distances could not be computed/i.test(text)) return null;
+  // The runtime's explanation names both conditions every time; only the quoted exception class
+  // says which one this alignment hit (ValueError: saturated; ZeroDivisionError: no overlap).
+  const noOverlap = /ZeroDivisionError|division by zero/i.test(text);
+  return new EngineError(
+    "input",
+    "HyphAeon could not compute TN93 distances for this alignment, so a tree-free run is not possible: " +
+      (noOverlap
+        ? "at least one pair of sequences shares no overlapping unambiguous position, so their distance is undefined. "
+        : "at least one pair of sequences is saturated (too many differences for the TN93 correction to read any shared history). ") +
+      "This is a property of the sequences, not of the server.",
+    {
+      cause,
+      code: TN93_UNCOMPUTABLE,
+      hint:
+        "Supply a tree with branch lengths (the model then uses its patristic distances and TN93 is not needed), " +
+        "or run hyphaeon_validate and drop the sequences its TN93_SATURATED_PAIRS warning names."
+    }
+  );
+}
+
 /** Turn any failure inside a native run into an EngineError with a class. */
 export function classifyEngineError(err) {
   if (err instanceof EngineError) return err;
@@ -600,6 +645,8 @@ export function classifyEngineError(err) {
   if (name === "AbortError" || /cancelled/i.test(message)) {
     return new EngineError("input", "The run was cancelled.", { cause: err });
   }
+  const tn93 = tn93Refusal(message, err);
+  if (tn93) return tn93;
   if (name === "EvaluationError" || INPUT_PATTERNS.some((re) => re.test(message))) {
     return new EngineError("input", "HyphAeon could not process this input: " + message, {
       cause: err,

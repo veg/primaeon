@@ -56,7 +56,7 @@ describe('treePlan', () => {
 	it('goes tree-free when the tree has no usable branch lengths, keeping it for display', () => {
 		const d = diag([treeFree('no_branch_lengths', true), COST], { treeSource: 'user' });
 		expect(treePlan(d)).toEqual({ kind: 'tree-free', reason: 'no_branch_lengths', treeKeptForDisplay: true });
-		expect(treePlanText(treePlan(d))).toMatch(/neighbour-joining tree built from those distances, and the model sees neither topology/);
+		expect(treePlanText(treePlan(d))).toMatch(/draws your topology with unit branch lengths, for display only, and the model sees distances, not the topology/);
 	});
 });
 

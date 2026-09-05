@@ -139,7 +139,7 @@
 					</dd>
 				</div>
 				{#if pre.display_tree_source}
-					<div><dt>Tree drawn</dt><dd>{pre.display_tree_source === 'nj' ? 'neighbour-joining on the TN93 distances (display only)' : 'the tree the model was given'}</dd></div>
+					<div><dt>Tree drawn</dt><dd>{pre.display_tree_source === 'nj' ? 'neighbour-joining on the TN93 distances (display only)' : pre.display_tree_source === 'user-topology' ? 'your topology with unit branch lengths (display only; the model used TN93 distances)' : 'the tree the model was given'}</dd></div>
 				{/if}
 				<div><dt>Duplicates collapsed</dt><dd>{pre.duplicates_collapsed}</dd></div>
 				<div><dt>PD subsampled</dt><dd>{yesNo(pre.pd_subsampled)}</dd></div>

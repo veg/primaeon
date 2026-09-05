@@ -7,52 +7,31 @@
 	runs everything and returns the report, alongside the per-pillar tools." §3.6 gives the two
 	transports and the tool set; every analysis tool is in-process since Phase 3 (mcp/src/caps.js
 	NATIVE_ANALYSES; the Python bridge is deleted, PLAN.md D16 / §8 phase 3) and the
-	provenance.surface values are the ones the server writes. The transcript is data in
-	./transcript.ts, recorded against the stdio server. The snippet
-	convention is the one web/src/lib/results/mcpSnippet.ts implements for the report's
+	provenance.surface values are the ones the server writes.
+
+	WHAT IS READ AND WHAT IS WRITTEN HERE. The server's VERSION and the TOOL NAMES come from the
+	mcp/ workspace at build (./+page.server.ts: mcp/package.json and mcp/src/tools.js TOOL_NAMES),
+	so this page cannot quote a release the package does not ship — Phase 3 integration found it a
+	release behind. The one-line descriptions are page copy in ./tools.ts, held against the names by
+	./page.test.ts. The transcript is data in ./transcript.ts, recorded against the stdio server. The
+	snippet convention is the one web/src/lib/results/mcpSnippet.ts implements for the report's
 	"Reproduce" panel: the install line, then {tool, arguments} with file:// placeholders and the
 	CLI's option names in snake_case.
 -->
 <script lang="ts">
 	import { base } from '$app/paths';
+	import type { PageData } from './$types';
 	import { RECORDED, TRANSCRIPT } from './transcript';
+	import { toolTable } from './tools';
+
+	let { data }: { data: PageData } = $props();
 
 	const INSTALL = 'claude mcp add hyphaeon -- npx @veg/hyphaeon-mcp';
 
-	type Runs = 'native' | 'control';
-	interface Tool {
-		name: string;
-		returns: string;
-		runs: Runs;
-		note?: string;
-	}
-
-	/** hyphaeon_analyze first (it is the product); then the per-pillar tools in report order. */
-	const tools: readonly Tool[] = [
-		{
-			name: 'hyphaeon_analyze',
-			returns:
-				'The whole report: diagnostics, sites, gene, epistasis and sectors, attribution, filter, DMS (progressive, capped), phenotype when a trait is given, provenance and timings, in the schema the web report reads.',
-			runs: 'native',
-			note: 'The same options as the report\'s "Re-run with": model_variant, max_species, reference_sequence, call_mode, seed, permutations, dms; plus phenotype / phenotype_file for the trait, and use_tn93 (a tree is optional).'
-		},
-		{ name: 'hyphaeon_validate', returns: 'Diagnostics with the same warning codes as the browser, the run mode (inline or job) and a cost estimate.', runs: 'native' },
-		{ name: 'hyphaeon_meme', returns: 'Per-site LRT, p, q, invariable flag and the report\'s rank columns; --filter and --attribute as options.', runs: 'native' },
-		{ name: 'hyphaeon_busted', returns: 'p_ACAT, p_Simes, omnibus LRT, selection energy, significant-site counts, and the neural head\'s fields.', runs: 'native' },
-		{ name: 'hyphaeon_epistasis', returns: 'Co-selection edges with CESI and q, sectors with coherence and p_perm, optional per-sector DMS, GraphML.', runs: 'native' },
-		{ name: 'hyphaeon_dms', returns: '19-substitution scan per site with intrinsic plasticity and the ΔLRT map.', runs: 'native' },
-		{ name: 'hyphaeon_phenotype', returns: 'Trait association per site, PARS signature, trait sectors, permulation p.', runs: 'native', note: 'The trait is a preset, a foreground list or pattern, or an inline trait table (phenotype_file); permulations need a tree with branch lengths.' },
-		{ name: 'hyphaeon_evaluate', returns: 'Concordance of a meme CSV with a HyPhy MEME JSON: correlations, ROC-AUC, PPV, FPR, confusion matrices.', runs: 'native' },
-		{ name: 'job_status', returns: 'Phase, progress and warnings of a queued run.', runs: 'control' },
-		{ name: 'get_results', returns: 'A completed job\'s result, shaped with fields, top or summary_only.', runs: 'control' },
-		{ name: 'cancel_job', returns: 'Cancels a queued or running job.', runs: 'control' },
-		{ name: 'list_models', returns: 'The weights manifest and the engine\'s status.', runs: 'control' }
-	];
-
-	const RUNS_LABEL: Record<Runs, string> = {
-		native: 'in-process',
-		control: '—'
-	};
+	/** The server's tools with this page's copy, hyphaeon_analyze first (it is the product). */
+	const table = $derived(toolTable(data.mcp.toolNames));
+	const analysisTools = $derived(table.rows.filter((r) => r.kind === 'analysis'));
+	const controlTools = $derived(table.rows.filter((r) => r.kind === 'control'));
 
 	const analyzeSnippet = JSON.stringify(
 		{
@@ -98,6 +77,14 @@
 		<pre><code>{INSTALL}</code></pre>
 		<p>Or start the server yourself and point any MCP client at its stdio:</p>
 		<pre><code>npx @veg/hyphaeon-mcp</code></pre>
+		<p class="version">
+			Current release: <code>@veg/hyphaeon-mcp {data.mcp.version}</code>
+			{#if data.mcp.source === 'workspace'}
+				— read from the package at build, with the {data.mcp.toolNames.length} tools listed below.
+			{:else}
+				— the version the transcript below was recorded against (this page was built without the server's sources).
+			{/if}
+		</p>
 		<p>
 			The server runs the ONNX graphs under Node with <code>onnxruntime-node</code>; the model files
 			ship with the package and the hash of each graph is verified before it scores. Over stdio,
@@ -139,25 +126,38 @@
 	<section>
 		<h2>Tools</h2>
 		<p>
-			<strong>In-process</strong> means the JavaScript port runs inside the MCP process and the
-			result matches the reference at the published parity classes. Since Phase 3 that is every
-			analysis tool: the Python bridge that used to answer <code>hyphaeon_phenotype</code> is
-			deleted, and no tool result carries <code>provenance.surface: "python-reference"</code>.
+			Every analysis tool runs <strong>in-process</strong>: the JavaScript port runs inside the MCP
+			process and the result matches the reference at the published parity classes. That has been
+			true of all eight since Phase 3 — <code>hyphaeon_phenotype</code> included, which was the last
+			tool to answer through a Python subprocess — so nothing here is marked "bridged" and no tool
+			result carries <code>provenance.surface: "python-reference"</code>. The names below are the
+			ones <code>@veg/hyphaeon-mcp {data.mcp.version}</code> registers.
 		</p>
 		<div class="scroll">
 			<table class="tools">
 				<thead>
-					<tr><th>Tool</th><th>Returns</th><th>Runs</th></tr>
+					<tr><th>Tool</th><th>Returns</th></tr>
 				</thead>
 				<tbody>
-					{#each tools as t (t.name)}
+					{#each analysisTools as t (t.name)}
 						<tr class:tools--first={t.name === 'hyphaeon_analyze'}>
 							<td><code>{t.name}</code></td>
 							<td>
 								{t.returns}
 								{#if t.note}<span class="note">{t.note}</span>{/if}
 							</td>
-							<td class="runs runs--{t.runs}">{RUNS_LABEL[t.runs]}</td>
+						</tr>
+					{/each}
+				</tbody>
+				<tbody>
+					<tr class="tools__group"><th colspan="2">Job control</th></tr>
+					{#each controlTools as t (t.name)}
+						<tr>
+							<td><code>{t.name}</code></td>
+							<td>
+								{t.returns}
+								{#if t.note}<span class="note">{t.note}</span>{/if}
+							</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -274,16 +274,18 @@
 		font-size: var(--text-xs);
 		margin-top: var(--space-1);
 	}
-	.runs {
-		white-space: nowrap;
+	.tools__group th {
+		text-align: left;
 		font-size: var(--text-xs);
 		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		padding-top: var(--space-3);
 	}
-	.runs--native {
-		color: var(--ok);
-	}
-	.runs--control {
-		color: var(--text-faint);
+	.version {
+		font-size: var(--text-sm);
+		color: var(--text-muted);
 	}
 	.recorded {
 		font-size: var(--text-sm);

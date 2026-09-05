@@ -27,6 +27,7 @@
 	import FilterPanel from '$lib/viz/FilterPanel.svelte';
 	import SiteTreeModal from '$lib/viz/SiteTreeModal.svelte';
 	import { displayTree } from './displayTree';
+	import { sitesWithAlignment } from './alignmentBlock';
 	import Section from './Section.svelte';
 	import DataStrip from './DataStrip.svelte';
 	import SitesSection from './SitesSection.svelte';
@@ -50,7 +51,11 @@
 	const status = (name: string) => statuses.find((s) => s.name === name)!;
 
 	// ---- sites view state ------------------------------------------------------------------------
-	const sites = $derived(record.sections.sites);
+	// The sites section WITH the taxa and sequences the model saw: stored on the section by the
+	// gallery prebake and the server, derived from `inputs.alignmentText` for a browser run
+	// (lib/report/alignmentBlock.ts). Every site view below reads this one, so a report the reader
+	// just ran draws its site trees and entropy overlays exactly as a prebaked one does.
+	const sites = $derived(sitesWithAlignment(record));
 	const filter = $derived(record.sections.filter);
 	let useCleaned = $state(false);
 	const cleanedSites = $derived(filter?.cleaned?.sites ?? null);

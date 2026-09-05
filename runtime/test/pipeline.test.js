@@ -22,7 +22,12 @@ import {
 	MIN_SPECIES,
 	SCHEMA_VERSION,
 	clampMaxSpecies,
-	MAX_SPECIES_CAP
+	MAX_SPECIES_CAP,
+	DISPLAY_TREE_SOURCES,
+	USER_TOPOLOGY_LABEL,
+	decideTreePolicy,
+	displayTreeFor,
+	unitTopologyNewick
 } from '../src/pipeline.js';
 import { loadSession, resetSession } from '../src/session-node.js';
 import { loadManifest, pickVariant } from '../src/manifest.js';
@@ -273,7 +278,7 @@ describe('runMeme over a fake session', () => {
 		await expect(runMeme({ alignmentText: ALIGNMENT, treeText: TREE })).rejects.toThrow(/loadSession/);
 	});
 
-	it('goes tree-free for a tree with no branch lengths, records the reason, and draws NJ instead (D22)', async () => {
+	it('goes tree-free for a tree with no branch lengths, records the reason, and draws the USER\'S topology (D22, D6)', async () => {
 		const { handle } = fakeSession();
 		const result = await runMeme({ alignmentText: TN93_ALIGNMENT, treeText: TOPOLOGY_ONLY_TREE, session: handle });
 		const pp = result.provenance.preprocessing;
@@ -288,15 +293,73 @@ describe('runMeme over a fake session', () => {
 		expect(w.severity).toBe('info');
 		expect(w.data.reason).toBe('no_branch_lengths');
 		expect(result.provenance.warnings.map((x) => x.code)).not.toContain('BRANCH_LENGTHS_MISSING');
-		// The display tree is the NJ one, and it is not what the model was given.
-		expect(result.display_tree.source).toBe('nj');
-		expect(pp.display_tree_source).toBe('nj');
-		expect(result.display_tree.newick).toMatch(/^\(.*\);$/);
+		// The display tree is the reader's own topology with unit lengths — not NJ, and not what the
+		// model was given (it read TN93 distances). PLAN.md D6: "its topology is kept only for display".
+		expect(result.display_tree.source).toBe('user-topology');
+		expect(pp.display_tree_source).toBe('user-topology');
+		expect(result.display_tree.from).toBe('tree-text');
+		expect(result.display_tree.taxa).toBe(4);
+		expect(result.display_tree.prunedTips).toBe(0);
+		expect(result.display_tree.label).toBe(USER_TOPOLOGY_LABEL);
+		expect(result.display_tree.newick).toBe('((a:1,b:1):1,(c:1,d:1):1);');
 		for (const name of Object.keys(TN93_SEQS)) expect(result.display_tree.newick).toContain(name);
 		// A caller may still insist on a real tree.
 		await expect(
 			runMeme({ alignmentText: TN93_ALIGNMENT, treeText: TOPOLOGY_ONLY_TREE, session: handle, options: { requireBranchLengths: true } })
 		).rejects.toThrow(NO_BRANCH_LENGTHS_MESSAGE);
+	});
+
+	it('draws the user topology pruned to the taxa the model saw, and falls back to NJ when none match', () => {
+		const loaded = { taxa: ['a', 'b', 'c', 'd'], notices: { treeFree: { reason: 'no_branch_lengths', taxaOrder: 'alignment' } } };
+		const policy = (text) => ({ ...decideTreePolicy(TN93_ALIGNMENT, text, {}), useTn93: true });
+		// Support values survive on nodes that keep a split; a partial branch length is NOT kept.
+		const withSupport = "((a,b)0.9:0.2,(c,(d,'e f')0.7)0.8);";
+		const kept = displayTreeFor(loaded, policy(withSupport), withSupport);
+		expect(kept.source).toBe('user-topology');
+		expect(kept.newick).toBe('((a:1,b:1)0.9:1,(c:1,d:1)0.8:1);');
+		expect(kept.taxa).toBe(4);
+		expect(kept.prunedTips).toBe(1);
+		expect(kept.newick).not.toContain('0.2');
+		// Quoted tip names match the alignment's bare names, and are re-quoted only when they need it.
+		const quoted = "(('a','b'),('c','d'));";
+		expect(displayTreeFor(loaded, policy(quoted), quoted).newick).toBe('((a:1,b:1):1,(c:1,d:1):1);');
+		// A chain of unary nodes collapses to one unit branch.
+		const unary = '(((a,b)),(c,(((d)))));';
+		expect(displayTreeFor(loaded, policy(unary), unary).newick).toBe('((a:1,b:1):1,(c:1,d:1):1);');
+		// Two tips in the alignment are still a topology worth drawing (the rest pruned).
+		const partial = '((a,x),(b,(y,z)));';
+		const two = displayTreeFor(loaded, policy(partial), partial);
+		expect(two.source).toBe('user-topology');
+		expect(two.newick).toBe('(a:1,b:1);');
+		expect(two.prunedTips).toBe(3);
+		// One matching tip is not a topology: NJ on the distances the model saw.
+		const njLoaded = { ...loaded, N: 4, distances: null };
+		const unmatched = '((a,x),(y,z));';
+		expect(unitTopologyNewick(policy(unmatched).tree, njLoaded.taxa)).toBeNull();
+		// The helper alone, on the parsed tree.
+		expect(unitTopologyNewick(policy(TOPOLOGY_ONLY_TREE).tree, ['a', 'b', 'c', 'd'])).toEqual({ newick: '((a:1,b:1):1,(c:1,d:1):1);', tips: 4, pruned: 0 });
+		expect(unitTopologyNewick(null, [])).toBeNull();
+	});
+
+	it('draws NJ for a tree-free run whose topology names none of the taxa the model saw', async () => {
+		const { handle } = fakeSession();
+		const result = await runMeme({ alignmentText: TN93_ALIGNMENT, treeText: '((x,y),(z,w));', session: handle });
+		expect(result.provenance.preprocessing.tree_free.reason).toBe('no_branch_lengths');
+		expect(result.display_tree.source).toBe('nj');
+		expect(result.provenance.preprocessing.display_tree_source).toBe('nj');
+		for (const name of Object.keys(TN93_SEQS)) expect(result.display_tree.newick).toContain(name);
+	});
+
+	it('draws the embedded topology from the alignment when that is what went tree-free', async () => {
+		const { handle } = fakeSession();
+		const result = await runMeme({ alignmentText: TN93_ALIGNMENT + TOPOLOGY_ONLY_TREE + '\n', treeText: null, session: handle });
+		const pp = result.provenance.preprocessing;
+		expect(pp.tree_source).toBe('tn93');
+		expect(pp.tree_provided).toBe('embedded');
+		expect(pp.tree_free.reason).toBe('no_branch_lengths');
+		expect(result.display_tree.source).toBe('user-topology');
+		expect(result.display_tree.from).toBe('alignment');
+		expect(result.display_tree.newick).toBe('((a:1,b:1):1,(c:1,d:1):1);');
 	});
 
 	it('goes tree-free when there is no tree at all, and refuses only when asked to', async () => {
@@ -323,6 +386,9 @@ describe('runMeme over a fake session', () => {
 			const result = await runMeme({ ...args, session: handle });
 			expect(result.provenance.preprocessing.tree_free.reason, label).toBe('requested');
 			expect(result.provenance.preprocessing.tree_source, label).toBe('tn93');
+			// A REQUESTED tree-free run follows the analysis: the tree was ignored, so NJ is drawn.
+			expect(result.display_tree.source, label).toBe('nj');
+			expect(DISPLAY_TREE_SOURCES, label).toContain(result.display_tree.source);
 		}
 	});
 
