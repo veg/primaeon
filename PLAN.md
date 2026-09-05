@@ -296,17 +296,40 @@ JetBrains Mono, which axomeme3 also uses), Observable Plot for statistical chart
 Manhattan plot, d3-force for the network, phylotree.js for trees, Web Workers for preprocessing and
 inference, Playwright e2e, vitest for the package. No Tailwind, no CDNs.
 
+### 4.0 One action: upload. Everything runs.
+
+HyphAeon is fast enough that the user should not be choosing analyses or setting options. The
+only thing the interface asks for is a dataset. Dropping (or pasting) an alignment, with or without
+a tree, starts everything, and one report fills in as results arrive:
+
+| Order | What runs | Why this order | Cost in the browser |
+|---|---|---|---|
+| 1 | Diagnostics, with automatic repairs: U→T, trailing-codon trim, duplicate collapse, Faith's-PD cap, variant chosen from tree depth, branch lengths estimated by HyPhy WASM when missing, an NJ tree built when there is no tree at all | Decides the inputs; the only blocking outcome is a refuse-level problem (too few taxa, frameshifted, unparseable) | milliseconds to a few seconds (HyPhy) |
+| 2 | Site selection (`meme`) | The core result | one forward pass over variable sites, seconds |
+| 3 | Gene-level omnibus (`busted`) | Free from (2) plus one head pass | negligible |
+| 4 | Epistasis network and sectors | Attention comes out of the same forward pass; the rest is graph math | seconds; permutation null in a worker |
+| 5 | Attribution on called sites | Re-scoring loop over non-consensus taxa at called sites | seconds |
+| 6 | Alignment-artifact filter | Two re-scoring passes; shown as "N suspicious patches" with a masked/unmasked toggle, never as a pre-run option | seconds |
+| 7 | Digital DMS | 19·L forward passes: the expensive one, so it runs last, in the background, filling the heatmap progressively, cancellable, capped by work; above the cap the report says so and offers the server | tens of seconds to minutes |
+| 8 | Phenotype (PhyloWAS) | Needs a trait, so it cannot run unasked: the report offers "Have a phenotype? Mark foreground taxa on the tree or paste a list" (presets appear when the taxa match a preset's species) and runs on demand | seconds |
+
+Advanced settings (variant, taxon cap, call mode, seed, reference sequence) live behind one
+disclosure on the report, "Re-run with…", and re-run everything. Defaults come from diagnostics.
+The pre-run "Before you run" panel becomes a compact "what we did to your data" strip at the top of
+the report, expandable to the full warnings table.
+
 ### 4.1 Routes
 
 | Route | Content |
 |---|---|
-| `/` | What HyphAeon is in three sentences, the surrogate caveat, "your sequences stay in this browser", demo buttons, links to paper, package, MCP. |
-| `/analyze` | Upload → diagnostics → analysis picker → options → run. Everything runs here; a "run on the server" option appears only when an input exceeds the browser caps, and says what will be sent. |
-| `/results/[local-id]`, `/jobs/[id]` | Same results component. Local runs persist in IndexedDB under the user's control; server jobs by URL. |
-| `/gallery` | Six bundled examples with prebaked results. |
+| `/` | The drop zone is the page: drop or paste an alignment (+ optional tree), or pick one of the five examples. Three sentences on what HyphAeon is, the surrogate caveat, "your sequences stay in this browser". Links to methods, MCP, paper, package. |
+| `/report/[local-id]`, `/report/gallery/[name]` | One report, sections streaming in: overview strip (gene verdict, called sites, taxa used, variant, surface), Sites, Gene, Epistasis, DMS, Phenotype (on demand), Data and provenance, downloads, MCP snippet. Local reports persist in IndexedDB; gallery reports are prebaked. Server jobs (oversize inputs) use the same page by job id. |
 | `/methods` | One page per pillar; caveats generated from `caveats.json`. |
-| `/evaluate` | `meme` CSV + HyPhy MEME JSON → metrics + scatter. |
-| `/mcp` | Install lines for stdio and the remote connector, tool list, example transcript. |
+| `/evaluate` | The one deliberate secondary tool: `meme` CSV + HyPhy MEME JSON → metrics + scatter. |
+| `/mcp` | Install lines for stdio and the remote connector, tool list, example transcript. The MCP mirrors the product with a `hyphaeon_analyze` tool that runs everything and returns the report, alongside the per-pillar tools. |
+
+`/analyze` and `/gallery` from Phase 1 fold into `/` and `/report/gallery/…`; `/results/…` redirects
+to `/report/…`.
 
 ### 4.2 The client-side pipeline
 
@@ -356,7 +379,10 @@ One implementation of the checks in the package, run in the browser instantly an
 - Lazy per step: ONNX (7.8 MB per variant), ORT WASM (12.9 MB), HyPhy WASM + data, tn93 WASM fetched
   on first use and cached with the Cache API; the landing page requests none of them.
 
-### 4.5 Results, per pillar
+### 4.5 The report: one page, sections stream in
+
+Each section below is a section of the single report, rendered as soon as its analysis finishes;
+the page never waits for the slowest one.
 
 - **meme** — Manhattan canvas with tier colouring and codon/AA entropy overlays (axomeme3),
   ranked-sites plot (DM3), site table with reference state, AA-composition spark bars, variable flag,
@@ -554,9 +580,11 @@ changes the port needs:
    regenerate `examples/*` and `expected_results/*` with a test that compares them.
 6. **`diagnose(alignment, tree)`** returning the structured warnings of §4.3; the JS package
    implements the same codes and the fixtures pin them.
-7. **Seed and PRNG flags** on `epistasis` and `phenotype` (`--seed`) so statistical parity runs are
-   reproducible on the Python side.
+7. **Seed and PRNG flags** on `epistasis` and `phenotype` (`--seed`, default 42) so statistical
+   parity runs are reproducible on the Python side. *Landed in Phase 2a on `feat/js-port`.*
 8. **`list-models --json`** reading the manifest.
+9. **`--mds-sign {canonical,lapack}`** on every alignment-loading subcommand, default canonical
+   (D20), with `MDS_SIGN.md` documenting the measured effect. *Landed in Phase 2a on `feat/js-port`.*
 
 ---
 
@@ -595,6 +623,8 @@ changes the port needs:
 | D17 | PRNG and seeds | xoshiro256** with a default seed of 42, recorded in provenance; `--seed` added upstream so both sides are reproducible; statistical parity per §5.4. |
 | D18 | Where the port's fixtures live | **Resolved by D9:** `veg/HyphAeon/fixtures/`, generated and replayed in the same repository and CI run. |
 | D19 | Versioning and publishing | The JS packages carry the repository tag as their version (`hyphaeon==1.4.0` ↔ `@veg/hyphaeon-js@1.4.0`); `release.yml` publishes both on tag; `manifest.json` records the tag; the app pins an exact version and bumps deliberately. |
+| D21 | Analysis picker vs run-everything | **Resolved (user direction, 2026-09-05): run everything.** The only user action is uploading a dataset; all pillars run automatically in the order of §4.0 and one report streams in; phenotype runs on demand because it needs a trait; advanced settings are a single "Re-run with…" disclosure. |
+| D20 | MDS eigenvector sign convention | **Needs the ML team's sign-off.** Phase 1 measured that the library's eigensolver and LAPACK disagree on the sign of some MDS columns (bat_oas1, RHO) and the model is not sign-invariant, so parity is impossible without a convention. Phase 2a adds `--mds-sign {canonical,lapack}` (env `HYPHAEON_MDS_SIGN`) to `dataset.py` and the same rule to the library, **defaulting to canonical** (largest-magnitude entry positive, the AxoMEME 2.0 driver's rule). This changes reference outputs on affected datasets; `MDS_SIGN.md` in the engine reports the measured effect per example. Alternative: keep `lapack` as the default and accept that the browser cannot reproduce the CLI on those datasets. |
 
 ---
 
