@@ -38,10 +38,13 @@ test.describe('landing page', () => {
 		await page.goto('/');
 		await expect(page).toHaveTitle(/HyphAeon/);
 		await expect(page.getByRole('heading', { level: 1, name: 'HyphAeon' })).toBeVisible();
-		// The framing is part of the product (PLAN.md §2.1, §2.8): both promises are on the page.
+		// D21 (PLAN.md §4.0): the landing is the drop zone. The surrogate caveat lives in the report
+		// and on the methods page next to the numbers it qualifies, not in the hero; the privacy
+		// promise stays (footer).
 		const body = await page.locator('body').innerText();
-		expect(body).toMatch(/surrogate/i);
+		expect(body).not.toMatch(/surrogate/i);
 		expect(body).toMatch(/stay in this browser/i);
+		await expect(page.getByText(/drop your alignment here/i)).toBeVisible();
 	});
 
 	test('requests nothing from another origin', async ({ page, baseURL }) => {

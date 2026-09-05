@@ -78,6 +78,15 @@
 	let controller: AbortController | null = null;
 	let browserReady = $state(false);
 
+	// ---- autorun (PLAN.md §4.0 / D21) ------------------------------------------------------------
+	// The landing page hands a dropped file over via sessionStorage and navigates here with
+	// ?autorun=1; examples arrive as ?demo=<id>&autorun=1. In autorun mode the form is hidden and
+	// the run starts the moment diagnostics allow it. A refusal or an error drops back to the form
+	// so the user can see why and adjust.
+	const HANDOFF_KEY = 'hyphaeon:handoff';
+	let autorun = $state(false);
+	let autorunFired = false;
+
 	const sniffedNames = $derived(sequenceNames(alignmentText));
 	const names = $derived(libraryNames.length ? libraryNames : sniffedNames);
 	const format = $derived(sniffFormat(alignmentText));
@@ -102,8 +111,58 @@
 
 	onMount(() => {
 		browserReady = workersAvailable() && storageAvailable();
-		const demo = page.url.searchParams.get('demo');
-		if (demo) void useDemo(demo);
+		const params = page.url.searchParams;
+		autorun = params.get('autorun') === '1';
+		const demo = params.get('demo');
+		if (demo) {
+			void useDemo(demo);
+		} else if (autorun) {
+			loadHandoff();
+		}
+	});
+
+	function loadHandoff() {
+		let raw: string | null = null;
+		try {
+			raw = sessionStorage.getItem(HANDOFF_KEY);
+			sessionStorage.removeItem(HANDOFF_KEY);
+		} catch {
+			raw = null;
+		}
+		if (!raw) {
+			autorun = false;
+			return;
+		}
+		try {
+			const h = JSON.parse(raw) as { alignmentText?: string; alignmentName?: string | null; treeText?: string | null; treeName?: string | null };
+			alignmentText = h.alignmentText ?? '';
+			alignmentName = h.alignmentName ?? null;
+			treeText = h.treeText ?? '';
+			treeName = h.treeName ?? null;
+			demoId = null;
+		} catch {
+			autorun = false;
+			loadError = 'The handed-over file could not be read; upload it again.';
+		}
+	}
+
+	// Autorun: start as soon as the inputs are diagnosed and allowed. Give up only on a real
+	// refusal (a diagnosis exists and it blocks) or when this browser cannot run at all; while the
+	// diagnosis is still pending, panelModel() reports canRun=false and that must NOT cancel.
+	$effect(() => {
+		if (!autorun) return;
+		if (!browserReady) {
+			autorun = false;
+			return;
+		}
+		if (diagnosis !== null && !diagnosisPending && model && !model.canRun) {
+			autorun = false;
+			return;
+		}
+		if (!autorunFired && canRun) {
+			autorunFired = true;
+			void run();
+		}
 	});
 
 	// Keep the reference valid as the alignment changes; default per DM3's heuristic.
@@ -259,6 +318,7 @@
 			} else {
 				runError = err instanceof Error ? err.message : String(err);
 			}
+			autorun = false;
 		} finally {
 			running = false;
 			controller = null;
@@ -274,7 +334,14 @@
 	<title>Analyze · HyphAeon</title>
 </svelte:head>
 
-<div class="container container--narrow">
+<div class="container container--narrow" class:autorun>
+	{#if autorun}
+		<p class="eyebrow">Analyzing</p>
+		<h1>{alignmentName ?? demoId ?? 'Your alignment'}</h1>
+		<p class="intro">
+			{#if diagnosisPending}Checking the inputs…{:else if running}Running every analysis in this browser.{:else}Starting…{/if}
+		</p>
+	{:else}
 	<p class="eyebrow">Analyze</p>
 	<h1>Upload an alignment</h1>
 	<p class="intro">
@@ -282,8 +349,9 @@
 		one. Without a tree, one is inferred here; without branch lengths, they are fitted here. The
 		file never leaves this page.
 	</p>
+	{/if}
 
-	<div class="demos" aria-label="Bundled examples">
+	<div class="demos" aria-label="Bundled examples" hidden={autorun}>
 		<span class="demos__label">Try an example:</span>
 		{#each DEMOS as demo (demo.id)}
 			<button
@@ -303,7 +371,7 @@
 		<p class="error" role="alert">{loadError}</p>
 	{/if}
 
-	<form class="card" onsubmit={(e) => { e.preventDefault(); void run(); }}>
+	<form class="card" class:card--autorun={autorun} onsubmit={(e) => { e.preventDefault(); void run(); }}>
 		<!-- Alignment -->
 		<fieldset disabled={running}>
 			<legend>Alignment</legend>
@@ -538,6 +606,13 @@
 </div>
 
 <style>
+	/* Autorun (landing-page handoff or ?autorun=1): the inputs and options are decided, so the
+	   form collapses to the diagnostics panel and the progress checklist. */
+	.card--autorun > fieldset,
+	.card--autorun button[type='submit'],
+	.card--autorun #run-note {
+		display: none;
+	}
 	.intro {
 		color: var(--text-muted);
 		margin-bottom: var(--space-4);
