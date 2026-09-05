@@ -339,7 +339,7 @@ The axomeme3 step list, made into workers and the shared package, with the hando
 |---|---|---|
 | Decompress and parse | pako for `.gz`; FASTA / NEXUS / PHYLIP; HyPhy WASM auto-conversion fallback with `NORMALIZE_SEQUENCE_NAMES=0` | axomeme3 + DM3 `fastaValidation.js` |
 | Reference sequence | Dropdown; coordinates in reference space, gaps skipped; `hg`/`hg38`/`human` heuristic then first sequence | axomeme3, DM3 `chooseReference` |
-| Tree | Upload or embedded, used as is when it has branch lengths (three-tier name matching). **No tree, or a tree without branch lengths → tree-free mode: pairwise TN93 distances feed the MDS directly**, mirroring the reference's `--use-tn93` (`dataset.py:443-521`; the manuscript reports ρ = 0.9997 against tree-based). A JS neighbour-joining tree is built from the same distances only for display (site trees). HyPhy WASM is removed (D22); axomeme3's silent star-tree fallback is dropped | library `tn93.js`, `nj.js` (Phase 3) |
+| Tree | Upload or embedded, used as is when it has branch lengths (three-tier name matching). **No tree, or a tree without branch lengths → tree-free mode: pairwise TN93 distances feed the MDS directly**, mirroring the reference's `--use-tn93` (`dataset.py:493-571` (`compute_tn93_distance_matrix`) and `598-636` (the `use_tn93` branch); the manuscript reports ρ = 0.9997 against tree-based). A JS neighbour-joining tree is built from the same distances only for display (site trees). HyPhy WASM is removed (D22); axomeme3's silent star-tree fallback is dropped | library `tn93.js`, `nj.js` (Phase 3) |
 | Taxon cap | Faith's-PD greedy selection keeping the reference; default 256, hard max 512 | axomeme3, DM3 `patristic.js` |
 | Patristic + MDS | In a Web Worker | DM3 `patristic.js`, `symmetricEigen.js`, `mds.js` |
 | Inference | ORT in a Worker; `onnxruntime-web/wasm` entry, self-hosted WASM, lazy-loaded, hash verified; batched across sites | DM3 `session.js`, `assemble.js` |
@@ -363,7 +363,7 @@ One implementation of the checks in the package, run in the browser instantly an
 | Taxa < 3 | refuse (#7) |
 | Taxa > cap | info: PD subsampling; > 1,000 refuse |
 | Tree ↔ alignment names | list unmatched both ways; refuse if any alignment taxon lacks a tip (#9) |
-| Branch lengths absent, or no tree | tree-free TN93 distances (D22); the report says so |
+| Branch lengths absent, or no tree | info `TREE_FREE_TN93` with the reason; tree-free TN93 distances (D22); `TN93_SATURATED_PAIRS` counts pairs at the sentinel |
 | Negative / saturated lengths | warn with magnitude |
 | Max patristic > 10 | warn: chronogram or mutation counts; rescaled (#8) |
 | Depth regime, unique haplotypes | shallow → suggest `viral`; deep + ≥ 100 taxa → FPR warning; star-like → outside regime (#33) |
@@ -423,7 +423,7 @@ the port, listed by dependency order. "Exists" refers to DM3's `src/lib/services
 | `epistasis.py` | 776 | attribution matrix `mean_attns × delta`, cosine network, Student-t p, BH, CESI, APC; sectors: connected components → greedy modularity communities (Clauset–Newman–Moore, networkx semantics) → spectral coherence λ₁/Tr; vectorized permutation null (einsum + `eigvalsh` in batches ≤ 25,000); DMS driver | `t.sf` (incomplete beta), `eigh`/`eigvalsh` (have tred2/tql2), `norm`, `default_rng`, networkx | `epistasis`, `sectors`, `dms` | new; needs `mean_root_attns` | network and sectors exact given identical graph; `p_perm` statistical |
 | `phenotype.py` | 644 | trait vector (presets, foreground list or regex, CSV, continuous), attribution projection, per-site ρ and t-test p, BH, PARS signature, trait sectors (reuses sectors), spectral energy and length-adjusted EVD p, Brownian-motion permulations (phylogenetic covariance → Cholesky → Gaussian draws), normal survival | `t.sf`, `norm.sf`, `cholesky`, `randn`, `norm` | `phenotype`, `permulations` | new; needs `mean_root_attns` | site stats exact; permulation p statistical |
 | `evaluation.py` | 667 | CSV/JSON loading, gene matching, Pearson, Spearman (ties), ROC-AUC, PPV/FPR, confusion, warnings, report | `pearsonr`, `spearmanr`, `roc_auc_score` | `evaluate` | new | exact to 1e-9 |
-| `dataset.py` TN93 path (443-521, 544-580) | ~120 | pairwise Tamura–Nei 1993 distances with the reference's ambiguity handling, assembled into the distance matrix that replaces the tree (`--use-tn93`) | log, base frequencies | `tn93` (+ `nj` for display topology, not in Python) | **Phase 3 (D22)** | exact to 1e-9 on distances; MDS then as above |
+| `dataset.py` TN93 path (493-571, 598-636 at 61d30e3) | ~120 | pairwise Tamura–Nei 1993 distances with the reference's ambiguity handling, assembled into the distance matrix that replaces the tree (`--use-tn93`) | log, base frequencies | `tn93` (+ `nj` for display topology, not in Python) | **Phase 3 (D22)** | exact to 1e-9 on distances; MDS then as above |
 | `cli.py` output writers, `io.py` | ~150 | JSON/CSV/GraphML writers | — | `writers` | new (GraphML is a small XML emitter) | byte-equal after canonicalisation |
 
 **Numeric kernel** (`numeric/`, built once, tested against scipy fixtures): log-gamma (Lanczos),
