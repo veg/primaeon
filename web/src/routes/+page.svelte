@@ -10,7 +10,13 @@
 	HANDOFF. The pipeline, workers and diagnostics live on the analyze route. This page reads the
 	dropped files as text, parks them in sessionStorage under HANDOFF_KEY, and navigates to
 	/analyze/?autorun=1, which loads the handoff and runs as soon as diagnostics allow (see
-	analyze/+page.svelte). Examples navigate with ?demo=<id>&autorun=1.
+	analyze/+page.svelte).
+
+	EXAMPLES. The five chips are the README's bundled datasets (lib/gallery/examples.json). Each
+	opens its PREBAKED report at /report/gallery/<id>/ — every analysis already run at build time by
+	web/scripts/prebake-gallery.mjs — so an example is instant and costs no model download; the
+	chip's title is the README table's one-line description of the dataset. PLAN.md §4.1 folds the
+	Phase 1 /gallery cards into these chips; /gallery/ now redirects here.
 
 	DELIVERY. This route must request nothing beyond its own HTML, CSS, JS and favicon: no model, no
 	ORT WASM, no workers (PLAN.md §4.4). ../../e2e/smoke.spec.ts asserts it.
@@ -18,7 +24,11 @@
 <script lang="ts">
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
-	import { DEMOS, readText } from '$lib/analyze/inputs';
+	import { readText } from '$lib/analyze/inputs';
+	import catalogue from '$lib/gallery/examples.json';
+	import type { GalleryExample } from '$lib/gallery/types';
+
+	const EXAMPLES: readonly GalleryExample[] = catalogue.examples as GalleryExample[];
 
 	const HANDOFF_KEY = 'hyphaeon:handoff';
 	const TREE_EXT = /\.(nwk|newick|tree|tre|nex|nexus)$/i;
@@ -88,6 +98,11 @@
 		if (!pasted.trim()) return;
 		await start({ alignmentText: pasted, alignmentName: null, treeText: null, treeName: null });
 	}
+
+	/** The prebaked report for an example (api.ts `reportPath('gallery/<id>')`, spelled out to keep this route light). */
+	function reportHref(example: GalleryExample): string {
+		return `${base}/report/gallery/${encodeURIComponent(example.id)}/`;
+	}
 </script>
 
 <svelte:head>
@@ -127,8 +142,8 @@
 
 	<p class="examples">
 		<span class="examples__label">Or try an example:</span>
-		{#each DEMOS as demo (demo.id)}
-			<a class="chip" href="{base}/analyze/?demo={demo.id}&autorun=1" title={demo.note}>{demo.label}</a>
+		{#each EXAMPLES as example (example.id)}
+			<a class="chip" href={reportHref(example)} title={example.description}>{example.name}</a>
 		{/each}
 	</p>
 </section>

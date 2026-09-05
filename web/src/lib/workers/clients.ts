@@ -11,6 +11,8 @@
 
 import { WorkerClient } from './client';
 import type {
+	AnalyzeRequest,
+	AnalyzeResponse,
 	InferRequest,
 	InferResponse,
 	PrepRequest,
@@ -22,6 +24,7 @@ import type {
 let prep: WorkerClient<PrepRequest, PrepResponse> | null = null;
 let tree: WorkerClient<TreeRequest, TreeResponse> | null = null;
 let infer: WorkerClient<InferRequest, InferResponse> | null = null;
+let analyze: WorkerClient<AnalyzeRequest, AnalyzeResponse> | null = null;
 
 export function prepClient(): WorkerClient<PrepRequest, PrepResponse> {
 	prep ??= new WorkerClient(() => new Worker(new URL('./prep.worker.ts', import.meta.url), { type: 'module' }));
@@ -36,6 +39,12 @@ export function treeClient(): WorkerClient<TreeRequest, TreeResponse> {
 export function inferClient(): WorkerClient<InferRequest, InferResponse> {
 	infer ??= new WorkerClient(() => new Worker(new URL('./infer.worker.ts', import.meta.url), { type: 'module' }));
 	return infer;
+}
+
+/** Phase 2: the one worker that runs every pillar (analyze.worker.ts). */
+export function analyzeClient(): WorkerClient<AnalyzeRequest, AnalyzeResponse> {
+	analyze ??= new WorkerClient(() => new Worker(new URL('./analyze.worker.ts', import.meta.url), { type: 'module' }));
+	return analyze;
 }
 
 /** True where Web Workers exist (a browser, not the prerenderer). */

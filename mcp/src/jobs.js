@@ -22,6 +22,15 @@
  * Completion notifications over the transport are best-effort, exactly as datamonkey-js-server's
  * job-notifier.js documents: polling job_status is the source of truth. The store exposes an
  * `onTerminal` hook the server uses for that; a missed notification never loses a job.
+ *
+ * PARTIAL RESULTS (Phase 2, hyphaeon_analyze). The report of PLAN.md 4.0 streams section by
+ * section — sites, gene, epistasis, attribution, filter, then DMS last and slowest — and the
+ * runtime's `runEverything` fires `onSection(name, payload, {final})` as each lands. A runner
+ * may hand those to the store through the third argument of `run`, `publish(partial)`, and
+ * `partial(id)` returns the latest one while the job is still running, so `get_results
+ * section=sites` answers before DMS has finished and `job_status` lists `sections_ready`. The
+ * final `result` replaces the partial when the run resolves; a partial is never returned for a
+ * completed job.
  */
 
 import { randomBytes } from "node:crypto";
@@ -83,6 +92,9 @@ export function createJobStore(opts = {}) {
     if (job.progress) out.progress = job.progress;
     if (job.error) out.error = job.error;
     out.result_available = job.status === "completed";
+    if (job.status === "running" && job.partial && Array.isArray(job.partial.sections_ready)) {
+      out.sections_ready = [...job.partial.sections_ready];
+    }
     return out;
   }
 
@@ -115,11 +127,18 @@ export function createJobStore(opts = {}) {
       const report = (phase, done, total, message) => {
         job.progress = { phase, done, total, message, at: nowIso() };
       };
+      // `publish({value, sections_ready})` stores an intermediate result (see the header). The
+      // store keeps only the latest; the caller decides what a partial holds. Advisory as well.
+      const publish = (partial) => {
+        if (job.status !== "running") return;
+        job.partial = partial && typeof partial === "object" ? Object.assign({ at: nowIso() }, partial) : null;
+      };
       Promise.resolve()
-        .then(() => job._run(job._controller.signal, report))
+        .then(() => job._run(job._controller.signal, report, publish))
         .then(
           (value) => {
             if (job.status === "cancelled") return; // cancelled while running; already finished
+            job.partial = null;
             finish(job, "completed", { result: value });
           },
           (err) => {
@@ -138,7 +157,8 @@ export function createJobStore(opts = {}) {
 
   return {
     /**
-     * @param {{analysis: string, options?: object, run: (signal: AbortSignal) => Promise<any>}} spec
+     * @param {{analysis: string, options?: object,
+     *   run: (signal: AbortSignal, report: Function, publish: (partial: {value: any, sections_ready?: string[]}) => void) => Promise<any>}} spec
      * @returns {object} public view of the new job
      */
     create(spec) {
@@ -153,6 +173,7 @@ export function createJobStore(opts = {}) {
         started_at: null,
         finished_at: null,
         result: undefined,
+        partial: null,
         error: undefined,
         _run: spec.run,
         _controller: new AbortController(),
@@ -170,6 +191,26 @@ export function createJobStore(opts = {}) {
     result(id) {
       const job = jobs.get(id);
       return job && job.status === "completed" ? job.result : undefined;
+    },
+    /** The latest published partial of a RUNNING job (`{value, sections_ready, at}`), else undefined. */
+    partial(id) {
+      const job = jobs.get(id);
+      return job && job.status === "running" && job.partial ? job.partial : undefined;
+    },
+    /**
+     * Resolve when the job reaches a terminal state or `timeoutMs` elapses; returns the public
+     * view either way (the caller reads `status`). Used by hyphaeon_analyze to answer inside the
+     * call when the report finishes in time and to hand back the id otherwise.
+     */
+    async wait(id, timeoutMs, stepMs = 50) {
+      const t0 = Date.now();
+      for (;;) {
+        const job = jobs.get(id);
+        if (!job) return null;
+        if (job.status !== "queued" && job.status !== "running") return publicView(job);
+        if (Date.now() - t0 >= timeoutMs) return publicView(job);
+        await new Promise((r) => setTimeout(r, Math.min(stepMs, Math.max(1, timeoutMs - (Date.now() - t0)))));
+      }
     },
     cancel(id) {
       const job = jobs.get(id);

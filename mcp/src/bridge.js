@@ -9,7 +9,9 @@
  * have after the port, and marks provenance.surface = "python-reference". Once a pillar is ported
  * its branch here is DELETED — this file is temporary by design (PLAN.md D16) and every result it
  * produces says so in `provenance`. Phase 1b deleted the meme, busted and evaluate branches
- * (src/engine.js runs them in-process); epistasis, dms and phenotype remain until Phase 2-3.
+ * (src/engine.js runs them in-process); Phase 2 deleted epistasis and dms (the library's
+ * epistasis.js / sectors.js / dms.js ports at veg/HyphAeon phase-2a, through runtime/). ONLY
+ * hyphaeon_phenotype remains here, until Phase 3 ports phenotype.py (PLAN.md 8).
  *
  * What it does, in order:
  *   1. writes the inline inputs to a fresh temp directory (alignment.fasta, tree.nwk,
@@ -34,11 +36,9 @@
  * they are printed. HYPHAEON_WEIGHTS / HYPHAEON_VARIANT / HF_HUB_OFFLINE are passed through
  * untouched: the operator decides where weights come from, not this file.
  *
- * Note on variants: of the bridged parsers only phenotype takes --model-variant; epistasis and
- * dms do not (cli.py:1062-1094), so those two tools do not expose model_variant. The env var
- * HYPHAEON_VARIANT does not reach them either (their handlers pass variant=None), so the only way
- * to run them on viral weights is HYPHAEON_WEIGHTS pointing at the viral file. Recorded as an
- * upstream issue rather than worked around here.
+ * The phenotype parser takes --model-variant (cli.py:1038-1059) and, since phase-2a, --seed
+ * (default 42: the permulations AND the trait-sector permutation null) and --mds-sign (default
+ * canonical); all three are forwarded one to one.
  */
 
 import { spawn } from "node:child_process";
@@ -157,31 +157,7 @@ export function classifyFailure(stdout, stderr, exitCode) {
  * child environment instead. Anything not listed here is not forwarded.
  */
 const ARGS = {
-  // cli.py:1062-1082 (no --model-variant on this parser)
-  epistasis: [
-    ["use_tn93", "--use-tn93", "flag"],
-    ["no_tree", "--no-tree", "flag"],
-    ["focal_taxon", "--focal-taxon", "value"],
-    ["min_sim", "--min-sim", "value"],
-    ["min_shared", "--min-shared", "value"],
-    ["max_fdr", "--max-fdr", "value"],
-    ["min_lrt", "--min-lrt", "value"],
-    ["min_clique_size", "--min-clique-size", "value"],
-    ["max_overlap", "--max-overlap", "value"],
-    ["min_coherence", "--min-coherence", "value"],
-    ["n_permutations", "--n-permutations", "value"],
-    ["max_perm_p", "--max-perm-p", "value"],
-    ["no_dms", "--no-dms", "flag"],
-    ["cpu", "--cpu", "flag"]
-  ],
-  // cli.py:1085-1094 (no --model-variant on this parser)
-  dms: [
-    ["use_tn93", "--use-tn93", "flag"],
-    ["no_tree", "--no-tree", "flag"],
-    ["focal_taxon", "--focal-taxon", "value"],
-    ["cpu", "--cpu", "flag"]
-  ],
-  // cli.py:1038-1059
+  // cli.py:1038-1059 (phase-2a: + --seed, --mds-sign). The only bridged pillar left.
   phenotype: [
     ["use_tn93", "--use-tn93", "flag"],
     ["no_tree", "--no-tree", "flag"],
@@ -197,6 +173,8 @@ const ARGS = {
     ["alpha", "--alpha", "value"],
     ["n_permutations", "--n-permutations", "value"],
     ["max_perm_p", "--max-perm-p", "value"],
+    ["seed", "--seed", "value"],
+    ["mds_sign", "--mds-sign", "value"],
     ["cpu", "--cpu", "flag"]
   ]
 };
@@ -345,7 +323,7 @@ export function buildArgv(analysis, options, files) {
  * Run one analysis through the Python CLI.
  *
  * @param {object} req
- * @param {string} req.analysis          epistasis | dms | phenotype
+ * @param {string} req.analysis          phenotype (the only bridged pillar since Phase 2)
  * @param {string} [req.alignment]       alignment text (FASTA/NEXUS/PHYLIP)
  * @param {string} [req.tree]            Newick/NEXUS tree text
  * @param {string} [req.phenotype_file]  CSV/TSV text for phenotype
@@ -481,7 +459,7 @@ export async function runBridge(req) {
       elapsed_sec: Math.round(elapsed * 1000) / 1000,
       command,
       options: Object.assign({}, options),
-      note: "Bridge to the Python reference; replaced pillar by pillar by @veg/hyphaeon-js (meme, busted, evaluate run in-process since Phase 1b)."
+      note: "Bridge to the Python reference; replaced pillar by pillar by @veg/hyphaeon-js (meme, busted, evaluate in-process since Phase 1b; epistasis, dms since Phase 2). Only phenotype remains bridged (Phase 3)."
     };
     return { result, provenance };
   } finally {

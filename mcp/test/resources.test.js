@@ -24,6 +24,14 @@ describe("resources", () => {
     const templates = resourceTemplates.map((t) => t.uriTemplate);
     expect(templates).toContain("hyphaeon://examples/{name}");
     expect(templates).toContain("hyphaeon://gallery/{name}");
+    expect(templates).toContain("hyphaeon://report/{id}");
+    // No report has been run in this server: nothing is listed, and reads explain themselves.
+    expect(uris.filter((u) => u.startsWith("hyphaeon://report/"))).toEqual([]);
+    const none = await ctx.client.readResource({ uri: "hyphaeon://report/" + "a".repeat(32) });
+    expect(none.contents[0].mimeType).toBe("text/plain");
+    expect(none.contents[0].text).toMatch(/^Error: no job/);
+    const bad = await ctx.client.readResource({ uri: "hyphaeon://report/not-an-id" });
+    expect(bad.contents[0].text).toMatch(/^Error: a report id is the 32-hex job_id/);
   });
 
   it("serves caveats keyed by model_version with the model_eval numbers", async () => {
@@ -38,16 +46,24 @@ describe("resources", () => {
   it("serves the requirements with the validation codes and the engine split", async () => {
     const res = await ctx.client.readResource({ uri: "hyphaeon://methods/requirements" });
     const body = JSON.parse(res.contents[0].text);
-    expect(Object.keys(body.pillars).sort()).toEqual(["busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
+    expect(Object.keys(body.pillars).sort()).toEqual(["analyze", "busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
     expect(body.pillars.meme.options.model_variant.cli).toBe("--model-variant");
     expect(body.pillars.meme.engine).toBe("in-process");
-    expect(body.pillars.epistasis.engine).toBe("python-reference");
+    expect(body.pillars.epistasis.engine).toBe("in-process");
+    expect(body.pillars.dms.engine).toBe("in-process");
+    expect(body.pillars.phenotype.engine).toBe("python-reference");
+    expect(body.pillars.analyze.engine).toBe("in-process");
+    expect(body.pillars.analyze.sections_in_order[0]).toBe("diagnostics");
+    expect(body.pillars.epistasis.options.seed.cli).toBe("--seed");
+    expect(body.pillars.meme.options.mds_sign.default).toBe("canonical");
+    expect(body.report_sections).toEqual(["diagnostics", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype", "provenance", "timings"]);
     expect(body.validation_codes).toEqual(CODES);
     expect(body.validation_codes).toHaveProperty("BRANCH_LENGTHS_MISSING");
     expect(body.validation_codes).toHaveProperty("DISTANCE_RESCALED");
     expect(body.caps.work.sync_max).toBe(2.5e9);
-    expect(body.provenance.native.analyses).toEqual(["meme", "busted", "evaluate"]);
-    expect(body.provenance.bridged.analyses).toEqual(["epistasis", "dms", "phenotype"]);
+    expect(body.caps.analyze.wait_default_sec).toBe(120);
+    expect(body.provenance.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "evaluate", "analyze"]);
+    expect(body.provenance.bridged.analyses).toEqual(["phenotype"]);
   });
 
   it("serves an example by name and refuses traversal", async () => {

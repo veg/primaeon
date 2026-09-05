@@ -24,16 +24,27 @@ import type { FromWorker, ToWorker } from './protocol';
 export const TERMINATE_AFTER_MS = 1500;
 
 export type ProgressHandler = (phase: string, done: number, total: number, message: string) => void;
+/** A finished (or, for DMS, partially filled) report section from the analyze worker. */
+export type SectionHandler = (name: string, payload: unknown, final: boolean) => void;
 
 export interface CallOptions {
 	onProgress?: ProgressHandler;
+	onSection?: SectionHandler;
 	signal?: AbortSignal;
+	/**
+	 * Grace after a cancel before the worker is terminated; default TERMINATE_AFTER_MS. The analyze
+	 * worker asks for much longer: a cancel during the DMS phase is scoped to the DMS by the
+	 * orchestrator, which then finishes the record and returns it, and terminating the worker in the
+	 * meantime would lose both the response and the warm ORT session.
+	 */
+	terminateAfterMs?: number;
 }
 
 interface Pending {
 	resolve: (value: unknown) => void;
 	reject: (reason: Error) => void;
 	onProgress?: ProgressHandler;
+	onSection?: SectionHandler;
 	cleanup: () => void;
 }
 
@@ -60,7 +71,7 @@ export class WorkerClient<Req, Res> {
 	}
 
 	call(payload: Req, options: CallOptions = {}): Promise<Res> {
-		const { signal, onProgress } = options;
+		const { signal, onProgress, onSection, terminateAfterMs = TERMINATE_AFTER_MS } = options;
 		if (signal?.aborted) return Promise.reject(abortError());
 		const worker = this.ensureWorker();
 		const id = this.nextId++;
@@ -74,7 +85,7 @@ export class WorkerClient<Req, Res> {
 				}
 				terminateTimer = setTimeout(() => {
 					if (this.pending.has(id)) this.terminate(abortError());
-				}, TERMINATE_AFTER_MS);
+				}, terminateAfterMs);
 			};
 			const cleanup = () => {
 				signal?.removeEventListener('abort', onAbort);
@@ -85,6 +96,7 @@ export class WorkerClient<Req, Res> {
 				resolve: resolve as (value: unknown) => void,
 				reject,
 				onProgress,
+				onSection,
 				cleanup
 			});
 			worker.postMessage({ id, kind: 'request', payload } satisfies ToWorker<Req>);
@@ -121,6 +133,10 @@ export class WorkerClient<Req, Res> {
 		if (!p) return;
 		if (msg.kind === 'progress') {
 			p.onProgress?.(msg.phase, msg.done, msg.total, msg.message);
+			return;
+		}
+		if (msg.kind === 'section') {
+			p.onSection?.(msg.name, msg.payload, msg.final);
 			return;
 		}
 		this.pending.delete(msg.id);

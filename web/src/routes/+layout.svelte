@@ -2,7 +2,9 @@
 	+layout.svelte — the app shell: header with navigation, the page, and a footer that carries the
 	one promise every page makes (sequences stay in this browser).
 
-	WHY THIS FILE EXISTS. Every route in PLAN.md §4.1 shares this frame. Links go through `base`
+	WHY THIS FILE EXISTS. Every route in PLAN.md §4.1 shares this frame. Phase 2 (D21) folds
+	/analyze and /gallery into the landing page and /report/gallery/…, so the primary navigation is
+	Methods, Evaluate and MCP; the brand link is the way back to the drop zone. Links go through `base`
 	from $app/paths so the same build works at the origin root and under a sub-path (see
 	svelte.config.js). Route hrefs end in '/' to match `trailingSlash = 'always'` in +layout.ts;
 	a link without the slash would cost a redirect on the static host.
@@ -15,8 +17,6 @@
 	let { children } = $props();
 
 	const links = [
-		{ href: '/analyze/', label: 'Analyze' },
-		{ href: '/gallery/', label: 'Gallery' },
 		{ href: '/methods/', label: 'Methods' },
 		{ href: '/evaluate/', label: 'Evaluate' },
 		{ href: '/mcp/', label: 'MCP' }

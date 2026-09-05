@@ -49,7 +49,8 @@ describe("CODES", () => {
   it("publishes every library code plus the three app codes", () => {
     for (const c of DIAGNOSTIC_CODES) expect(CODES).toHaveProperty(c);
     expect(Object.keys(CODES).filter((c) => !DIAGNOSTIC_CODES.includes(c)).sort()).toEqual(["CAPS_EXCEEDED", "RUN_MODE", "TN93_UNAVAILABLE"]);
-    expect([...NATIVE_ANALYSES, ...BRIDGED_ANALYSES].sort()).toEqual(["busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
+    expect([...NATIVE_ANALYSES, ...BRIDGED_ANALYSES].sort()).toEqual(["analyze", "busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
+    expect([...BRIDGED_ANALYSES]).toEqual(["phenotype"]);
   });
 });
 
@@ -73,9 +74,16 @@ describe("diagnose on the bundled examples", () => {
     const without = diagnose({ alignment, tree, capabilities: {} });
     expect(without.warnings.find((x) => x.code === "BRANCH_LENGTHS_MISSING").data.estimator).toBeNull();
 
-    const bridged = diagnose({ alignment, tree, analysis: "epistasis" });
+    const bridged = diagnose({ alignment, tree, analysis: "phenotype" });
     expect(bridged.warnings.find((x) => x.code === "BRANCH_LENGTHS_MISSING").data.estimator).toBe("python-reference");
     expect(bridged.summary.engine).toBe("python-reference");
+
+    // epistasis and dms are native since Phase 2; the report ("analyze") is native by construction.
+    for (const analysis of ["epistasis", "dms", "analyze"]) {
+      const native = diagnose({ alignment, tree, analysis, capabilities: { hyphy: true } });
+      expect(native.summary.engine, analysis).toBe("in-process");
+      expect(native.warnings.find((x) => x.code === "BRANCH_LENGTHS_MISSING").data.estimator, analysis).toBe("hyphy-hky85");
+    }
   });
 
   it("bat_oas1: a chronogram in Mya gets DISTANCE_RESCALED (dataset.py:678-681)", async () => {
@@ -140,9 +148,26 @@ describe("diagnose refusals and modes", () => {
     const r3 = diagnose({ alignment, use_tn93: true, capabilities: { tn93: true } });
     expect(r3.ok).toBe(true);
 
-    const r4 = diagnose({ alignment, use_tn93: true, analysis: "epistasis" });
+    const r4 = diagnose({ alignment, use_tn93: true, analysis: "phenotype" });
     expect(r4.ok).toBe(true);
     expect(r4.warnings.map((w) => w.code)).not.toContain("TN93_UNAVAILABLE");
+
+    // epistasis is in-process now: TN93 mode is refused for it like for meme.
+    const r5 = diagnose({ alignment, use_tn93: true, analysis: "epistasis" });
+    expect(r5.ok).toBe(false);
+    expect(r5.warnings.find((w) => w.code === "TN93_UNAVAILABLE").severity).toBe("refuse");
+  });
+
+  it("sizes the report (analyze) like meme and says how the call answers", async () => {
+    const alignment = await example("bat_oas1.fasta");
+    const tree = await example("bat_oas1.nwk");
+    const out = diagnose({ alignment, tree, analysis: "analyze" });
+    expect(out.ok).toBe(true);
+    expect(out.summary.engine).toBe("in-process");
+    expect(out.summary.work).toBe(351 * 18 * 18);
+    expect(out.summary.mode).toBe("sync");
+    expect(out.warnings.find((w) => w.code === "RUN_MODE").message).toMatch(/wait budget/);
+    expect(out.warnings.find((w) => w.code === "RUN_MODE").message).toMatch(/DMS section/);
   });
 
   it("refuses alignment taxa that have no tree tip", () => {
@@ -197,5 +222,9 @@ describe("caps", () => {
     expect(classifyRun("meme", { codons: 12000, taxa: 2 }).reason).toMatch(/at least 3/);
     expect(classifyRun("meme", { codons: 1000, taxa: 1500 }).ok).toBe(false);
     expect(workFor("meme", 12000, 456)).toBeLessThan(MAX_SYNC_WORK);
+    // The report is sized like meme: its DMS section caps itself by its own work budget.
+    expect(workFor("analyze", 351, 18)).toBe(351 * 18 * 18);
+    expect(classifyRun("analyze", { codons: 351, taxa: 18 })).toMatchObject({ ok: true, mode: "sync" });
+    expect(classifyRun("analyze", { codons: 40000, taxa: 18 }).ok).toBe(false);
   });
 });

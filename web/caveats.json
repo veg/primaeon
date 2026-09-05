@@ -1,0 +1,271 @@
+{
+  "_why_this_file_exists": "PLAN.md 4.1: '/methods: one page per pillar; caveats generated from caveats.json.' Every number the site quotes about the model's measured behaviour lives here, keyed by model_version, so a new model release changes one file and the copy follows. web/scripts/check-caveats.mjs validates this file against models/manifest.json at build (model_version, reference_version, artifact hash prefixes) and refuses to build on a mismatch; web/src/lib/caveats/index.ts loads it and web/src/lib/caveats/Caveats.svelte renders it per pillar. Pillar keys are the ReportRecord section names (diagnostics, sites, gene, epistasis, attribution, filter, dms, phenotype) plus evaluate and general. Each caveat and each table carries a `source` string; the numbers are transcribed, not derived, so update the source and this file together. No numbers about the model may be typed into a .svelte file directly.",
+  "schema_version": 1,
+  "v1": {
+    "model_version": "v1",
+    "reference_version": "1.0.0",
+    "reference_tag": "phase-2a",
+    "sources": {
+      "model_eval": "veg/HyphAeon model_eval/README.md, the 'Current state (hyphaeon_v1)' tables (HyPhy 2.5.101 for the cached MEME runs, seq-gen 1.3.5 for the neutral simulations)",
+      "model_card": "HuggingFace datamonkey/hyphaeon model card and veg/HyphAeon models/manifest.json",
+      "manuscript": "hyphaeon-manuscript main.tex, figures as quoted in hyphaeon-app PLAN.md section 2",
+      "mds_sign": "veg/HyphAeon MDS_SIGN.md, 'Measured effect on the reference's own outputs' (scripts/mds_sign_effect.py)",
+      "phase1": "hyphaeon-app PHASE1.md, parity table and known gaps",
+      "phase2a": "veg/HyphAeon PHASE2A.md, 'Epistasis end to end' and 'Python quirks replicated'",
+      "issues": "GitHub issues veg/HyphAeon #7, #8, #9, #13, #33"
+    },
+    "model_card": {
+      "what_it_is": "A ~1.9M-parameter axial transformer that reads a codon alignment and a metric tree as four tensors (codon tokens, amino-acid tokens, patristic distance matrix, 4-D classical-MDS coordinates) and emits a per-site MEME-style LRT through a 16-threshold ordinal head.",
+      "is_surrogate": true,
+      "surrogate_for": "MEME",
+      "evaluated_against": "HyPhy MEME, not against known selection",
+      "parameters_suite": 2455128,
+      "heads": ["head_meme", "head_busted", "head_absrel"],
+      "inputs": ["msa_codons", "msa_aas", "dist_matrix", "mds_coords"],
+      "outputs": ["lrt", "mean_root_attns", "root_repr"],
+      "genetic_code": "universal only",
+      "taxon_cap": 512,
+      "default_taxon_cap": 256,
+      "prng": { "algorithm": "xoshiro256**", "default_seed": 42 },
+      "mds_sign": "canonical",
+      "variants": {
+        "general": {
+          "trained_on": "TOGA mammalian, 742 species",
+          "regime": "deep / cross-species",
+          "onnx_sha256_prefix": "aa10e8e0",
+          "busted_head_onnx_sha256_prefix": "2ad554e0"
+        },
+        "viral": {
+          "trained_on": "base + ~9,300 Datamonkey viral",
+          "regime": "viral / shallow",
+          "onnx_sha256_prefix": "c3ea5795"
+        }
+      },
+      "source": "model_card"
+    },
+    "caveats": [
+      {
+        "id": "surrogate",
+        "pillars": ["general", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype"],
+        "headline": "HyphAeon is a surrogate for MEME, evaluated against MEME, not against truth.",
+        "detail": "The training targets are MEME LRTs. Every result carries is_surrogate: true and surrogate_for as data. A site you intend to publish should be confirmed with the real method.",
+        "action": "Run MEME on Datamonkey for the alignment; the report links to it.",
+        "source": "manuscript"
+      },
+      {
+        "id": "rank-not-scale",
+        "pillars": ["general", "sites", "gene", "evaluate"],
+        "headline": "Rank is strong, scale is compressed.",
+        "detail": "On HIV-1 RT the per-site LRT correlates with MEME at Spearman rho 0.53 with a regression slope of 0.16: a HyphAeon LRT of 4 is not a MEME LRT of 4. Across the literature datasets the aggregate is ROC-AUC 0.914, PPV 50.6% and Spearman rho 0.49. Sort by LRT; read rank and percentile; read p and q beside them, never alone.",
+        "numbers": [
+          { "label": "HIV-1 RT, Spearman rho vs MEME", "value": "0.53" },
+          { "label": "HIV-1 RT, regression slope vs MEME", "value": "0.16" },
+          { "label": "Literature aggregate, ROC-AUC", "value": "0.914" },
+          { "label": "Literature aggregate, PPV", "value": "50.6%" },
+          { "label": "Literature aggregate, Spearman rho", "value": "0.49" }
+        ],
+        "source": "manuscript"
+      },
+      {
+        "id": "calibration-regime",
+        "pillars": ["general", "diagnostics", "sites", "gene", "filter"],
+        "headline": "Calibration depends on the tree regime.",
+        "detail": "On neutral seq-gen simulations the false-positive rate at alpha = 0.05 is 5-7% for 20 taxa on a shallow tree and 50 taxa on a moderate one, and 36% for 100 taxa on a deep tree. The diagnostics step classifies the regime before the model runs; on deep trees with 100 or more taxa, treat p-values as an ordering.",
+        "table": "fpr_by_regime",
+        "source": "model_eval"
+      },
+      {
+        "id": "concordance",
+        "pillars": ["sites", "evaluate"],
+        "headline": "Concordance with MEME on the bundled genes is a rank statement over a mostly neutral background.",
+        "detail": "Spearman rho on variable sites is 0.27-0.37 on Smc6, bat_oas1 and camelid, with Cohen's kappa near zero and F1 between 0.00 and 0.30 at matched thresholds; all three pass the acceptance gates. In a long gene such as Smc6 (1,097 sites) more than 90% of sites sit at LRT ~ 0 under neutral or purifying evolution, so a whole-alignment correlation measures baseline noise; agreement on the top sites is what the gates check.",
+        "table": "concordance",
+        "source": "model_eval"
+      },
+      {
+        "id": "composition-and-length",
+        "pillars": ["sites"],
+        "headline": "Nucleotide composition and alignment length do not move the calibration.",
+        "detail": "AT-rich (80%), GC-rich (30%) and uniform simulations all give 5-9% FPR at alpha = 0.05; 30-, 100- and 500-codon alignments give 3.3-9% with a median LRT ratio of 1.15x across lengths (gate: 3x). p-values from alignments of different lengths are comparable.",
+        "table": "composition_and_length",
+        "source": "model_eval"
+      },
+      {
+        "id": "tree-sensitivity",
+        "pillars": ["general", "diagnostics", "sites"],
+        "headline": "Nearly invariant to the tree's topology, sensitive to its branch-length scale.",
+        "detail": "On a six-dataset grid (18-212 taxa, shallow to deep, 26-100% variable sites) the model fails the permutation, star-tree and zero-distance sensitivity gates on most datasets, fails the x0.1, x10 and x100 branch-scaling invariance gates, and passes duplicate-taxon invariance exactly through the default haplotype pruning. What matters is therefore what the checks look at: branch-length units, reading frame, U versus T, taxa missing from the tree (zeroed silently upstream, refused here), a maximum patristic distance above 10 (rescaled upstream, warned here), fewer than three taxa (refused).",
+        "table": "invariance_gates",
+        "source": "model_eval"
+      },
+      {
+        "id": "variant",
+        "pillars": ["general", "diagnostics", "sites", "gene"],
+        "headline": "The general and viral variants differ by a factor of four on unseen viral families.",
+        "detail": "Spearman rho against MEME is about 0.10 for the general (mammalian) variant and about 0.43 for the viral variant on viral families neither was trained on. Diagnostics suggest the variant from median patristic depth (shallow trees suggest viral); the choice is visible in the report's provenance and can be changed under 'Re-run with'.",
+        "numbers": [
+          { "label": "general variant, rho on unseen viral families", "value": "0.10" },
+          { "label": "viral variant, rho on unseen viral families", "value": "0.43" }
+        ],
+        "source": "manuscript"
+      },
+      {
+        "id": "shallow-single-ancestor",
+        "pillars": ["diagnostics", "sites"],
+        "headline": "Shallow single-ancestor panels return nothing, silently.",
+        "detail": "A star-like tree with one shared ancestor and short tips is outside the regime the model was trained on; the reference produces an empty-looking result without a warning (issue #33). The diagnostics step raises STAR_LIKE_TREE before the run.",
+        "source": "issues"
+      },
+      {
+        "id": "invariable-not-scored",
+        "pillars": ["sites", "dms"],
+        "headline": "Invariable sites are not scored, not zero.",
+        "detail": "The model runs on variable sites only; an invariable site gets LRT 0 and p = 2/3 by construction (the point mass of the MEME mixture null), and the report shows it as 'not scored'. Never rank or count these as zeros.",
+        "source": "manuscript"
+      },
+      {
+        "id": "taxon-cap",
+        "pillars": ["diagnostics", "sites", "gene"],
+        "headline": "The app caps taxa at 256 by default; the CLI does not.",
+        "detail": "Above the cap, Faith's-PD greedy subsampling keeps the reference sequence and the most phylogenetically diverse taxa (hard maximum 512, the model's trained limit). hyphaeon meme applies no cap, so a reproduction of an uncapped CLI run on a large alignment must set the cap to unlimited under 'Re-run with'. Which taxa were used is recorded in provenance.preprocessing.",
+        "source": "phase1"
+      },
+      {
+        "id": "mds-sign",
+        "pillars": ["general", "sites", "gene", "epistasis", "dms", "phenotype"],
+        "headline": "MDS eigenvector signs are a convention, fixed to 'canonical' on every surface.",
+        "detail": "The model is not sign-invariant (mds_proj is a linear layer on the raw coordinates), and eigensolvers disagree on signs, so until phase-2a the same alignment scored differently on different machines. The canonical rule (largest-magnitude entry of each kept eigenvector positive) is now the default in the Python reference (--mds-sign canonical) and in the JavaScript port. Against the old LAPACK signs, every variable site on every bundled example moves by more than the 1e-5 parity class; rankings are essentially unchanged (Spearman rho >= 0.998) and two RHO sites cross p = 0.05. --mds-sign lapack reproduces pre-convention numbers exactly.",
+        "table": "mds_sign_effect",
+        "source": "mds_sign"
+      },
+      {
+        "id": "busted-head-nondeterministic",
+        "pillars": ["gene"],
+        "headline": "The neural BUSTED head is not reproducible upstream; the statistical fields are.",
+        "detail": "The bundled model.safetensors lacks 11 BustedMultiTaskHead parameters, and hyphaeon busted loads the head unseeded, so selection_probability, predicted_gene_lrt, synonymous_rate_variation, omega_3 and the class proportions change from run to run of the reference (Smc6 selection_probability 0.995 in one run, 0.601 in the next). This app draws the missing parameters once from a fixed seed and marks the fields deterministic_upstream: false. p_ACAT, p_Simes, the omnibus LRT, total selection energy and the significant-site counts do not depend on the head and reproduce the reference at the parity class.",
+        "numbers": [
+          { "label": "Smc6 selection_probability, two reference runs", "value": "0.995, then 0.601" },
+          { "label": "head parameters missing from model.safetensors", "value": "11" }
+        ],
+        "source": "phase1"
+      },
+      {
+        "id": "p-perm-monte-carlo",
+        "pillars": ["epistasis", "phenotype"],
+        "headline": "p_perm is a Monte Carlo estimate; its resolution is 1/B.",
+        "detail": "The sector null is B random K-site subsets. At the CLI's B = 1,000 the estimate carries roughly +/-0.03 absolute error and the null moments +/-5%, independently on each side of a parity comparison; the same two Smc6 sectors at B = 100,000 with three seeds a side agree to well inside the class (sector 1: p_perm 0.0011-0.0014; sector 2: 0.080-0.082). The report prints p_perm at the resolution B allows and shows the null band beside it; B = 10,000 is the function default and the setting the parity class was written for.",
+        "numbers": [
+          { "label": "Monte Carlo error on p_perm at B = 1,000", "value": "about +/-0.03" },
+          { "label": "Monte Carlo error on null mean / std at B = 1,000", "value": "about +/-5%" },
+          { "label": "Default B (function and parity harness)", "value": "10,000" }
+        ],
+        "source": "phase2a"
+      },
+      {
+        "id": "epistasis-reference-quirks",
+        "pillars": ["epistasis"],
+        "headline": "Three reference quirks are reproduced on purpose.",
+        "detail": "'Branches' means taxa: the co-selection network compares per-taxon attribution rows, with no branch projection and no APC correction. The CLI passes min_sim 0.30 where the function's default is 0.35; the report uses the CLI's value. max_overlap is declared and never read, so no Jaccard suppression between sectors happens. Thresholds are compared in float32, as numpy does, so a cosine of exactly 0.35 passes 0.35.",
+        "source": "phase2a"
+      },
+      {
+        "id": "dms-focal-taxon",
+        "pillars": ["dms"],
+        "headline": "The scan mutates one focal taxon, and total_mutations counts 19 per codon regardless.",
+        "detail": "Each of the 19 alternative residues replaces the focal taxon's amino acid (first taxon unless --focal-taxon; the column majority when the focal residue is a gap or unknown) through its canonical codon, so the result is a property of that lineage's context. total_mutations is 19 x codon_count even when only a subset of sites was swept, and the per-site p_value is the Self-Liang p of the unmutated baseline LRT, not a test of the deltas. In the browser the scan runs last, fills in progressively, can be cancelled, and is capped by the work term 19 x L x N^2; above the cap the report says so and offers a server run.",
+        "source": "phase2a"
+      },
+      {
+        "id": "attribution-is-counterfactual-on-the-surrogate",
+        "pillars": ["attribution"],
+        "headline": "Attribution explains the surrogate's signal, not MEME's.",
+        "detail": "Each non-consensus taxon at a called site is mutated to the consensus codon and the site re-scored; delta LRT is the model's own sensitivity to that taxon's state. It answers 'which lineages move this prediction' and 'how deep in the tree they sit' with the same compressed scale as the LRT itself, and it is only computed at sites with LRT >= 3.84 by default.",
+        "source": "phase1"
+      },
+      {
+        "id": "filter-inherits-calibration",
+        "pillars": ["filter"],
+        "headline": "The artifact filter reads the site p-values, so it inherits their calibration.",
+        "detail": "A patch is flagged when nominally significant sites cluster (hypergeometric test at p < 0.01 over a window of at most 35 codons with at least 3 sites at p <= 0.05) and one taxon carries the mismatches (a run of at least 3 radical substitutions with an outlier contamination index >= 0.25, or a run of 4). On deep trees with many taxa the 36% FPR makes clusters of nominal hits more likely, and masked patches should be inspected. The report shows masked and unmasked scores side by side and never applies the mask silently.",
+        "source": "model_eval"
+      },
+      {
+        "id": "phenotype-on-demand",
+        "pillars": ["phenotype"],
+        "headline": "Phenotype association needs a trait, so it runs on demand, and it is not covered by model_eval.",
+        "detail": "model_eval covers hyphaeon meme only; the trait association, PARS signatures and permulations have exact fixtures from the reference but no calibration suite against a simulated neutral trait. Permulations use numpy's legacy global generator upstream, so that parity is statistical from the start.",
+        "source": "model_eval"
+      },
+      {
+        "id": "privacy",
+        "pillars": ["general"],
+        "headline": "Real submissions are unpublished research.",
+        "detail": "The browser path never transmits sequences. A server run (oversize inputs, the remote MCP connector) says what will be sent before sending, keeps nothing in logs, and expires the job after 7 days.",
+        "source": "manuscript"
+      }
+    ],
+    "tables": {
+      "fpr_by_regime": {
+        "title": "False-positive rate at alpha = 0.05 on neutral simulations (100 codons, seq-gen)",
+        "columns": ["Regime", "Taxa", "Tree depth", "FPR", "Gate", "Result"],
+        "rows": [
+          ["small_shallow", "20", "0.1", "~5-7%", "<= 10%", "PASSED"],
+          ["moderate", "50", "0.2", "~5-7%", "<= 10%", "PASSED"],
+          ["large_deep", "100", "0.5", "~36%", "<= 10%", "FAILED"]
+        ],
+        "source": "model_eval"
+      },
+      "concordance": {
+        "title": "Concordance with HyPhy MEME 2.5.101 on the bundled genes (variable sites)",
+        "columns": ["Dataset", "Spearman rho", "Cohen's kappa", "F1", "Result"],
+        "rows": [
+          ["Smc6", "0.37", "-0.03", "0.00", "PASSED"],
+          ["bat_oas1", "0.27", "0.09", "0.14", "PASSED"],
+          ["camelid", "0.31", "0.05", "0.30", "PASSED"]
+        ],
+        "source": "model_eval"
+      },
+      "composition_and_length": {
+        "title": "FPR at alpha = 0.05 across nucleotide composition and alignment length (moderate tree)",
+        "columns": ["Condition", "Setting", "FPR", "Median LRT", "Result"],
+        "rows": [
+          ["composition", "uniform, 50% AT", "7-9%", "", "PASSED"],
+          ["composition", "AT-rich, 80% AT", "5-8%", "", "PASSED"],
+          ["composition", "GC-rich, 30% AT", "5-9%", "", "PASSED"],
+          ["length", "short, 30 codons", "3.3%", "1.45", "PASSED"],
+          ["length", "medium, 100 codons", "7-9%", "1.35", "PASSED"],
+          ["length", "long, 500 codons", "4-5%", "1.27", "PASSED"]
+        ],
+        "note": "Cross-length median LRT ratio 1.15x against a 3x gate.",
+        "source": "model_eval"
+      },
+      "invariance_gates": {
+        "title": "Invariance and sensitivity gates over six datasets (3 real, 3 simulated)",
+        "columns": ["Gate", "Result", "Detail"],
+        "rows": [
+          ["permutation sensitivity", "FAILED", "invariant on the majority of 6 datasets; sensitive only on sim_100_deep (r = 0.77)"],
+          ["star-tree sensitivity", "FAILED", "invariant on the majority of 6 datasets"],
+          ["zero-distance sensitivity", "FAILED", "invariant on the majority of 6 datasets"],
+          ["scaling x0.1 invariance", "FAILED", "fails on sim_100_deep (r = 0.81)"],
+          ["scaling x10 invariance", "FAILED", "fails on the majority of datasets"],
+          ["scaling x100 invariance", "FAILED", "fails on the majority of datasets"],
+          ["duplicate-taxon invariance", "PASSED", "exact r = 1.0000 through default duplicate-haplotype and tree pruning"]
+        ],
+        "source": "model_eval"
+      },
+      "mds_sign_effect": {
+        "title": "hyphaeon meme, --mds-sign lapack against --mds-sign canonical, bundled weights, torch 2.10.0",
+        "columns": ["Example", "N", "Solver", "Columns flipped", "max |dLRT| (site)", "Median rel. |dLRT|", "Spearman rho", "p <= 0.05 calls changed"],
+        "rows": [
+          ["HIV1_RT", "475", "LAPACK eigh", "1, 2", "3.90e-2 (219)", "9.06e-4", "0.999962", "0 / 151 (35 -> 35)"],
+          ["RHO", "655", "Lanczos", "1, 3", "5.95e-1 (183)", "1.46e-2", "0.998792", "2 / 145 (23 -> 25)"],
+          ["Smc6", "20", "LAPACK eigh", "1, 2, 3", "1.85e-2 (628)", "3.52e-4", "0.999908", "0 / 97 (1 -> 1)"],
+          ["bat_oas1", "18", "LAPACK eigh", "0, 1", "5.40e-1 (332)", "1.71e-2", "0.998433", "0 / 182 (5 -> 5)"],
+          ["camelid", "212", "LAPACK eigh", "1, 2", "2.25e-1 (18)", "1.03e-2", "0.999170", "0 / 86 (15 -> 15)"]
+        ],
+        "note": "hyphaeon busted on Smc6: p_value_acat 0.11831563 -> 0.11797637, omnibus_lrt 3.2854052 -> 3.2988663, sig_sites_p05 5 -> 5.",
+        "source": "mds_sign"
+      }
+    }
+  }
+}

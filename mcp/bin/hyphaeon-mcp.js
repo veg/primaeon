@@ -10,14 +10,15 @@
  * The shape is datamonkey-js-server lib/mcp/stdio.js. stdout is the transport, so every log line
  * goes to stderr.
  *
- * hyphaeon_meme, hyphaeon_busted and hyphaeon_evaluate run in this process (src/engine.js over
- * onnxruntime-node; provenance.surface "mcp-stdio"); hyphaeon_epistasis, hyphaeon_dms and
- * hyphaeon_phenotype run through the Python reference bridge (src/bridge.js).
+ * hyphaeon_analyze (the whole report), hyphaeon_meme, hyphaeon_busted, hyphaeon_epistasis,
+ * hyphaeon_dms and hyphaeon_evaluate run in this process (src/engine.js over onnxruntime-node;
+ * provenance.surface "mcp-stdio"); ONLY hyphaeon_phenotype runs through the Python reference
+ * bridge (src/bridge.js), until its port lands.
  *
  * Environment: HYPHAEON_MODELS_DIR (manifest.json and the graphs; default web/static/models,
  * then the sibling HyphAeon/models), HYPHAEON_VARIANT (default variant, in-process and CLI),
  * HYPHAEON_MCP_THREADS (onnxruntime intra-op threads, default 1), HYPHAEON_PY_BIN (Python CLI
- * for the bridged pillars; default `hyphaeon` on PATH), HYPHAEON_WEIGHTS, HF_HUB_OFFLINE (passed
+ * for hyphaeon_phenotype; default `hyphaeon` on PATH), HYPHAEON_WEIGHTS, HF_HUB_OFFLINE (passed
  * to the CLI), HYPHAEON_EXAMPLES_DIR, HYPHAEON_GALLERY_DIR, HYPHAEON_MCP_LOG
  * (debug|info|warn|error|silent).
  */

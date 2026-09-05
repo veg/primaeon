@@ -58,14 +58,21 @@ export function createLogger(env = process.env, level) {
 export const INSTRUCTIONS =
   "HyphAeon is a neural surrogate for HyPhy MEME (site-level episodic selection) with " +
   "derived analyses: gene-level omnibus (BUSTED surrogate), co-selection networks and " +
-  "epistatic sectors, digital deep mutational scanning, and phenotype association. Run " +
-  "hyphaeon_validate before any analysis. Results are rankings evaluated against MEME, not " +
-  "truth: rank is strong, scale is compressed, calibration depends on tree regime. Every " +
+  "epistatic sectors, digital deep mutational scanning, and phenotype association. The product " +
+  "has one action: hyphaeon_analyze takes an alignment (and a tree if there is one) and runs " +
+  "everything that needs no further input into one report whose sections arrive in order — " +
+  "diagnostics, sites, gene, epistasis + sectors, attribution, artifact filter, then a capped " +
+  "digital DMS; phenotype needs a trait and is offered, not run. Large reports come back as a " +
+  "summary plus a job id: page them with get_results section=..., and read hyphaeon://report/{id}. " +
+  "The per-pillar tools (hyphaeon_meme, hyphaeon_busted, hyphaeon_epistasis, hyphaeon_dms, " +
+  "hyphaeon_phenotype, hyphaeon_evaluate) mirror the CLI one option at a time; hyphaeon_validate " +
+  "checks an alignment without running the model. Results are rankings evaluated against MEME, " +
+  "not truth: rank is strong, scale is compressed, calibration depends on tree regime. Every " +
   "result carries a provenance block: surface \"mcp-stdio\" / \"mcp-http\" means the numbers were " +
-  "computed in this process by the JavaScript port (hyphaeon_meme, hyphaeon_busted, " +
-  "hyphaeon_evaluate); surface \"python-reference\" means the Python reference ran through a " +
-  "bridge (hyphaeon_epistasis, hyphaeon_dms, hyphaeon_phenotype). Sequences submitted to a " +
-  "remote server are unpublished research: say so before sending them.";
+  "computed in this process by the JavaScript port (every tool except hyphaeon_phenotype); " +
+  "surface \"python-reference\" means the Python reference ran through a bridge " +
+  "(hyphaeon_phenotype only, until its port lands). Sequences submitted to a remote server are " +
+  "unpublished research: say so before sending them.";
 
 /**
  * @param {object} [opts]
@@ -122,7 +129,9 @@ export function createServer(opts = {}) {
     bridge: opts.bridge
   });
   registerPrompts(server);
-  registerResources(server, { env, logger });
+  // The job store is handed to the resources for hyphaeon://report/{id}: a finished
+  // hyphaeon_analyze report is readable as a resource for as long as the job lives.
+  registerResources(server, { env, logger, jobs });
 
   return {
     server,

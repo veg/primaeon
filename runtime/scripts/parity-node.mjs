@@ -11,11 +11,30 @@
  * writers (results.js), plus a `provenance` key parity.py ignores.
  *
  * WHAT IT RUNS, mirroring parity.py's commands:
- *   meme    `hyphaeon meme -a <fasta> -t <nwk> --cpu -o ...`   -> runMeme with the CLI's defaults:
- *           NO taxon cap (cli.py:1025 `--max-species` default None -> `maxSpecies: Infinity`),
- *           duplicates pruned, no filter, no attribution.
- *   busted  `hyphaeon busted -a <fasta> -t <nwk> --cpu -o ...` -> runBusted with `--max-species`
- *           512 (cli.py:1108) and the busted head from the manifest.
+ *   meme      `hyphaeon meme -a <fasta> -t <nwk> --cpu -o ...`   -> runMeme with the CLI's defaults:
+ *             NO taxon cap (cli.py:1025 `--max-species` default None -> `maxSpecies: Infinity`),
+ *             duplicates pruned, no filter, no attribution.
+ *   busted    `hyphaeon busted -a <fasta> -t <nwk> --cpu -o ...` -> runBusted with `--max-species`
+ *             512 (cli.py:1108) and the busted head from the manifest.
+ *   epistasis `hyphaeon epistasis -a <fasta> -t <nwk> --cpu --n-permutations B --seed S -o ...`
+ *             -> runEpistasis with `cmd_epistasis`'s thresholds (min_sim 0.30, min_shared 2,
+ *             max_fdr 0.05, min_lrt 1.0, min_cesi 2.0, min_clique_size 3, min_coherence 0.50)
+ *             and the sector-site DMS the CLI runs unless `--no-dms`. It takes the REFERENCE's
+ *             all-sites attention loop rather than the report's shared meme pass: the two give
+ *             the same edges and sectors (runtime/test/epistasis.test.js), but a parity file
+ *             should be produced the way the reference produces it.
+ *   dms       `hyphaeon dms -a <fasta> -t <nwk> --cpu -o ...` -> runDms over every codon with no
+ *             work budget. `parity.py` has no `dms` analysis (its ANALYSES are meme, busted,
+ *             epistasis), so the file is written into the layout for a future comparator and for
+ *             a by-hand diff against `hyphaeon dms -o`; only Smc6 is run by default, because
+ *             19 x L forward passes on the larger examples is minutes, not seconds.
+ *
+ * B AND THE STATISTICAL CLASS. `--permutations` defaults to 10,000 — `parity.py`'s own DEFAULT_B,
+ * which is both what it passes to `hyphaeon epistasis --n-permutations` and the B its bound
+ * `|dp| <= 3*sqrt(p(1-p)/B)` is computed with. Writing this surface at B = 1,000 against a
+ * reference at B = 10,000 would fail that bound by construction (PHASE2A.md measures +/-0.03 of
+ * Monte Carlo error per side at B = 1,000), so a smaller B here must be matched by
+ * `parity.py --n-permutations`.
  *
  * BRANCH LENGTHS. examples/camelid.nwk and examples/HIV1_RT.nwk have no branch lengths; the
  * reference shells out to HyPhy (dataset.py:224-287, HKY85). When runtime/src/hyphy is present
@@ -26,9 +45,10 @@
  * written, with a note, so parity.py reports the expected mismatch rather than a missing surface.
  *
  * Usage:
- *   node scripts/parity-node.mjs [--examples Smc6,bat_oas1] [--analyses meme,busted]
+ *   node scripts/parity-node.mjs [--examples Smc6,bat_oas1] [--analyses meme,busted,epistasis]
  *        [--variant general] [--threads N] [--engine ../HyphAeon] [--out <engine>/parity/node]
- *        [--no-hyphy] [--busted-examples Smc6,HIV1_RT]
+ *        [--no-hyphy] [--busted-examples Smc6,HIV1_RT] [--dms-examples Smc6]
+ *        [--permutations 10000] [--seed 42]
  * Then, from the engine repository:
  *   python scripts/parity.py --examples Smc6,bat_oas1,RHO --surfaces python,node
  */
@@ -39,14 +59,17 @@ import { dirname, join, resolve, basename } from 'node:path';
 import { availableParallelism } from 'node:os';
 
 import { createSession } from '../src/createSession.js';
-import { runMeme } from '../src/pipeline.js';
+import { runMeme, prepareRun } from '../src/pipeline.js';
 import { runBusted } from '../src/busted.js';
+import { runEpistasis } from '../src/epistasis.js';
+import { runDms } from '../src/dms.js';
 import { memeJsonText, bustedJsonText } from '../src/results.js';
+import { epistasisJsonText, dmsJsonText } from '../src/report.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
-	const args = { examples: 'all', analyses: 'meme,busted', variant: 'general', threads: null, engine: null, out: null, hyphy: true, bustedExamples: 'Smc6,HIV1_RT' };
+	const args = { examples: 'all', analyses: 'meme,busted,epistasis', variant: 'general', threads: null, engine: null, out: null, hyphy: true, bustedExamples: 'Smc6,HIV1_RT', dmsExamples: 'Smc6', permutations: 10000, seed: 42 };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		const next = () => argv[++i];
@@ -58,6 +81,9 @@ function parseArgs(argv) {
 		else if (a === '--out') args.out = next();
 		else if (a === '--no-hyphy') args.hyphy = false;
 		else if (a === '--busted-examples') args.bustedExamples = next();
+		else if (a === '--dms-examples') args.dmsExamples = next();
+		else if (a === '--permutations' || a === '--n-permutations') args.permutations = Number(next());
+		else if (a === '--seed') args.seed = Number(next());
 		else if (a === '--help' || a === '-h') {
 			console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('*/')[0]);
 			process.exit(0);
@@ -105,6 +131,7 @@ async function main() {
 	for (const ex of wanted) if (!examples[ex]) throw new Error(`unknown example ${ex} (have ${Object.keys(examples).join(', ')})`);
 	const analyses = args.analyses.split(',').map((s) => s.trim()).filter(Boolean);
 	const bustedExamples = new Set(args.bustedExamples === 'all' ? wanted : args.bustedExamples.split(',').map((s) => s.trim()));
+	const dmsExamples = new Set(args.dmsExamples === 'all' ? wanted : args.dmsExamples.split(',').map((s) => s.trim()).filter(Boolean));
 	const threads = args.threads ?? Math.max(1, Math.min(8, Math.floor(availableParallelism() / 2)));
 	mkdirSync(outDir, { recursive: true });
 
@@ -114,7 +141,7 @@ async function main() {
 	const hyphy = args.hyphy ? await loadHyPhy() : { hook: null, note: 'HyPhy disabled (--no-hyphy)' };
 	console.log(`[parity-node] ${hyphy.note}`);
 
-	const summary = { generated_at: new Date().toISOString(), surface: 'node', variant: s.variant.name, artifact_sha256: s.backbone.sha256, threads, hyphy: hyphy.note, runs: [] };
+	const summary = { generated_at: new Date().toISOString(), surface: 'node', variant: s.variant.name, artifact_sha256: s.backbone.sha256, threads, hyphy: hyphy.note, n_permutations: args.permutations, seed: args.seed, runs: [] };
 	let failed = 0;
 	for (const ex of wanted) {
 		const spec = examples[ex];
@@ -122,8 +149,9 @@ async function main() {
 		const treeText = spec.tree ? readFileSync(spec.tree, 'utf8') : null;
 		for (const analysis of analyses) {
 			if (analysis === 'busted' && !bustedExamples.has(ex)) continue;
-			if (analysis !== 'meme' && analysis !== 'busted') {
-				console.log(`[parity-node] ${ex} ${analysis}: not implemented on this surface (Phase 2)`);
+			if (analysis === 'dms' && !dmsExamples.has(ex)) continue;
+			if (!['meme', 'busted', 'epistasis', 'dms'].includes(analysis)) {
+				console.log(`[parity-node] ${ex} ${analysis}: not implemented on this surface`);
 				continue;
 			}
 			const outPath = join(outDir, `${ex}.${analysis}.json`);
@@ -149,24 +177,69 @@ async function main() {
 				};
 				let text;
 				let result;
+				let pp;
 				if (analysis === 'meme') {
 					result = await runMeme({ ...common, options: { ...common.options, maxSpecies: Infinity } });
 					text = memeJsonText(result);
-				} else {
+					pp = result.provenance.preprocessing;
+				} else if (analysis === 'busted') {
 					result = await runBusted({ ...common, head: s.head, options: { ...common.options, maxSpecies: 512, gene: ex } });
 					text = bustedJsonText(result);
+					pp = result.provenance.preprocessing;
+				} else {
+					// epistasis / dms: `run_epistatic_analysis` and `run_digital_dms_analysis` both call
+					// `load_alignment_and_tree(prune_duplicates=True)` with NO max_species
+					// (epistasis.py:660-663, 742-745), so the front half runs once with no cap.
+					const prep = await prepareRun({
+						alignmentText,
+						treeText,
+						options: { ...common.options, maxSpecies: Infinity },
+						progress,
+						defaultMaxSpecies: null
+					});
+					pp = {
+						taxa_in_alignment: prep.preprocessing.taxa_in_alignment,
+						taxa_used: prep.loaded.N,
+						branch_lengths_missing: prep.preprocessing.branch_lengths_missing,
+						branch_lengths_estimated: prep.branchLengthsEstimated,
+						tree_source: prep.treeSource
+					};
+					const inputs = { alignment: `examples/${ex}.fasta`, tree: spec.tree ? `examples/${ex}.nwk` : null };
+					if (analysis === 'epistasis') {
+						result = await runEpistasis({
+							loaded: prep.loaded,
+							session: s.backbone,
+							options: { nPermutations: args.permutations, seed: args.seed, dms: true },
+							inputs,
+							progress
+						});
+						text = epistasisJsonText(result);
+						run.notes.push(`B = ${args.permutations}, seed ${args.seed}; p_perm and the null moments are statistical (PARITY.md)`);
+						run.edges = result.edges.length;
+						run.sectors = result.sectors.length;
+					} else {
+						result = await runDms({
+							loaded: prep.loaded,
+							session: s.backbone,
+							options: { workBudget: Infinity },
+							inputs,
+							progress
+						});
+						text = dmsJsonText(result);
+						run.notes.push('parity.py has no dms comparator yet; written for the layout');
+						run.mutants = result.total_mutations;
+					}
 				}
-				const pp = result.provenance.preprocessing;
 				if (pp.branch_lengths_missing && !pp.branch_lengths_estimated) {
 					run.notes.push('tree without branch lengths and no HyPhy: dataset.py defaults applied; the reference used HyPhy HKY85, so LRTs are expected to differ');
 				}
 				if (pp.branch_lengths_estimated) run.notes.push(`branch lengths estimated by ${pp.tree_source} (HyPhy WASM 2.5.98 vs the reference's native 2.5.65)`);
-				if (pp.taxa_used > 500 && analysis === 'meme') run.notes.push(`N = ${pp.taxa_used} > 500: the reference uses Lanczos MDS (dataset.py:360-381), the library runs dense`);
+				if (pp.taxa_used > 500 && analysis !== 'busted') run.notes.push(`N = ${pp.taxa_used} > 500: the reference uses Lanczos MDS (dataset.py:360-381), the library runs dense`);
 				if (analysis === 'busted' && s.head) run.notes.push('neural head fields come from busted_head.onnx (one seeded draw); the reference draws them unseeded, so they are expected to differ');
 				writeFileSync(outPath, text);
 				run.seconds = (Date.now() - tStart) / 1000;
 				run.taxa = pp.taxa_used;
-				run.codons = analysis === 'meme' ? result.codon_count : result.record.sites;
+				run.codons = analysis === 'busted' ? result.record.sites : result.codon_count;
 				console.log(`[parity-node] ${ex.padEnd(10)} ${analysis.padEnd(8)} ok (${run.seconds.toFixed(1)} s, ${run.taxa} taxa, ${run.codons} codons)${run.notes.length ? ' -- ' + run.notes.join('; ') : ''}`);
 			} catch (err) {
 				run.status = 'failed';

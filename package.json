@@ -12,6 +12,7 @@
     "runtime",
     "web",
     "mcp",
+    "server",
     "e2e"
   ],
   "scripts": {

@@ -51,6 +51,11 @@ declare module '@veg/hyphaeon-runtime' {
 }
 
 declare module '@veg/hyphaeon-js' {
+	/** js/src/writers.js: `nx.write_graphml` (cli.py:821-833) over the co-selection edges. */
+	export function graphml(
+		edges: Array<{ site_u: number | string; site_v: number | string; similarity: number; cesi: number; shared_branches: number; fdr_q: number }>,
+		nodes?: Array<number | string>
+	): string;
 	export function memeJson(result: unknown): string;
 	export function memeCsv(
 		sites: Array<Record<string, unknown>>,

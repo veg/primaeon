@@ -42,15 +42,20 @@ import {
 import {
   MAX_TAXA,
   TAXON_CAP,
+  NATIVE_ANALYSES,
+  BRIDGED_ANALYSES,
   classifyRun,
   estimateSeconds,
   probeSequences,
   workFor
 } from "./caps.js";
 
-/** Analyses served in-process by runtime/ (Phase 1b); the rest run through the Python bridge. */
-export const NATIVE_ANALYSES = Object.freeze(["meme", "busted", "evaluate"]);
-export const BRIDGED_ANALYSES = Object.freeze(["epistasis", "dms", "phenotype"]);
+/**
+ * Which analyses run in-process (runtime/ over onnxruntime-node: meme, busted, epistasis, dms,
+ * evaluate, and the whole-report `analyze`) and which still go through the Python bridge
+ * (phenotype only). One list, in src/caps.js, shared with src/engine.js and src/tools.js.
+ */
+export { NATIVE_ANALYSES, BRIDGED_ANALYSES };
 
 /**
  * Every code hyphaeon_validate can emit: the library's DIAGNOSTIC_CODES (descriptions here are
@@ -249,8 +254,13 @@ export function diagnose({ alignment, tree, analysis = "meme", use_tn93 = false,
           "hyphaeon_" + analysis + " runs " +
           (native ? "in-process (ONNX Runtime under Node)" : "through the Python reference bridge") +
           " and " +
-          (cls.mode === "sync" ? "answers inside the tool call" : "returns a job id (above the synchronous caps)") +
-          "; roughly " + (secs < 1 ? "< 1" : Math.round(secs)) + " s of model time on a laptop CPU.",
+          (cls.mode === "sync"
+            ? analysis === "analyze"
+              ? "answers inside the tool call when the report finishes within its wait budget, else returns the job id with the sections that are ready"
+              : "answers inside the tool call"
+            : "returns a job id (above the synchronous caps)") +
+          "; roughly " + (secs < 1 ? "< 1" : Math.round(secs)) + " s of model time on a laptop CPU" +
+          (analysis === "analyze" ? " before the DMS section, which is capped by its own work budget." : "."),
         data: { engine: summary.engine, mode: cls.mode, work: cls.work, estimated_seconds: summary.estimated_seconds }
       });
     }

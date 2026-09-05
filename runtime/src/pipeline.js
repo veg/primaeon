@@ -374,6 +374,8 @@ export function provenanceBlock({ surface, session, head = null, surrogateFor, s
  * @param {number} [args.options.batchBudgetBytes] tensor budget per batch (`batchSizeFor`)
  * @param {boolean} [args.options.attention] also return `mean_root_attns` as `attention` [L, N]
  * @param {boolean} [args.options.rootRepr] also return `root_repr` [L, 384]
+ * @param {object} [args.options.prepared] a `prepareRun()` result to reuse instead of parsing and
+ *   loading again (analyze.js shares one loaded alignment across every phase of the report)
  * @param {boolean} [args.options.filter] cli.py `--filter`
  * @param {number} [args.options.filterPThresh] cli.py `--filter-p-thresh`, default 0.01
  * @param {boolean} [args.options.attribute] cli.py `--attribute`
@@ -398,7 +400,9 @@ export function provenanceBlock({ surface, session, head = null, surrogateFor, s
  *   model_variant, artifact_sha256, hyphaeon_js_version, reference_version, seed
  * @returns {Promise<object>} { schema_version, method, is_surrogate, surrogate_for, taxa_count,
  *   codon_count, runtime_sec, filter_enabled, artifacts_masked, attribution_enabled, attributions,
- *   sites, arrays, filter?, attention?, root_repr?, summary, provenance }
+ *   sites, arrays, filter?, attention?, root_repr?, summary, provenance } plus two non-enumerable
+ *   properties: `loaded` (the library's LoadedAlignment) and `inference` (the raw pass: `lrt`,
+ *   `siteIndices`, `batchSize`, `mean_root_attns`, `root_repr`)
  */
 export async function runMeme({
 	alignmentText,
@@ -423,7 +427,13 @@ export async function runMeme({
 	}
 
 	// --- parse + prepare -------------------------------------------------------------------------
-	const prep = await prepareRun({ alignmentText, treeText, options, progress, signal });
+	// `options.prepared` is a prepareRun() result the caller already holds (analyze.js runs the
+	// front half once so that diagnostics can be reported before inference and every later phase
+	// shares ONE loaded alignment); the phases are then not repeated and not re-reported.
+	const prep =
+		options.prepared && options.prepared.loaded
+			? options.prepared
+			: await prepareRun({ alignmentText, treeText, options, progress, signal });
 	const { loaded, names, rawSeqs, treeArg, speciesCap, preprocessing } = prep;
 	const runtimeWarnings = prep.warnings;
 	const { L, N } = loaded;
@@ -622,6 +632,22 @@ export async function runMeme({
 	}
 	if (inferred.mean_root_attns) result.attention = inferred.mean_root_attns;
 	if (inferred.root_repr) result.root_repr = inferred.root_repr;
+	// The raw forward pass, for a consumer that continues from it without re-running the graph
+	// (analyze.js: busted from `root_repr`, epistasis from `mean_root_attns`, the DMS baseline
+	// from `lrt`). `lrt` here is the PRE-filter clamped float32 vector inference.py produced,
+	// `siteIndices` the variable sites it scored. Non-enumerable, like `loaded`, so a serialised
+	// result does not carry an [L, N] attention matrix and an [L, 384] representation twice.
+	Object.defineProperty(result, 'inference', {
+		value: {
+			lrt: inferred.lrt,
+			siteIndices: inferred.siteIndices,
+			batchSize: inferred.batchSize,
+			mean_root_attns: inferred.mean_root_attns,
+			root_repr: inferred.root_repr
+		},
+		enumerable: false,
+		writable: false
+	});
 	// The loaded tensors, for a consumer that continues the analysis (busted, later epistasis)
 	// without loading twice. Non-enumerable so a JSON.stringify / structured clone of the result
 	// does not drag L·N tokens and an N×N matrix along.

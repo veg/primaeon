@@ -12,18 +12,16 @@
  * L·1e-6 / 1e-6; attribution ΔLRTs at twice the graph class (a difference of two graph values,
  * scaled by the site LRT) with the driver ranking compared up to ties inside that tolerance.
  *
- * THE ONE KNOWN RESIDUAL — MDS EIGENVECTOR SIGNS. dataset.py's `compute_mds_coordinates` applies
- * no sign convention (LAPACK ssyevd's signs), the library's tred2/tql2 does not reproduce them,
- * and the model is NOT sign-invariant (`mds_proj = nn.Linear(4, embed_dim)` on the raw
- * coordinates, model.py:262/334, and rotations from `mds_coords`, model.py:104-106). On Smc6 all
- * four columns happen to agree and the run reproduces the fixture; on bat_oas1 columns 1 and 2
- * come out flipped and every variable site's LRT moves (median 7e-3 relative, max 8.4e-2 —
- * measured). This file therefore (a) asserts the full class on Smc6, and (b) on bat_oas1
- * aligns the library's MDS columns to the signs recorded in
- * fixtures/dataset/load_alignment_and_tree.json (a per-column sign flip, nothing else) before
- * scoring, asserts the full class on THAT run, and asserts that the unaligned run is off by
- * more than the class — pinning the cause so the library's fix (or an upstream sign
- * convention, PLAN.md §5.3 rule 3) flips this test rather than hides behind it.
+ * THE MDS SIGN RESIDUAL IS CLOSED (was PHASE1.md gap 1). dataset.py's `compute_mds_coordinates`
+ * used to inherit LAPACK ssyevd's eigenvector signs, the library's tred2/tql2 did not reproduce
+ * them, and the model is NOT sign-invariant (`mds_proj = nn.Linear(4, embed_dim)` on the raw
+ * coordinates, model.py:262/334) — so bat_oas1's columns 1 and 2 came out flipped and every
+ * variable site's LRT moved (median 7e-3 relative, max 8.4e-2). veg/HyphAeon phase-2a made the
+ * sign a CONVENTION on both sides (`--mds-sign canonical`, the default; MDS_SIGN.md) and
+ * regenerated the fixtures under it. This file now asserts the full class on bat_oas1 with NO
+ * sign alignment, and keeps the alignment helper to assert that it has become a no-op — the
+ * shape PHASE2A.md gap 8 asks for, so a regression in either implementation's convention fails
+ * here rather than passing as "the known residual".
  *
  * All of it is skipped, loudly, when ../HyphAeon's models or fixtures are not beside this repo.
  */
@@ -167,21 +165,22 @@ describe.skipIf(!ready)('fixtures/e2e/meme_Smc6.json through runMeme (session-no
 describe.skipIf(!ready)('fixtures/e2e/meme_bat_oas1.json through runMeme, and the MDS sign residual', () => {
 	const ref = ready ? fixture('e2e/meme_bat_oas1.json')[0].outputs : null;
 
-	it('the unaligned run differs from the CLI by more than the graph class, on nearly every variable site', async () => {
+	it('reproduces the CLI with NO sign alignment: the canonical convention closed the gap', async () => {
 		const { backbone } = await session();
 		const result = await runMeme({ ...example('bat_oas1'), options: { maxSpecies: Infinity }, session: backbone });
 		expect(result.sites.map((s) => s.is_invariable)).toEqual(ref.sites.map((s) => s.is_invariable));
-		const { max } = maxRelLrtDiff(ref.sites, result.sites.map((s) => s.hyphaeon_lrt));
+		const { max, at } = maxRelLrtDiff(ref.sites, result.sites.map((s) => s.hyphaeon_lrt));
 		const off = ref.sites.filter((s, i) => !s.is_invariable && Math.abs(s.hyphaeon_lrt - result.sites[i].hyphaeon_lrt) / Math.max(1, s.hyphaeon_lrt) > LRT_REL_TOL).length;
-		console.log(`[parity-fixtures] bat_oas1 UNALIGNED MDS signs: max relative |dLRT| ${max.toExponential(2)}, ${off}/182 variable sites beyond 1e-5 (library eigenvector signs; see header)`);
-		expect(max).toBeGreaterThan(LRT_REL_TOL);
-		expect(off).toBeGreaterThan(100);
-		// The library's z differs from the Python's on exactly two columns, by sign only.
+		console.log(`[parity-fixtures] bat_oas1 (canonical MDS signs, no alignment): max relative |dLRT| ${max.toExponential(2)} at site ${at}, ${off}/182 variable sites beyond 1e-5`);
+		expect(max).toBeLessThanOrEqual(LRT_REL_TOL);
+		expect(off).toBe(0);
+		// And the sign-alignment helper is now a no-op: no column of the library's z disagrees with
+		// the Python's (veg/HyphAeon phase-2a MDS_SIGN.md, both sides `canonical`).
 		const loaded = loadAlignmentAndTree(example('bat_oas1').alignmentText, example('bat_oas1').treeText, { maxSpecies: null });
-		expect(alignMdsSigns(loaded, 'bat_oas1')).toEqual([1, 2]);
+		expect(alignMdsSigns(loaded, 'bat_oas1')).toEqual([]);
 	});
 
-	it('with the MDS columns aligned to the Python signs, reproduces the CLI at the full class', async () => {
+	it('aligning the columns to the Python signs therefore changes nothing, and still reproduces the CLI', async () => {
 		const { backbone } = await session();
 		const { alignmentText, treeText } = example('bat_oas1');
 		const loaded = loadAlignmentAndTree(alignmentText, treeText, { maxSpecies: null, pruneDuplicates: true });

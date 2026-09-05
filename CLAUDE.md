@@ -1,7 +1,7 @@
 # hyphaeon-app
 
 The HyphAeon application: everything that *runs* the HyphAeon neural MEME surrogate. npm
-workspaces `runtime/`, `web/`, `mcp/` (later `server/`), all consuming `@veg/hyphaeon-js`, the
+workspaces `runtime/`, `web/`, `mcp/`, `server/` (+ `e2e/`), all consuming `@veg/hyphaeon-js`, the
 library in `../HyphAeon/js` that mirrors the Python reference `../HyphAeon/hyphaeon/*.py`. Plan of
 record: `PLAN.md` (draft v5).
 
@@ -34,6 +34,21 @@ record: `PLAN.md` (draft v5).
   all --surfaces python,node,web` compares (`browser` is not a surface name it knows).
 - `node mcp/bin/hyphaeon-mcp.js` — the stdio MCP server; `HYPHAEON_MODELS_DIR` defaults to
   `web/static/models` of the checkout (so build once), `HYPHAEON_MCP_THREADS` to 1.
+- Server (`server/`, PLAN.md §3.5 + the MCP over HTTP behind OAuth at `/mcp`):
+  `cd server && HYPHAEON_MODELS_DIR=../web/static/models npm start` listens on
+  `HYPHAEON_SERVER_PORT` (7040; `npm start` passes `--disable-warning=ExperimentalWarning` for
+  `node:sqlite`); `HYPHAEON_MODELS_DIR=../../HyphAeon/models npm test` runs its vitest + supertest
+  suite (~40 s: a full `analyze` job on bat_oas1 runs the DMS at `HYPHAEON_SERVER_THREADS`, default
+  2). Other knobs: `HYPHAEON_SERVER_ISSUER` (public origin; the OAuth issuer and the only allowed
+  `Origin`), `HYPHAEON_DATA_DIR`, `HYPHAEON_SERVER_WORKERS`, `HYPHAEON_JOB_TTL_MS`,
+  `HYPHAEON_JOB_TIMEOUT_MS`, `HYPHAEON_MCP_AUTH` (never `0` on a public host). Smoke:
+  `curl -s localhost:7040/api/v1/health`, then `POST /api/v1/jobs {"analysis":"analyze","alignment":…}`
+  → `GET /api/v1/jobs/<id>/events` (SSE) → `GET /api/v1/jobs/<id>/result`. `deploy/README.md` is the
+  runbook (Apache vhost, pm2, Docker, `rsync-web.sh`).
+- Parity, Phase 2: `node runtime/scripts/parity-node.mjs --examples all --analyses
+  meme,busted,epistasis,dms --busted-examples all --dms-examples Smc6` also writes the epistasis
+  (B = 10,000, `parity.py`'s default) and Smc6 DMS files; the e2e writes bat_oas1's meme and
+  Smc6's epistasis (B = 1,000) browser files.
 
 Python reference, for parity runs (never at product runtime): a venv with `hyphaeon` installed
 editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_HUB_OFFLINE=1`.
@@ -118,10 +133,11 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   Node. The build is `ENVIRONMENT=web,worker`; the Node loader evaluates the glue with a shimmed
   `self`/`postMessage` (see `runtime/src/hyphy/index.js`), and in a module worker the glue is
   loaded by fetch + `new Function`, which needs `'unsafe-eval'` in the CSP (DM3's `_headers` grant it).
-- **The gallery records and inputs under `web/static/gallery/` are tracked** (2.8 MB): they are the
-  prebaked demos and let a machine without `onnxruntime-node` build with `HYPHAEON_PREBAKE=skip`.
-  The prebake is stamp-cached on inputs, graph hash, options, library version and runtime sources,
-  so a no-change build costs ~0.4 s and a runtime change rebakes (~30 s, HIV1_RT's HKY85 fit).
+- **The gallery records and inputs under `web/static/gallery/` are tracked** (7.8 MB since Phase 2:
+  6.4 MB of full `ReportRecord`s + 1.4 MB inputs): they are the prebaked demos and let a machine
+  without `onnxruntime-node` build with `HYPHAEON_PREBAKE=skip`. The prebake is stamp-cached on
+  inputs, graph hash, options, library version and runtime sources, so a no-change build costs
+  ~0.4 s and a runtime change rebakes everything (~6–10 min: the DMS on all five examples).
 
 ## Working rules
 
@@ -269,3 +285,50 @@ Carried to Phase 2: the MDS sign convention (upstream), `parity.py`'s 1e-6 graph
 neural-head fields, the NJ / filter / attribute paths and RHO's embedded tree not yet driven in the
 browser e2e, TN93 tree-free mode, `server/`, `deploy/`, CI, npm publish of `@veg/hyphaeon-mcp`
 (it depends on `@veg/hyphaeon-js@1.0.0`, resolved by the workspace link today).
+
+### 2026-09-05 — Phase 2: one action, one report; epistasis + DMS in the browser; server; remote MCP
+
+Six builders' output (runtime orchestrator, web report, landing + gallery, server, MCP switch,
+methods + caveats) plus the rewritten e2e suite integrated; every check in `PHASE2.md` passes, and
+the parity table there is the one to read. Headlines:
+
+- **D21 is the product.** `/` is the drop zone; dropping, pasting or picking an example starts
+  `runEverything` (`runtime/src/analyze.js`) in one analyze worker and navigates at once to
+  `/report/local/?id=…`, where the sections stream in — diagnostics strip, Sites, Gene, Epistasis +
+  sectors, Attribution, Filter, DMS (progressive, cancellable, work-capped), the Phenotype offer,
+  Data and provenance, one "Re-run with…" disclosure. Records persist in IndexedDB (`reports`,
+  DB v2); the five examples are prebaked full reports at `/report/gallery/<id>/`; `/results/…`
+  and `/gallery/` redirect. `svelte-check` 0 errors; 10 files / 65 tests; Playwright 37/37 in 15 s.
+- **`runtime/`** gained `runEverything`, `runEpistasis` (on the meme pass's own attention — the
+  graph is never re-run), `runDms` (slabbed, abortable, `19·L·N²` budget), `report.js` (the
+  `ReportRecord` v2 and every CLI download). 20 files / 274 tests. Epistasis on Smc6 vs the CLI
+  fixture: edges and sectors identical, worst float |Δ| 2.9e-6, `p_perm` inside the statistical
+  class; DMS worst |Δ delta_lrt| 1.8e-5 at an LRT scale of 5.5.
+- **`server/`** (new workspace, `@veg/hyphaeon-server`): Express 5, PLAN §3.5 jobs API with SSE and
+  progressive DMS sections, `worker_threads` pool, SQLite (`node:sqlite`), TTL / timeout / restart
+  recovery, the Datamonkey OAuth ceremony ported, `@veg/hyphaeon-mcp` mounted at `/mcp` behind it;
+  `deploy/` runbook. 5 files / 52 tests; driven end to end by `e2e/server.spec.ts`.
+- **`mcp/` 0.3.0**: epistasis and DMS in-process (bridge deleted for them), `hyphaeon_analyze`
+  returns the report (inline ≤ 256 KB, else summary + `job_id` with `get_results section=`),
+  `hyphaeon://report/{id}`, `interpret-report`, `mountHttp({authenticate})`. 9 files / 93 tests.
+  Phenotype is the one remaining bridged tool.
+- **Parity** with the canonical MDS sign (`../HyphAeon/MDS_SIGN.md`, phase-2a): bat_oas1 and RHO now
+  reproduce `hyphaeon meme` at the graph class (max relative |ΔLRT| 2.4e-6 / 1.9e-6) on node and
+  browser, as Smc6 already did; epistasis edges / sectors exact on Smc6, bat_oas1 and RHO with
+  `p_perm` in class at B = 10,000; camelid and HIV1_RT remain informational (HyPhy WASM 2.5.98 vs
+  native 2.5.65). `parity.py` still prints FAIL on its own 1e-6 absolute tolerance, the unseeded
+  BUSTED head fields and `fdr_q` (engine-repository follow-ups, `PHASE2.md` gap 4).
+
+Seam fixes at integration (details in `PHASE2.md`): the report page's load effect tracked the live
+record's status and remounted the whole report on every progress tick (Smc6's DMS 56 s → 12.6 s
+once untracked; it also made the Cancel button unclickable); the "Re-run with…" work-budget input's
+`step` grid excluded the default and blocked the form; `runEverything` takes `provenance` overrides
+so the browser record names its variant; `server` in the root workspaces with version-pinned
+sibling dependencies and the root lockfile regenerated; the analyze worker's interim bridge
+deleted; the e2e's gene-card p format; the MCP gallery resource descriptions; the server README's
+install line.
+
+Carried to Phase 3: the phenotype port and the last bridge, TN93 tree-free + JS NJ replacing HyPhy
+WASM (D22), the over-budget DMS → server handoff, `parity.py`'s conventions and a `dms` comparator,
+one caveats file, CI, npm publish, deployment (nothing is deployed; `deploy/` has placeholders).
+

@@ -10,17 +10,24 @@
  * teardown on both the transport's onclose (explicit DELETE) and the GET stream's socket close
  * (the common network-drop case the SDK does not report through onclose).
  *
- * NO AUTH YET. TODO (Phase 2, PLAN.md 8 and D15): port the auto-approving OAuth 2.1 ceremony from
- * datamonkey-js-server lib/mcp/index.js — /.well-known/oauth-authorization-server and
- * /.well-known/oauth-protected-resource[/mcp] discovery, dynamic client registration (/register),
- * /authorize with PKCE S256 and the urn:ietf:wg:oauth:2.0:oob out-of-band page for headless
- * clients, /token with authorization_code + refresh_token grants, /revoke, the redirect_uri
- * allow-list (index.js:44-51), the in-memory token stores with sweep, and the Bearer check on
- * /mcp with RFC 8707 audience binding. Until then this mount is for a trusted origin (localhost
- * or behind an authenticating proxy), and `file://` inputs are disabled regardless.
+ * AUTHENTICATION IS THE SERVER'S, SUPPLIED AS MIDDLEWARE. PLAN.md 3.6 puts the auto-approving
+ * OAuth 2.1 ceremony (discovery documents, dynamic client registration, PKCE, the out-of-band
+ * redirect, token and revocation endpoints, the Bearer check with RFC 8707 audience binding) in
+ * `server/` — that is where datamonkey-js-server keeps it too — because the ceremony owns routes
+ * of its own (/.well-known/*, /register, /authorize, /token) that have nothing to do with the MCP
+ * mount path. This module therefore takes ONE thing from it: `authenticate`, an Express middleware
+ * `(req, res, next)` that rejects an unauthenticated request itself (401 with the
+ * WWW-Authenticate challenge) and calls `next()` otherwise. It is placed in front of the POST,
+ * GET and DELETE handlers of the mount path, so no request reaches a transport — and no session
+ * is created — without passing it. When it is absent the mount still works, for a trusted origin
+ * (localhost, a test, an authenticating reverse proxy), and says so LOUDLY at startup on stderr
+ * through the logger, because a remote MCP that accepts anyone's alignments is a mistake nobody
+ * should make silently. `file://` inputs are disabled over HTTP regardless of authentication.
  *
  * Origin/Host validation and rate limiting are the deployer's (server/) responsibility; the SDK's
  * own DNS-rebinding guard can be switched on through `allowedHosts` / `allowedOrigins`.
+ *
+ * The stdio transport (bin/hyphaeon-mcp.js) does not go through here and is unchanged.
  */
 
 import { randomUUID } from "node:crypto";
@@ -28,10 +35,21 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer, createLogger } from "./server.js";
 import { createEngine } from "./engine.js";
 
+/** The text the mount logs when it is unauthenticated; a test pins it so nobody softens it. */
+export const UNAUTHENTICATED_WARNING =
+  "MCP over HTTP is mounted WITHOUT AUTHENTICATION: no `authenticate` middleware was given to mountHttp. " +
+  "Anyone who can reach this path can run analyses and read finished reports. This is acceptable only on " +
+  "localhost, in a test, or behind a reverse proxy that authenticates; for a public host pass the server's " +
+  "OAuth middleware (server/src/oauth.js) as `authenticate`.";
+
 /**
- * @param {object} app  an Express-style app with post/get/delete(path, handler)
+ * @param {object} app  an Express-style app with post/get/delete(path, ...handlers)
  * @param {object} [opts]
  * @param {string} [opts.path]               mount path, default "/mcp"
+ * @param {(req: object, res: object, next: Function) => unknown} [opts.authenticate]
+ *                                           Express middleware run BEFORE every MCP request on the
+ *                                           mount path (the server's OAuth Bearer check). Absent →
+ *                                           unauthenticated mount with a loud startup warning.
  * @param {object} [opts.serverOptions]      options for createServer (allowFilePaths is forced false,
  *                                           surface is "mcp-http")
  * @param {object} [opts.engine]             a shared in-process engine; default: one for the mount,
@@ -40,7 +58,7 @@ import { createEngine } from "./engine.js";
  * @param {string[]} [opts.allowedHosts]     enables the SDK's DNS-rebinding host check
  * @param {string[]} [opts.allowedOrigins]   enables the SDK's origin check
  * @param {boolean} [opts.enableJsonResponse]
- * @returns {{sessions: Map<string, object>, close: () => Promise<void>}}
+ * @returns {{sessions: Map<string, object>, engine: object, authenticated: boolean, path: string, close: () => Promise<void>}}
  */
 export function mountHttp(app, opts = {}) {
   const mountPath = opts.path || "/mcp";
@@ -48,6 +66,17 @@ export function mountHttp(app, opts = {}) {
   const ownsEngine = !opts.engine;
   const engine = opts.engine || createEngine({ env: (opts.serverOptions && opts.serverOptions.env) || process.env, logger });
   const sessions = new Map();
+
+  const authenticate = typeof opts.authenticate === "function" ? opts.authenticate : null;
+  if (authenticate) {
+    logger.info("MCP over HTTP mounted at " + mountPath + " behind the supplied authenticate middleware");
+  } else {
+    logger.warn("*".repeat(78));
+    logger.warn(UNAUTHENTICATED_WARNING);
+    logger.warn("*".repeat(78));
+  }
+  /** The handler chain for a method: the authentication middleware first, when there is one. */
+  const guarded = (handler) => (authenticate ? [authenticate, handler] : [handler]);
 
   function teardown(sessionId, reason) {
     if (!sessionId) return;
@@ -78,55 +107,66 @@ export function mountHttp(app, opts = {}) {
     await transport.handleRequest(req, res, req.body);
   }
 
-  app.post(mountPath, async (req, res) => {
-    const sid = req.headers["mcp-session-id"];
-    try {
-      if (sid && sessions.has(sid)) {
-        await sessions.get(sid).transport.handleRequest(req, res, req.body);
-      } else {
-        if (sid) logger.warn("stale session id " + sid + "; starting a replacement session");
-        await startSession(req, res, !!sid);
+  app.post(
+    mountPath,
+    ...guarded(async (req, res) => {
+      const sid = req.headers["mcp-session-id"];
+      try {
+        if (sid && sessions.has(sid)) {
+          await sessions.get(sid).transport.handleRequest(req, res, req.body);
+        } else {
+          if (sid) logger.warn("stale session id " + sid + "; starting a replacement session");
+          await startSession(req, res, !!sid);
+        }
+      } catch (err) {
+        logger.error("POST " + mountPath + " failed: " + err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal error" }, id: null });
+        }
       }
-    } catch (err) {
-      logger.error("POST " + mountPath + " failed: " + err.message);
-      if (!res.headersSent) {
-        res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal error" }, id: null });
+    })
+  );
+
+  app.get(
+    mountPath,
+    ...guarded(async (req, res) => {
+      const sid = req.headers["mcp-session-id"];
+      if (!sid || !sessions.has(sid)) {
+        res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid or missing session" }, id: null });
+        return;
       }
-    }
-  });
+      res.on("close", () => teardown(sid, "sse-close"));
+      try {
+        await sessions.get(sid).transport.handleRequest(req, res);
+      } catch (err) {
+        logger.error("GET " + mountPath + " failed: " + err.message);
+        if (!res.headersSent) res.status(500).end();
+      }
+    })
+  );
 
-  app.get(mountPath, async (req, res) => {
-    const sid = req.headers["mcp-session-id"];
-    if (!sid || !sessions.has(sid)) {
-      res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid or missing session" }, id: null });
-      return;
-    }
-    res.on("close", () => teardown(sid, "sse-close"));
-    try {
-      await sessions.get(sid).transport.handleRequest(req, res);
-    } catch (err) {
-      logger.error("GET " + mountPath + " failed: " + err.message);
-      if (!res.headersSent) res.status(500).end();
-    }
-  });
-
-  app.delete(mountPath, async (req, res) => {
-    const sid = req.headers["mcp-session-id"];
-    if (!sid || !sessions.has(sid)) {
-      res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid or missing session" }, id: null });
-      return;
-    }
-    try {
-      await sessions.get(sid).transport.handleRequest(req, res);
-    } catch (err) {
-      logger.error("DELETE " + mountPath + " failed: " + err.message);
-      if (!res.headersSent) res.status(500).end();
-    }
-  });
+  app.delete(
+    mountPath,
+    ...guarded(async (req, res) => {
+      const sid = req.headers["mcp-session-id"];
+      if (!sid || !sessions.has(sid)) {
+        res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Invalid or missing session" }, id: null });
+        return;
+      }
+      try {
+        await sessions.get(sid).transport.handleRequest(req, res);
+      } catch (err) {
+        logger.error("DELETE " + mountPath + " failed: " + err.message);
+        if (!res.headersSent) res.status(500).end();
+      }
+    })
+  );
 
   return {
     sessions,
     engine,
+    authenticated: !!authenticate,
+    path: mountPath,
     async close() {
       for (const [sid, s] of sessions) {
         sessions.delete(sid);

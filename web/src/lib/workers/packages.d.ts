@@ -55,6 +55,35 @@ declare module '@veg/hyphaeon-runtime' {
 		provenance?: Record<string, unknown>;
 	}): Promise<RuntimeMemeResult>;
 	export function clampMaxSpecies(value: unknown, fallback?: number): number;
+	/** runtime/src/busted.js: the BUSTED surrogate over the backbone and (optionally) the head session. */
+	export function runBusted(args: {
+		alignmentText: string;
+		treeText?: string | null;
+		options?: Record<string, unknown>;
+		session: RuntimeSessionHandle;
+		head?: RuntimeSessionHandle | null;
+		progress?: RuntimeProgress;
+		surface?: string;
+		signal?: AbortSignal;
+		provenance?: Record<string, unknown>;
+	}): Promise<Record<string, unknown> & { record: Record<string, unknown>; statistics: Record<string, unknown>; provenance: Record<string, unknown> }>;
+	/**
+	 * runtime/src/analyze.js (Phase 2 orchestrator contract): everything on one dataset, sections
+	 * posted through `onSection` as they finish. Declared optional-at-runtime in analyze.worker.ts,
+	 * which falls back to a runMeme + runBusted bridge while the module is not yet in the package.
+	 */
+	export function runEverything(args: {
+		alignmentText: string;
+		treeText: string | null;
+		inputs: { alignmentName: string; treeName: string | null; demo?: string };
+		options: Record<string, unknown>;
+		session: RuntimeSessionHandle;
+		head?: RuntimeSessionHandle | null;
+		surface?: string;
+		signal?: AbortSignal;
+		progress?: RuntimeProgress;
+		onSection?: (name: string, payload: unknown, meta: { final: boolean }) => void;
+	}): Promise<Record<string, unknown>>;
 	export const MIN_SPECIES: number;
 	export const MAX_SPECIES_CAP: number;
 	export const PHASES: readonly string[];
@@ -96,6 +125,12 @@ declare module '@veg/hyphaeon-runtime/web' {
 		ortWasmPath?: string;
 		numThreads?: number;
 		expectedInputs?: readonly string[];
+	}): Promise<RuntimeSessionHandle>;
+	export function loadBustedHead(options: {
+		modelUrl: string;
+		expectedSha256?: string;
+		ortWasmPath?: string;
+		numThreads?: number;
 	}): Promise<RuntimeSessionHandle>;
 	export function isSessionLoaded(options?: {
 		modelUrl: string;

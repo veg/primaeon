@@ -1,0 +1,42 @@
+{
+  "name": "@veg/hyphaeon-server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "HyphAeon Node server: REST job API (PLAN.md 3.5) and the streamable-HTTP MCP mount behind the auto-approving OAuth ceremony (PLAN.md 3.6), over @veg/hyphaeon-runtime under onnxruntime-node.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "hyphaeon-server": "bin/hyphaeon-server.js"
+  },
+  "exports": {
+    ".": "./src/app.js",
+    "./oauth": "./src/oauth.js",
+    "./config": "./src/config.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning bin/hyphaeon-server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@veg/hyphaeon-js": "1.0.0",
+    "@veg/hyphaeon-mcp": "0.3.0",
+    "@veg/hyphaeon-runtime": "0.0.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "onnxruntime-node": "1.23.2",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.4",
+    "vitest": "^3.2.4"
+  }
+}

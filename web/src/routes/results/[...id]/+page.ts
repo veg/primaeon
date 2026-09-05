@@ -1,23 +1,20 @@
 /**
- * +page.ts (/results/[...id]) — a prerendered shell that loads its record in the browser.
+ * +page.ts (/results/[...id]) — the Phase 1 results route, now a redirect to /report/….
  *
- * WHY THIS FILE EXISTS. PLAN.md §4.1 gives one route to two sources: `/results/<local-id>/` for
- * a run persisted in IndexedDB, and the gallery's prebaked records. Both are read in the
- * browser (results/load.ts), so `ssr = false`: there is no record to render at build time and
- * IndexedDB does not exist there.
+ * WHY THIS FILE EXISTS. PLAN.md §4.1: "`/results/…` redirects to `/report/…`". The shells this
+ * route emitted in Phase 1 (`/results/local/` and `/results/gallery/<name>/`) are still built so
+ * that a bookmarked link keeps working on the static host; each one, once its client-side `load`
+ * runs, redirects to the same id under `/report/` (api.ts `reportPath`), where lib/report/load.ts
+ * reads a v1 run through the store's legacy wrapper. `entries()` is Phase 1's, unchanged.
  *
- * WHY A REST PARAMETER AND `entries`. The site is fully prerendered by adapter-static in strict
- * mode (svelte.config.js: no SPA fallback, a non-prerenderable route is a build error). A
- * dynamic route therefore has to say which pages it has. `entries()` lists `gallery/<name>` for
- * every gallery example whose prebaked run completed (`status: 'ok'` with a `result` file in
- * static/gallery/index.json, the same file the gallery page reads) plus `local`, so the build emits `/results/gallery/<name>/` and
- * `/results/local/`. A browser run is opened as `/results/<id>/` in dev (SvelteKit renders any
- * id on the fly) and as `/results/local/?id=<id>` on the static host, where nothing else can be
- * served for an id nobody knew at build time; +page.svelte reads both forms. Any other path on
- * the static host is a 404 by construction, not a blank page.
+ * THE REDIRECT IS IN THE PAGE, NOT HERE. A `redirect()` thrown from this `load` made the
+ * prerenderer skip the gallery shells (measured: only `/results/local/` was written, and
+ * `/results/gallery/Smc6/` was a 404 on the preview), so `load` only resolves the target and
+ * +page.svelte performs the `goto` on mount with `replaceState`.
  */
 
 import { base } from '$app/paths';
+import { reportPath } from '$lib/api';
 import type { GalleryIndex } from '$lib/gallery/types';
 import type { EntryGenerator, PageLoad } from './$types';
 
@@ -27,13 +24,15 @@ export const ssr = false;
 export const entries: EntryGenerator = async () => {
 	const out: { id: string }[] = [{ id: 'local' }];
 	try {
-		// `entries` runs only at build time, but this universal module is also bundled for the
-		// browser, and a literal `import('node:fs/promises')` makes Vite externalise the module and
-		// warn on every build. Holding the specifier in a variable keeps the bundler from following
-		// it (the same trick runtime/src/manifest.js and createSession.js use).
+		// Resolved from the working directory (`npm run build` runs in web/), not from
+		// `import.meta.url`: at build time this module is the bundled server chunk under
+		// .svelte-kit/output/, so a URL relative to it never finds static/. Measured: with the
+		// relative URL the read failed silently and the gallery shells were only emitted when
+		// another page happened to link to them.
 		const fsName = 'node:fs/promises';
 		const { readFile } = (await import(/* @vite-ignore */ fsName)) as typeof import('node:fs/promises');
-		const text = await readFile(new URL('../../../../static/gallery/index.json', import.meta.url), 'utf8');
+		const cwd = (globalThis as { process?: { cwd(): string } }).process?.cwd() ?? '.';
+		const text = await readFile(`${cwd}/static/gallery/index.json`, 'utf8');
 		const index = JSON.parse(text) as GalleryIndex;
 		for (const entry of index.entries) {
 			if (entry.status === 'ok' && entry.result) out.push({ id: `gallery/${entry.id}` });
@@ -47,8 +46,7 @@ export const entries: EntryGenerator = async () => {
 export const load: PageLoad = ({ params, url }) => {
 	const id = params.id.replace(/\/+$/, '');
 	const query = url.searchParams.get('id');
-	return {
-		recordId: id === 'local' && query ? query : id,
-		base
-	};
+	const target = id === 'local' && query ? query : id;
+	// `local` with no id: nothing to redirect to; the page says so.
+	return { target: target === 'local' ? null : `${base}${reportPath(target)}` };
 };

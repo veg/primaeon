@@ -33,10 +33,15 @@
 import type { ResultListing, ResultRecord } from '$lib/api';
 
 export const DB_NAME = 'hyphaeon';
-/** Bump when a store or index is added; `onupgradeneeded` below must stay additive. */
-export const DB_VERSION = 1;
+/**
+ * Bump when a store or index is added; `onupgradeneeded` below must stay additive. Version 2
+ * (Phase 2) adds the `reports` store (lib/storage/reports.ts) beside `runs`; the v1 `runs` records
+ * are kept and read through `reports.ts`'s legacy wrapper rather than migrated in place.
+ */
+export const DB_VERSION = 2;
 export const RUNS_STORE = 'runs';
-const CREATED_INDEX = 'createdAt';
+export const REPORTS_STORE = 'reports';
+export const CREATED_INDEX = 'createdAt';
 
 /** The message DM3 showed on QuotaExceededError, reworded for this app's vocabulary. */
 export const QUOTA_MESSAGE =
@@ -64,7 +69,8 @@ export function newRunId(): string {
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
-function openDb(): Promise<IDBDatabase> {
+/** The shared connection; `reports.ts` uses the same database and the same additive upgrade. */
+export function openDb(): Promise<IDBDatabase> {
 	if (!isAvailable()) {
 		return Promise.reject(new Error('IndexedDB is not available in this context'));
 	}
@@ -81,6 +87,10 @@ function openDb(): Promise<IDBDatabase> {
 			// Additive only (DM3's lesson): never delete a store here.
 			if (!db.objectStoreNames.contains(RUNS_STORE)) {
 				const store = db.createObjectStore(RUNS_STORE, { keyPath: 'id' });
+				store.createIndex(CREATED_INDEX, 'createdAt', { unique: false });
+			}
+			if (!db.objectStoreNames.contains(REPORTS_STORE)) {
+				const store = db.createObjectStore(REPORTS_STORE, { keyPath: 'id' });
 				store.createIndex(CREATED_INDEX, 'createdAt', { unique: false });
 			}
 		};
@@ -101,14 +111,14 @@ function openDb(): Promise<IDBDatabase> {
 	return dbPromise;
 }
 
-function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
+export function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
 	return new Promise((resolve, reject) => {
 		request.onsuccess = () => resolve(request.result);
 		request.onerror = () => reject(translate(request.error));
 	});
 }
 
-function translate(err: DOMException | null): Error {
+export function translate(err: DOMException | null): Error {
 	if (err && err.name === 'QuotaExceededError') return new Error(QUOTA_MESSAGE, { cause: err });
 	return err instanceof Error ? err : new Error(String(err ?? 'IndexedDB request failed'));
 }

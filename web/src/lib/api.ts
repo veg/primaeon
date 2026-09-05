@@ -1,33 +1,35 @@
 /**
- * api.ts — the typed contract between the analyze flow (which writes) and the results page (which
- * reads): what a browser run is, what it was run on, and what it produced.
+ * api.ts — the typed contract between the analyze flow (which writes), the storage layer, and the
+ * report page (which reads): what a browser run is, what it was run on, and what it produced.
  *
- * WHY THIS FILE EXISTS. PLAN.md §4.1: local runs persist in IndexedDB and `/results/[id]` renders
- * them with the same component a server job or a gallery record uses. Three modules meet at that
- * record — `lib/analyze/run.ts` produces it, `lib/storage/results.ts` stores it, the results route
- * reads it — and none of them should learn the shape from another's implementation. The per-run
- * envelope (id, timestamp, inputs with hashes, options, timings, diagnostics) is declared here;
- * the analysis document inside it is `MemeRecord` from `lib/results/types.ts`, which is the
- * reference CLI's `hyphaeon meme` document plus PLAN.md §3.5's provenance block, so a stored run
- * and a prebaked gallery record are the same type to the page.
+ * WHY THIS FILE EXISTS. PLAN.md §4.0 / D21: the only user action is uploading a dataset, and one
+ * report fills in as the analyses finish. Everything that runs on that dataset is one record —
+ * `ReportRecord` (schema_version 2) — whose `sections` are filled one at a time by the runtime's
+ * `runEverything` orchestrator (runtime/src/analyze.js) as it posts them from the analyze worker.
+ * Four modules meet at that record: `lib/report/run.svelte.ts` produces it, `lib/storage/reports.ts`
+ * stores it, `lib/report/load.ts` reads it back from IndexedDB, the gallery or a server job, and the
+ * report route renders it. None of them should learn the shape from another's implementation, so
+ * the envelope (id, timestamp, inputs with hashes, options, timings, diagnostics, status) is declared
+ * here and the per-section payloads in `lib/report/types.ts`, using the Python reference's result
+ * key names (`hyphaeon meme` / `busted` / `epistasis` / `dms` documents) so a stored section and a
+ * CLI document read alike.
  *
- * `MemeRecord` mirrors `runtime/src/pipeline.js` `runMeme`'s return shape (`schema_version`,
- * `method`, `is_surrogate`, `surrogate_for`, `sites`, `summary`, `provenance`) with the site rows
- * in the CLI's column names (Appendix B: `site`, `hyphaeon_lrt`, `p_value`, `q_value`,
- * `is_invariable`, attribution columns). `lib/analyze/record.ts` is the one place that converts a
- * runtime result into it, so a change in the runtime's shape is absorbed there.
+ * PHASE 1's `ResultRecord` (schema_version 1: one `meme` run per record) stays declared below
+ * because the IndexedDB `runs` store still holds such records; `lib/storage/reports.ts` wraps one
+ * as a v2 report whose only section is `sites` when the report page asks for its id.
  *
  * INPUT PROVENANCE. `inputs` records names, byte sizes and the sha256 of the texts the run saw
- * (after gzip inflation, before any tree estimation), not the texts themselves: the promise on
- * every page is that sequences stay in this browser, and a record that carries a hash can still be
- * matched against a file on disk without the record being the file. The alignment and tree the
- * model actually used ARE kept inside `result` (`result.alignment`, `result.tree`) because the
- * results page needs them for the site tree and the entropy overlays; they never leave IndexedDB.
+ * (after gzip inflation, before any tree estimation). The v2 record ALSO keeps the texts
+ * themselves (`inputs.alignmentText`, `inputs.treeText`) because the report's "Re-run with…"
+ * disclosure re-runs everything on the same inputs with new options, and a report reopened after
+ * a reload has no other copy. They live in IndexedDB only; nothing leaves the browser (the promise
+ * on every page), and the JSON download strips them.
  */
 
 import type { MemeRecord } from '$lib/results/types';
+import type { ReportSections } from '$lib/report/types';
 
-export type { MemeRecord };
+export type { MemeRecord, ReportSections };
 
 /** Model variants the manifest ships (PLAN.md D10; `models/manifest.json` `variants`). */
 export type Variant = 'general' | 'viral';
@@ -151,4 +153,145 @@ export type ResultListing = Omit<ResultRecord, 'result'> & {
  */
 export function resultsPath(id: string): string {
 	return `/results/local/?id=${encodeURIComponent(id)}`;
+}
+
+
+// ---- Phase 2: the report (PLAN.md §4.0, §4.5) ----------------------------------------------------
+
+/** The phases `runEverything` reports (orchestrator contract), in the order they run. */
+export type ReportPhase =
+	| 'parse'
+	| 'prepare'
+	| 'infer'
+	| 'stats'
+	| 'gene'
+	| 'epistasis'
+	| 'attribute'
+	| 'filter'
+	| 'dms'
+	| 'postprocess';
+
+export const REPORT_PHASES: readonly ReportPhase[] = [
+	'parse',
+	'prepare',
+	'infer',
+	'stats',
+	'gene',
+	'epistasis',
+	'attribute',
+	'filter',
+	'dms',
+	'postprocess'
+];
+
+/** Section names, in the order PLAN.md §4.0 renders them. */
+export type SectionName = 'sites' | 'gene' | 'epistasis' | 'attribution' | 'filter' | 'dms' | 'phenotype';
+
+export const SECTION_ORDER: readonly SectionName[] = ['sites', 'gene', 'epistasis', 'attribution', 'filter', 'dms', 'phenotype'];
+
+/** Which phase produces which section (for the skeleton's phase label and for progress routing). */
+export const SECTION_PHASE: Record<SectionName, ReportPhase | null> = {
+	sites: 'infer',
+	gene: 'gene',
+	epistasis: 'epistasis',
+	attribution: 'attribute',
+	filter: 'filter',
+	dms: 'dms',
+	phenotype: null
+};
+
+/**
+ * The options `runEverything` takes (orchestrator contract). Defaults come from diagnostics
+ * (variant from tree depth) and the manifest (taxon cap); the report's "Re-run with…" disclosure
+ * edits them and re-runs on the same inputs.
+ */
+export interface ReportOptions {
+	variant: Variant;
+	/** Taxon cap, 3..512; default 256 (manifest `default_taxon_cap`). */
+	maxSpecies: number;
+	referenceSequence: string | null;
+	callMode: CallMode;
+	/** Seed for the sector permutation null (`hyphaeon epistasis --seed`, default 42). */
+	seed: number;
+	/** Digital DMS: on by default; `workBudget` is the 19·L·N² forward-pass budget the browser allows. */
+	dms: { enabled: boolean; workBudget: number };
+	/** Permutations B for the sector null (`--n-permutations`; the CLI's 1000, the function's 10000). */
+	permutations: number;
+}
+
+/** The inputs a report was run on: digests for display, texts for the re-run. */
+export interface ReportInputs {
+	alignment: InputDigest;
+	tree: InputDigest | null;
+	treeSource: TreeSource;
+	alignmentName: string;
+	treeName: string | null;
+	demo?: string;
+	/** Kept in IndexedDB for "Re-run with…"; absent from gallery records and stripped from downloads. */
+	alignmentText?: string;
+	/** The tree the model was given (with branch lengths; estimated when the input had none). */
+	treeText?: string | null;
+}
+
+export type ReportState = 'running' | 'done' | 'failed' | 'cancelled';
+
+/** Where the run is right now; persisted so a reload mid-run shows what finished. */
+export interface ReportStatus {
+	state: ReportState;
+	phase: ReportPhase | null;
+	done: number;
+	total: number;
+	message: string | null;
+	/** Set when `state` is `failed`. */
+	error?: string;
+	/** Sections that reached `final: true`, in arrival order. */
+	completed: SectionName[];
+}
+
+/** PLAN.md §3.5's provenance block; the runtime writes it, the report shows it. */
+export type ReportProvenance = MemeRecord['provenance'];
+
+/** The persisted report: one dataset, every analysis. `id` is the IndexedDB key and the `?id=` segment. */
+export interface ReportRecord {
+	schema_version: 2;
+	kind: 'report';
+	id: string;
+	/** Epoch milliseconds. */
+	createdAt: number;
+	createdAtIso: string;
+	/** Display name: the alignment file name, or the demo name. */
+	name: string;
+	inputs: ReportInputs;
+	options: ReportOptions;
+	diagnostics: DiagnosisSnapshot | null;
+	sections: ReportSections;
+	provenance: ReportProvenance | null;
+	/** Wall seconds per phase, as the orchestrator measured them. */
+	timings: Partial<Record<ReportPhase, number>>;
+	status: ReportStatus;
+	/** Threads ORT actually used, and whether the page was cross-origin isolated (PLAN.md D13). */
+	runtime?: {
+		numThreads: number;
+		crossOriginIsolated: boolean;
+		hardwareConcurrency: number | null;
+		wallMs: number;
+	};
+}
+
+/** A listing row: the envelope without the (large) sections. */
+export type ReportListing = Omit<ReportRecord, 'sections' | 'inputs'> & {
+	inputs: Omit<ReportInputs, 'alignmentText' | 'treeText'>;
+	sites: number;
+	taxaUsed: number;
+};
+
+/**
+ * The route a report is opened at, relative to `base`: `/report/local/?id=<id>` for a browser run
+ * (same reasoning as `resultsPath`: the static host can only serve the shells the build knew),
+ * `/report/gallery/<name>/` for a prebaked example, and `/report/local/?id=job:<id>` for a server
+ * job, which the loader recognises by its prefix.
+ */
+export function reportPath(id: string): string {
+	if (id.startsWith('gallery/')) return `/report/${id.replace(/\/+$/, '')}/`;
+	return `/report/local/?id=${encodeURIComponent(id)}`;
 }

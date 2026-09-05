@@ -13,12 +13,20 @@
  * structured cloning with its prototype; `WorkerClient` rebuilds an Error with the same name so
  * `AbortError` stays distinguishable from a failure.
  *
- * THE THREE WORKERS AND WHY THEY ARE THREE.
+ * THE `section` MESSAGE (Phase 2). The analyze worker hosts the whole `runEverything`
+ * orchestrator and the page renders each section as it finishes, so the envelope gains a third
+ * event kind between `progress` and `result`: `section` carries one section's payload and whether
+ * it is that section's final version (DMS posts many non-final ones as the heatmap fills). Like
+ * `progress`, it is tied to a request id and dropped for an unknown id.
+ *
+ * THE WORKERS AND WHY THEY ARE SEPARATE.
  *   prep    `diagnose()` and the prescreen on every input change (debounced). Cheap, frequent,
  *           must not wait behind a run: its own worker.
  *   tree    HyPhy WASM (HKY85 branch lengths, NJ). A 6.4 MB Emscripten module with its own heap
  *           and file system; lazy, and kept out of the inference worker so ORT's memory and
  *           HyPhy's never share one WASM heap.
+ *   analyze the whole `runEverything` (every pillar, PLAN.md §4.0) in ONE worker, Phase 2's
+ *           successor to `infer`; see analyze.worker.ts for why one worker and not one per phase.
  *   infer   the whole `runMeme` — session load, prepare, inference, post-processing — in ONE
  *           worker, with the ORT session created there. This is the simpler of the two designs
  *           the plan allowed (per-phase workers behind an adapter, or one worker running the
@@ -28,7 +36,7 @@
  *           The main thread is free throughout; ORT spawns its own thread pool from the worker.
  */
 
-import type { CallMode, DiagnosisSnapshot, MemeRecord, RunOptions, TreeSource } from '$lib/api';
+import type { CallMode, DiagnosisSnapshot, MemeRecord, ReportOptions, ReportRecord, RunOptions, TreeSource } from '$lib/api';
 import type { PrescreenResult } from '$lib/diagnostics/panel';
 
 // ---- envelope ---------------------------------------------------------------------------------
@@ -67,8 +75,16 @@ export interface ErrorMessage {
 	stack?: string;
 }
 
+export interface SectionMessage {
+	id: number;
+	kind: 'section';
+	name: string;
+	payload: unknown;
+	final: boolean;
+}
+
 export type ToWorker<T> = RequestMessage<T> | CancelMessage;
-export type FromWorker<T> = ProgressMessage | ResultMessage<T> | ErrorMessage;
+export type FromWorker<T> = ProgressMessage | SectionMessage | ResultMessage<T> | ErrorMessage;
 
 // ---- prep worker ------------------------------------------------------------------------------
 
@@ -141,3 +157,28 @@ export interface InferResponse {
 
 /** Call modes the runtime accepts, re-stated here so the worker validates before the runtime throws. */
 export const CALL_MODES: readonly CallMode[] = ['percentile', 'zscore', 'pvalue'];
+
+// ---- analyze worker (Phase 2: runEverything) -------------------------------------------------
+
+export interface AnalyzeRequest {
+	alignmentText: string;
+	/** Newick WITH branch lengths (the page estimated them when needed), or '' for an embedded tree. */
+	treeText: string;
+	treeSource: TreeSource;
+	inputs: { alignmentName: string; treeName: string | null; demo?: string };
+	options: ReportOptions;
+	manifestUrl: string;
+	modelsBase: string;
+	ortBase: string;
+	numThreads: number;
+}
+
+export interface AnalyzeResponse {
+	/** The orchestrator's ReportRecord (contract: schema_version 2, kind 'report'); sections also arrived as `section` events. */
+	record: Pick<ReportRecord, 'sections' | 'provenance' | 'timings'> & Record<string, unknown>;
+	numThreads: number;
+	crossOriginIsolated: boolean;
+	firstLoad: boolean;
+	/** What produced the record: the runtime's `runEverything`. ('bridge' named the interim runMeme+runBusted composition removed at Phase 2b integration.) */
+	orchestrator: 'runtime';
+}

@@ -1,28 +1,174 @@
 {
-	"schema_version": 2,
-	"generated_at": "2026-09-04T20:59:21.501Z",
+	"schema_version": 3,
+	"generated_at": "2026-09-05T15:19:21.622Z",
 	"engine": {
-		"commit": "cf838ab",
+		"commit": "61d30e3",
 		"reference_version": "1.0.0",
 		"hyphaeon_js_version": "1.0.0"
 	},
 	"model": {
 		"model_version": "v1",
 		"variant": "general",
-		"artifact_sha256": "aa10e8e0f059436bd8a6f59e1fb3f0137e845533b9c65009230c7de6b91ef22c"
+		"artifact_sha256": "aa10e8e0f059436bd8a6f59e1fb3f0137e845533b9c65009230c7de6b91ef22c",
+		"busted_head_sha256": "2ad554e02b5580b813a915d8fbd8a4fa925c7679977adb596388fdc8d4c1c116"
 	},
 	"options": {
 		"variant": "general",
 		"maxSpecies": 256,
+		"referenceSequence": null,
+		"callMode": "percentile",
+		"seed": 42,
+		"dms": {
+			"enabled": true,
+			"workBudget": 2500000000
+		},
+		"permutations": 1000,
 		"pruneDuplicates": true
 	},
 	"entries": [
+		{
+			"id": "bat_oas1",
+			"name": "Bat OAS1",
+			"gene": "2'-5'-oligoadenylate synthetase 1",
+			"description": "Chiropteran OAS1 2'-5'-oligoadenylate synthetase (innate immunity escape).",
+			"regime": "Bats · cross-species",
+			"alignment": "bat_oas1.fasta",
+			"tree": "bat_oas1.nwk",
+			"format": "fasta",
+			"paper": {
+				"taxa": 18,
+				"codons": 351
+			},
+			"reference_runtime_sec": 1.7,
+			"inputs": {
+				"alignment": "bat_oas1.fasta",
+				"tree": "bat_oas1.nwk",
+				"format": "fasta",
+				"alignment_sha256": "02981c1b49b8c78361c0c961f4b2ff8da1737e23a71726a020c759d5dd835701",
+				"tree_sha256": "e9181279b031d0dcb4d0c5688595bc6cac1a4744077c397eebf465a9eb8fe8d2"
+			},
+			"tree_source": "file",
+			"analyses": [
+				"sites",
+				"gene",
+				"epistasis",
+				"attribution",
+				"filter",
+				"dms"
+			],
+			"branch_lengths_estimated": false,
+			"branch_length_method": null,
+			"status": "ok",
+			"result": "bat_oas1.json",
+			"summary": {
+				"taxa_in_alignment": 18,
+				"taxa_used": 18,
+				"codons": 351,
+				"sites": {
+					"variable_sites": 182,
+					"invariable_sites": 169,
+					"max_lrt": 5.881259918212891,
+					"called": {
+						"q_le_0_10": 0,
+						"q_le_0_05": 0,
+						"p_le_0_05": 5,
+						"top_5pct": 10
+					}
+				},
+				"gene": {
+					"verdict": "no-evidence",
+					"p_value_acat": 0.10455550968925914,
+					"p_value_simes": 0.6782112190386319,
+					"omnibus_lrt": 7.605154991149902,
+					"sig_sites_p05": 14,
+					"sig_sites_p10": 42
+				},
+				"epistasis": {
+					"edges": 25,
+					"sectors": 4,
+					"significant_sectors": 4,
+					"permutations": 1000
+				},
+				"dms": {
+					"sites_swept": 351,
+					"sites_total": 351,
+					"coverage": 1,
+					"complete": true,
+					"cancelled": false,
+					"skipped": false,
+					"capped": false,
+					"work": 2160756,
+					"work_budget": 2500000000
+				},
+				"attributed_sites": 5,
+				"artifacts_masked": 0,
+				"timings": {
+					"prepare": 0.019211915999999975,
+					"infer": 0.11429991699999999,
+					"gene": 0.009593000000000018,
+					"epistasis": 0.10822570900000004,
+					"attribute": 0.031062584000000015,
+					"filter": 0.0057850419999999755,
+					"dms": 2.813335083,
+					"total": 3.1240185830000002
+				},
+				"runtime_sec": 3.126
+			},
+			"prebake": {
+				"at": "2026-09-05T15:13:10.175Z",
+				"surface": "node-server",
+				"node": "v22.22.0",
+				"threads": 8,
+				"artifact_verified": true,
+				"stamp": "af4abc78fc3e8a09c8d38aae52ebe34094bb5502b32399eb1a83a915730750c6",
+				"storage": {
+					"stripped": [
+						"loaded",
+						"attention",
+						"root_repr"
+					]
+				},
+				"sections": [
+					{
+						"name": "diagnostics",
+						"at": 0.04
+					},
+					{
+						"name": "sites",
+						"at": 0.16
+					},
+					{
+						"name": "gene",
+						"at": 0.17
+					},
+					{
+						"name": "epistasis",
+						"at": 0.28
+					},
+					{
+						"name": "attribution",
+						"at": 0.31
+					},
+					{
+						"name": "filter",
+						"at": 0.31
+					},
+					{
+						"name": "dms",
+						"at": 3.13
+					}
+				]
+			}
+		},
 		{
 			"id": "Smc6",
 			"name": "Smc6",
 			"gene": "Structural maintenance of chromosomes 6",
 			"description": "Primate Smc6 structural maintenance of chromosomes (antiviral host restriction).",
 			"regime": "Primates · cross-species",
+			"alignment": "Smc6.fasta",
+			"tree": "Smc6.nwk",
+			"format": "fasta",
 			"paper": {
 				"taxa": 20,
 				"codons": 1097
@@ -37,7 +183,12 @@
 			},
 			"tree_source": "file",
 			"analyses": [
-				"meme"
+				"sites",
+				"gene",
+				"epistasis",
+				"attribution",
+				"filter",
+				"dms"
 			],
 			"branch_lengths_estimated": false,
 			"branch_length_method": null,
@@ -47,74 +198,100 @@
 				"taxa_in_alignment": 20,
 				"taxa_used": 20,
 				"codons": 1097,
-				"variable_sites": 97,
-				"invariable_sites": 1000,
-				"max_lrt": 6.898138046264648,
-				"called": {
-					"q_le_0_10": 0,
-					"q_le_0_05": 0,
-					"p_le_0_05": 1,
-					"top_5pct": 5
+				"sites": {
+					"variable_sites": 97,
+					"invariable_sites": 1000,
+					"max_lrt": 6.912784576416016,
+					"called": {
+						"q_le_0_10": 0,
+						"q_le_0_05": 0,
+						"p_le_0_05": 1,
+						"top_5pct": 5
+					}
 				},
-				"runtime_sec": 0.125
+				"gene": {
+					"verdict": "no-evidence",
+					"p_value_acat": 0.1179765260927691,
+					"p_value_simes": 1,
+					"omnibus_lrt": 3.298861503601074,
+					"sig_sites_p05": 5,
+					"sig_sites_p10": 14
+				},
+				"epistasis": {
+					"edges": 5,
+					"sectors": 2,
+					"significant_sectors": 1,
+					"permutations": 1000
+				},
+				"dms": {
+					"sites_swept": 1097,
+					"sites_total": 1097,
+					"coverage": 1,
+					"complete": true,
+					"cancelled": false,
+					"skipped": false,
+					"capped": false,
+					"work": 8337200,
+					"work_budget": 2500000000
+				},
+				"attributed_sites": 2,
+				"artifacts_masked": 0,
+				"timings": {
+					"prepare": 0.010416374999999789,
+					"infer": 0.056312625000000026,
+					"gene": 0.004039832999999817,
+					"epistasis": 0.019889333999999963,
+					"attribute": 0.016990334000000076,
+					"filter": 0.0016607500000000073,
+					"dms": 9.867610458,
+					"total": 9.989713666
+				},
+				"runtime_sec": 9.99
 			},
 			"prebake": {
-				"at": "2026-09-04T20:58:57.200Z",
+				"at": "2026-09-05T15:13:20.200Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "953ec362f3fb78ee7be840eda608052dabf567bcca9a334071317fb1ad653c5d"
-			}
-		},
-		{
-			"id": "bat_oas1",
-			"name": "Bat OAS1",
-			"gene": "2'-5'-oligoadenylate synthetase 1",
-			"description": "Chiropteran OAS1 2'-5'-oligoadenylate synthetase (innate immunity escape).",
-			"regime": "Bats · cross-species",
-			"paper": {
-				"taxa": 18,
-				"codons": 351
-			},
-			"reference_runtime_sec": 1.6,
-			"inputs": {
-				"alignment": "bat_oas1.fasta",
-				"tree": "bat_oas1.nwk",
-				"format": "fasta",
-				"alignment_sha256": "02981c1b49b8c78361c0c961f4b2ff8da1737e23a71726a020c759d5dd835701",
-				"tree_sha256": "e9181279b031d0dcb4d0c5688595bc6cac1a4744077c397eebf465a9eb8fe8d2"
-			},
-			"tree_source": "file",
-			"analyses": [
-				"meme"
-			],
-			"branch_lengths_estimated": false,
-			"branch_length_method": null,
-			"status": "ok",
-			"result": "bat_oas1.json",
-			"summary": {
-				"taxa_in_alignment": 18,
-				"taxa_used": 18,
-				"codons": 351,
-				"variable_sites": 182,
-				"invariable_sites": 169,
-				"max_lrt": 5.637348651885986,
-				"called": {
-					"q_le_0_10": 0,
-					"q_le_0_05": 0,
-					"p_le_0_05": 5,
-					"top_5pct": 10
+				"stamp": "e3f0930b40a20ac3256b8535a2c52c5792bad1e92a7c38b10657d85204569994",
+				"storage": {
+					"stripped": [
+						"loaded",
+						"attention",
+						"root_repr"
+					]
 				},
-				"runtime_sec": 0.104
-			},
-			"prebake": {
-				"at": "2026-09-04T20:58:57.308Z",
-				"surface": "node-server",
-				"node": "v22.22.0",
-				"threads": 8,
-				"artifact_verified": true,
-				"stamp": "f2b07fcd1a4765b8acae7c67ed4fb6100414fdbef597d2d145f30216f9f6616c"
+				"sections": [
+					{
+						"name": "diagnostics",
+						"at": 0.02
+					},
+					{
+						"name": "sites",
+						"at": 0.08
+					},
+					{
+						"name": "gene",
+						"at": 0.08
+					},
+					{
+						"name": "epistasis",
+						"at": 0.1
+					},
+					{
+						"name": "attribution",
+						"at": 0.12
+					},
+					{
+						"name": "filter",
+						"at": 0.12
+					},
+					{
+						"name": "dms",
+						"at": 9.99
+					}
+				]
 			}
 		},
 		{
@@ -123,11 +300,14 @@
 			"gene": "Single-domain antibody heavy-chain variable domain",
 			"description": "Camelid single-domain antibody heavy-chain variable domain (antigenic diversity).",
 			"regime": "Camelids · antibody repertoire",
+			"alignment": "camelid.fasta",
+			"tree": "camelid.nwk",
+			"format": "fasta",
 			"paper": {
 				"taxa": 212,
 				"codons": 96
 			},
-			"reference_runtime_sec": 3.9,
+			"reference_runtime_sec": 4.1,
 			"inputs": {
 				"alignment": "camelid.fasta",
 				"tree": "camelid.nwk",
@@ -137,7 +317,12 @@
 			},
 			"tree_source": "file",
 			"analyses": [
-				"meme"
+				"sites",
+				"gene",
+				"epistasis",
+				"attribution",
+				"filter",
+				"dms"
 			],
 			"branch_lengths_estimated": true,
 			"branch_length_method": "hyphy-hky85",
@@ -147,24 +332,100 @@
 				"taxa_in_alignment": 212,
 				"taxa_used": 212,
 				"codons": 96,
-				"variable_sites": 86,
-				"invariable_sites": 10,
-				"max_lrt": 10.431620597839355,
-				"called": {
-					"q_le_0_10": 0,
-					"q_le_0_05": 0,
-					"p_le_0_05": 15,
-					"top_5pct": 5
+				"sites": {
+					"variable_sites": 86,
+					"invariable_sites": 10,
+					"max_lrt": 10.188919067382812,
+					"called": {
+						"q_le_0_10": 0,
+						"q_le_0_05": 0,
+						"p_le_0_05": 15,
+						"top_5pct": 5
+					}
 				},
-				"runtime_sec": 3.911
+				"gene": {
+					"verdict": "selection",
+					"p_value_acat": 0.018549092653169896,
+					"p_value_simes": 0.06781781437350634,
+					"omnibus_lrt": 36.07762908935547,
+					"sig_sites_p05": 30,
+					"sig_sites_p10": 52
+				},
+				"epistasis": {
+					"edges": 61,
+					"sectors": 3,
+					"significant_sectors": 2,
+					"permutations": 1000
+				},
+				"dms": {
+					"sites_swept": 96,
+					"sites_total": 96,
+					"coverage": 1,
+					"complete": true,
+					"cancelled": false,
+					"skipped": false,
+					"capped": false,
+					"work": 81977856,
+					"work_budget": 2500000000
+				},
+				"attributed_sites": 5,
+				"artifacts_masked": 1,
+				"timings": {
+					"prepare": 0.1437501250000023,
+					"infer": 0.895965791999999,
+					"gene": 0.0171551249999975,
+					"epistasis": 0.05596570900000006,
+					"attribute": 3.5112405,
+					"filter": 0.864125,
+					"dms": 15.207908707999996,
+					"total": 20.713638167000003
+				},
+				"runtime_sec": 23.647
 			},
 			"prebake": {
-				"at": "2026-09-04T20:59:01.221Z",
+				"at": "2026-09-05T15:13:43.860Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "d10b7e9e573d3ba60485c86d7573a19d2821dfa3aad4f35c47dbf83d755e3a5c"
+				"stamp": "8879390946640ab73b5c9a86812513d34c03d1c03e15b0f3c8ecf37b092a4c78",
+				"storage": {
+					"stripped": [
+						"loaded",
+						"attention",
+						"root_repr"
+					]
+				},
+				"sections": [
+					{
+						"name": "diagnostics",
+						"at": 3.09
+					},
+					{
+						"name": "sites",
+						"at": 3.99
+					},
+					{
+						"name": "gene",
+						"at": 4.01
+					},
+					{
+						"name": "epistasis",
+						"at": 4.06
+					},
+					{
+						"name": "attribution",
+						"at": 7.57
+					},
+					{
+						"name": "filter",
+						"at": 8.44
+					},
+					{
+						"name": "dms",
+						"at": 23.65
+					}
+				]
 			}
 		},
 		{
@@ -173,11 +434,14 @@
 			"gene": "Reverse transcriptase polymerase domain",
 			"description": "Retroviral Reverse Transcriptase polymerase domain (drug resistance & epistasis).",
 			"regime": "HIV-1 · within-host viral",
+			"alignment": "HIV1_RT.fasta",
+			"tree": "HIV1_RT.nwk",
+			"format": "fasta",
 			"paper": {
 				"taxa": 476,
 				"codons": 335
 			},
-			"reference_runtime_sec": 17.6,
+			"reference_runtime_sec": 17.7,
 			"inputs": {
 				"alignment": "HIV1_RT.fasta",
 				"tree": "HIV1_RT.nwk",
@@ -187,7 +451,12 @@
 			},
 			"tree_source": "file",
 			"analyses": [
-				"meme"
+				"sites",
+				"gene",
+				"epistasis",
+				"attribution",
+				"filter",
+				"dms"
 			],
 			"branch_lengths_estimated": true,
 			"branch_length_method": "hyphy-hky85",
@@ -197,24 +466,100 @@
 				"taxa_in_alignment": 476,
 				"taxa_used": 256,
 				"codons": 335,
-				"variable_sites": 149,
-				"invariable_sites": 186,
-				"max_lrt": 21.027807235717773,
-				"called": {
-					"q_le_0_10": 2,
-					"q_le_0_05": 2,
-					"p_le_0_05": 34,
-					"top_5pct": 8
+				"sites": {
+					"variable_sites": 149,
+					"invariable_sites": 186,
+					"max_lrt": 21.01567840576172,
+					"called": {
+						"q_le_0_10": 2,
+						"q_le_0_05": 2,
+						"p_le_0_05": 34,
+						"top_5pct": 8
+					}
 				},
-				"runtime_sec": 18.584
+				"gene": {
+					"verdict": "selection",
+					"p_value_acat": 0.0003064081670106633,
+					"p_value_simes": 0.0007630300011684808,
+					"omnibus_lrt": 126.9038314819336,
+					"sig_sites_p05": 62,
+					"sig_sites_p10": 88
+				},
+				"epistasis": {
+					"edges": 17,
+					"sectors": 5,
+					"significant_sectors": 2,
+					"permutations": 1000
+				},
+				"dms": {
+					"sites_swept": 335,
+					"sites_total": 335,
+					"coverage": 1,
+					"complete": true,
+					"cancelled": false,
+					"skipped": false,
+					"capped": false,
+					"work": 417136640,
+					"work_budget": 2500000000
+				},
+				"attributed_sites": 8,
+				"artifacts_masked": 0,
+				"timings": {
+					"prepare": 0.19293029200000456,
+					"infer": 1.5230223330000008,
+					"gene": 0.0021185840000034657,
+					"epistasis": 0.074685040999997,
+					"attribute": 3.1133556670000035,
+					"filter": 0.020715209000001778,
+					"dms": 77.21996775000001,
+					"total": 82.19431179100002
+				},
+				"runtime_sec": 99.322
 			},
 			"prebake": {
-				"at": "2026-09-04T20:59:19.812Z",
+				"at": "2026-09-05T15:15:23.207Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "8570e7843c254fb760db801c9b700a5320d4e4da2e2d3ea1ba32da9fcbcd4950"
+				"stamp": "f93e65acf9e48fbf8b7946a5d5cafe2a3681a48b45c9f506c82d7d9a5a8821e1",
+				"storage": {
+					"stripped": [
+						"loaded",
+						"attention",
+						"root_repr"
+					]
+				},
+				"sections": [
+					{
+						"name": "diagnostics",
+						"at": 17.37
+					},
+					{
+						"name": "sites",
+						"at": 18.89
+					},
+					{
+						"name": "gene",
+						"at": 18.89
+					},
+					{
+						"name": "epistasis",
+						"at": 18.97
+					},
+					{
+						"name": "attribution",
+						"at": 22.08
+					},
+					{
+						"name": "filter",
+						"at": 22.1
+					},
+					{
+						"name": "dms",
+						"at": 99.32
+					}
+				]
 			}
 		},
 		{
@@ -223,11 +568,14 @@
 			"gene": "Rhodopsin visual pigment",
 			"description": "Mammalian Rhodopsin visual pigments (deep-sea diving sensory adaptation).",
 			"regime": "Mammals · cross-species, embedded tree",
+			"alignment": "RHO.fasta",
+			"tree": null,
+			"format": "nexus",
 			"paper": {
 				"taxa": 710,
 				"codons": 349
 			},
-			"reference_runtime_sec": 4.8,
+			"reference_runtime_sec": 4.6,
 			"inputs": {
 				"alignment": "RHO.fasta",
 				"tree": null,
@@ -237,7 +585,12 @@
 			},
 			"tree_source": "embedded",
 			"analyses": [
-				"meme"
+				"sites",
+				"gene",
+				"epistasis",
+				"attribution",
+				"filter",
+				"dms"
 			],
 			"branch_lengths_estimated": false,
 			"branch_length_method": null,
@@ -247,24 +600,100 @@
 				"taxa_in_alignment": 710,
 				"taxa_used": 256,
 				"codons": 349,
-				"variable_sites": 124,
-				"invariable_sites": 225,
-				"max_lrt": 12.370409965515137,
-				"called": {
-					"q_le_0_10": 0,
-					"q_le_0_05": 0,
-					"p_le_0_05": 20,
-					"top_5pct": 7
+				"sites": {
+					"variable_sites": 124,
+					"invariable_sites": 225,
+					"max_lrt": 11.328636169433594,
+					"called": {
+						"q_le_0_10": 0,
+						"q_le_0_05": 0,
+						"p_le_0_05": 20,
+						"top_5pct": 7
+					}
 				},
-				"runtime_sec": 1.68
+				"gene": {
+					"verdict": "selection",
+					"p_value_acat": 0.01091045925148787,
+					"p_value_simes": 0.07405269865383592,
+					"omnibus_lrt": 69.24652099609375,
+					"sig_sites_p05": 36,
+					"sig_sites_p10": 56
+				},
+				"epistasis": {
+					"edges": 17,
+					"sectors": 2,
+					"significant_sectors": 0,
+					"permutations": 1000
+				},
+				"dms": {
+					"sites_swept": 349,
+					"sites_total": 349,
+					"coverage": 1,
+					"complete": true,
+					"cancelled": false,
+					"skipped": false,
+					"capped": false,
+					"work": 434569216,
+					"work_budget": 2500000000
+				},
+				"attributed_sites": 7,
+				"artifacts_masked": 0,
+				"timings": {
+					"prepare": 0.24298866700002691,
+					"infer": 1.6349157910000067,
+					"gene": 0.002105749999987893,
+					"epistasis": 0.04157675000000745,
+					"attribute": 5.427452834000025,
+					"filter": 0.01210737500002142,
+					"dms": 68.77925545900001,
+					"total": 76.22143979199998
+				},
+				"runtime_sec": 76.222
 			},
 			"prebake": {
-				"at": "2026-09-04T20:59:21.501Z",
+				"at": "2026-09-05T15:16:39.454Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "6e0f9b6fcb8721784d130130dbb5fc7bca9a3a7a3f2a467c18b86b6d5bfc0fee"
+				"stamp": "74a10accf975706ee1c41f06869178846ee9520b38c8643ce4eb12d29be34309",
+				"storage": {
+					"stripped": [
+						"loaded",
+						"attention",
+						"root_repr"
+					]
+				},
+				"sections": [
+					{
+						"name": "diagnostics",
+						"at": 0.32
+					},
+					{
+						"name": "sites",
+						"at": 1.96
+					},
+					{
+						"name": "gene",
+						"at": 1.96
+					},
+					{
+						"name": "epistasis",
+						"at": 2
+					},
+					{
+						"name": "attribution",
+						"at": 7.43
+					},
+					{
+						"name": "filter",
+						"at": 7.44
+					},
+					{
+						"name": "dms",
+						"at": 76.22
+					}
+				]
 			}
 		}
 	]

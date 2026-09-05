@@ -1,46 +1,44 @@
 <!--
-	+page.svelte (/analyze) — upload → diagnostics → options → run in workers → persist → results.
+	+page.svelte (/analyze) — the hand-off between the drop zone and the report: diagnose, fit the
+	tree if needed, start `runEverything` in the analyze worker, navigate to /report/<id>/.
 
-	WHY THIS FILE EXISTS. PLAN.md §4.1: "Upload → diagnostics → analysis picker → options → run.
-	Everything runs here." Phase 0 built the upload card with Run disabled; Phase 1b wires the
-	rest: the library's parser names the sequences (prep worker), the "Before you run" panel
-	re-runs `diagnose` and the prescreen on every input change (debounced), the tree tools and the
-	inference run in workers (lib/analyze/run.ts), the record is stored in IndexedDB
-	(lib/storage/results.ts) and the page navigates to /results/<id>/.
+	WHY THIS FILE EXISTS. PLAN.md §4.0 / D21: the only user action is uploading a dataset, so this
+	route has no analysis picker and no options form on the way to results. It receives the inputs
+	(the landing page's sessionStorage hand-off with `?autorun=1`, or `?demo=<id>&autorun=1`), runs
+	the library's `diagnose()` in the prep worker, follows the diagnostics' variant suggestion,
+	fits HKY85 branch lengths or builds an NJ tree in the tree worker when the diagnosis says so,
+	then calls `startReport()` (lib/report/run.svelte.ts), which creates the record in IndexedDB and
+	starts the ONE analyze worker that hosts the whole orchestrator, and navigates to the report
+	while it runs. The report page shows the sections streaming in; nothing waits here except the
+	few seconds of diagnostics and tree work, which are shown as a short status.
 
-	CONSTANTS. Max species default 256, hard max 512, minimum 3: PLAN.md §3.3 manifest
-	(`taxon_cap`, `default_taxon_cap`) and §4.3 (taxa < 3 refused, issue #7). Variant default
-	`general` (D10); the diagnostics' suggestion is FOLLOWED automatically until the user picks a
-	variant by hand (`variantTouched`), because §2 hard truth 6 says the choice must be visible
-	and suggested, not silently made. Call mode default `percentile` (runtime callModes.js: the
-	model is a ranker; the reference's q-based call usually reports nothing).
-
-	DEMOS. `?demo=<id>` (the gallery's "run in browser" link) or the buttons load
-	static/gallery/inputs/<id>.{fasta,nwk}; the record remembers the demo id.
-
-	DEBOUNCE. 400 ms after the last change to the alignment, the tree or the taxon cap; a
-	sequence number discards a diagnosis that arrives for stale inputs.
+	THE MANUAL FORM IS A FALLBACK. It appears only when autorun cannot proceed: the diagnosis
+	refuses the inputs (too few taxa, frameshift, unmatched tree), the hand-off is missing, or a
+	visitor arrives with nothing. It shows the inputs, the full "Before you run" table and the two
+	settings that can unblock a refusal (taxon cap, reference sequence) plus the variant; every other
+	setting lives on the report's "Re-run with…" disclosure. Defaults: taxon cap 256 (manifest
+	`default_taxon_cap`), seed 42, B = 1,000 (the CLI's), DMS on within the browser work budget.
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import type { CallMode, DiagnosisSnapshot, RunOptions, StepRecord, Variant } from '$lib/api';
-	import { resultsPath } from '$lib/api';
+	import type { DiagnosisSnapshot, ReportOptions, Variant } from '$lib/api';
+	import { reportPath } from '$lib/api';
 	import { DEMOS, chooseReference, loadDemo, readText } from '$lib/analyze/inputs';
-	import { freshSteps, runAnalysis } from '$lib/analyze/run';
 	import { hasEmbeddedTree, sequenceNames, sniffFormat } from '$lib/analyze/sniff';
 	import { panelModel, type PanelModel, type PrescreenResult } from '$lib/diagnostics/panel';
-	import { isAvailable as storageAvailable } from '$lib/storage/results';
+	import { prepareTree, startReport } from '$lib/report/run.svelte';
+	import { DEFAULT_DMS_WORK_BUDGET, DEFAULT_PERMUTATIONS, DEFAULT_SEED, isAvailable as storageAvailable } from '$lib/storage/reports';
 	import { prepClient, workersAvailable } from '$lib/workers/clients';
 	import BeforeYouRun from './BeforeYouRun.svelte';
-	import ProgressChecklist from './ProgressChecklist.svelte';
 
 	const MAX_SPECIES_DEFAULT = 256;
 	const MAX_SPECIES_HARD = 512;
 	const MIN_SPECIES = 3;
 	const DEBOUNCE_MS = 400;
+	const HANDOFF_KEY = 'hyphaeon:handoff';
 
 	// ---- inputs ----------------------------------------------------------------------------------
 	let alignmentText = $state('');
@@ -48,19 +46,14 @@
 	let treeText = $state('');
 	let treeName = $state<string | null>(null);
 	let demoId = $state<string | null>(null);
-	let alignmentDragging = $state(false);
-	let treeDragging = $state(false);
 	let loadError = $state<string | null>(null);
 
-	// ---- options ---------------------------------------------------------------------------------
+	// ---- settings that can unblock a refusal -----------------------------------------------------
 	let reference = $state('');
 	let referenceTouched = $state(false);
 	let maxSpecies = $state(MAX_SPECIES_DEFAULT);
 	let variant = $state<Variant>('general');
 	let variantTouched = $state(false);
-	let callMode = $state<CallMode>('percentile');
-	let filter = $state(false);
-	let attribute = $state(false);
 
 	// ---- diagnostics -----------------------------------------------------------------------------
 	let diagnosis = $state<DiagnosisSnapshot | null>(null);
@@ -71,19 +64,14 @@
 	let diagnosisSeq = 0;
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// ---- run -------------------------------------------------------------------------------------
-	let running = $state(false);
-	let steps = $state<StepRecord[]>(freshSteps());
-	let runError = $state<string | null>(null);
+	// ---- starting --------------------------------------------------------------------------------
+	let starting = $state(false);
+	let startMessage = $state<string | null>(null);
+	let startError = $state<string | null>(null);
 	let controller: AbortController | null = null;
 	let browserReady = $state(false);
 
-	// ---- autorun (PLAN.md §4.0 / D21) ------------------------------------------------------------
-	// The landing page hands a dropped file over via sessionStorage and navigates here with
-	// ?autorun=1; examples arrive as ?demo=<id>&autorun=1. In autorun mode the form is hidden and
-	// the run starts the moment diagnostics allow it. A refusal or an error drops back to the form
-	// so the user can see why and adjust.
-	const HANDOFF_KEY = 'hyphaeon:handoff';
+	// ---- autorun ---------------------------------------------------------------------------------
 	let autorun = $state(false);
 	let autorunFired = false;
 
@@ -92,11 +80,11 @@
 	const format = $derived(sniffFormat(alignmentText));
 	const embeddedSniffed = $derived(hasEmbeddedTree(alignmentText));
 	const hasAlignment = $derived(alignmentText.trim().length > 0);
-	const treeToolsAvailable = $derived(browserReady);
-	const model = $derived<PanelModel | null>(panelModel(diagnosis, treeToolsAvailable));
+	const model = $derived<PanelModel | null>(panelModel(diagnosis, browserReady));
 	const embeddedTree = $derived(diagnosis?.summary.treeSource === 'embedded');
 	const branchLengthsMissing = $derived(Boolean(diagnosis?.warnings.some((w) => w.code === 'BRANCH_LENGTHS_MISSING')));
-	const canRun = $derived(browserReady && !running && !diagnosisPending && model !== null && model.canRun);
+	const canRun = $derived(browserReady && !starting && !diagnosisPending && model !== null && model.canRun);
+	const refused = $derived(diagnosis !== null && !diagnosisPending && model !== null && !model.canRun);
 	const runDisabledReason = $derived(
 		!browserReady
 			? 'Web Workers and IndexedDB are required; this browser has neither.'
@@ -114,11 +102,8 @@
 		const params = page.url.searchParams;
 		autorun = params.get('autorun') === '1';
 		const demo = params.get('demo');
-		if (demo) {
-			void useDemo(demo);
-		} else if (autorun) {
-			loadHandoff();
-		}
+		if (demo) void useDemo(demo);
+		else if (autorun) loadHandoff();
 	});
 
 	function loadHandoff() {
@@ -146,16 +131,15 @@
 		}
 	}
 
-	// Autorun: start as soon as the inputs are diagnosed and allowed. Give up only on a real
-	// refusal (a diagnosis exists and it blocks) or when this browser cannot run at all; while the
-	// diagnosis is still pending, panelModel() reports canRun=false and that must NOT cancel.
+	// Autorun: start as soon as the diagnosis allows. Drop to the form only on a real refusal or
+	// when this browser cannot run at all; a pending diagnosis must NOT cancel.
 	$effect(() => {
 		if (!autorun) return;
 		if (!browserReady) {
 			autorun = false;
 			return;
 		}
-		if (diagnosis !== null && !diagnosisPending && model && !model.canRun) {
+		if (refused) {
 			autorun = false;
 			return;
 		}
@@ -165,7 +149,6 @@
 		}
 	});
 
-	// Keep the reference valid as the alignment changes; default per DM3's heuristic.
 	$effect(() => {
 		if (names.length === 0) {
 			reference = '';
@@ -175,12 +158,10 @@
 		}
 	});
 
-	// Follow the diagnostics' variant suggestion until the user picks one.
 	$effect(() => {
 		if (!variantTouched && model) variant = model.suggestedVariant;
 	});
 
-	// Re-diagnose on every input change, debounced.
 	$effect(() => {
 		const a = alignmentText;
 		const t = treeText;
@@ -247,13 +228,6 @@
 		}
 	}
 
-	function onDrop(event: DragEvent, target: 'alignment' | 'tree') {
-		event.preventDefault();
-		alignmentDragging = false;
-		treeDragging = false;
-		void acceptFile(event.dataTransfer?.files?.[0], target);
-	}
-
 	function onPick(event: Event, target: 'alignment' | 'tree') {
 		const input = event.currentTarget as HTMLInputElement;
 		void acceptFile(input.files?.[0], target);
@@ -273,6 +247,7 @@
 			referenceTouched = false;
 		} catch (err) {
 			loadError = err instanceof Error ? err.message : String(err);
+			autorun = false;
 		}
 	}
 
@@ -283,45 +258,50 @@
 
 	async function run() {
 		if (!canRun || !diagnosis) return;
-		running = true;
-		runError = null;
-		steps = freshSteps();
+		starting = true;
+		startError = null;
 		controller = new AbortController();
-		const options: RunOptions = {
+		const options: ReportOptions = {
 			variant,
 			maxSpecies,
 			referenceSequence: reference || null,
-			callMode,
-			filter,
-			attribute
+			callMode: 'percentile',
+			seed: DEFAULT_SEED,
+			dms: { enabled: true, workBudget: DEFAULT_DMS_WORK_BUDGET },
+			permutations: DEFAULT_PERMUTATIONS
 		};
 		try {
-			const record = await runAnalysis({
+			startMessage = 'Checking the tree…';
+			const tree = await prepareTree({
 				alignmentText,
-				alignmentName: alignmentName ?? `pasted.${format === 'unknown' ? 'txt' : format}`,
 				treeText: treeText.trim() ? treeText : null,
-				treeName,
 				embeddedTree,
 				branchLengthsMissing,
+				base,
+				signal: controller.signal,
+				onProgress: (m) => (startMessage = m)
+			});
+			startMessage = 'Starting the report…';
+			const id = await startReport({
+				alignmentText,
+				alignmentName: alignmentName ?? `pasted.${format === 'unknown' ? 'txt' : format}`,
+				uploadedTreeText: treeText.trim() ? treeText : null,
+				treeName,
+				tree,
 				options,
 				// A $state proxy cannot be structured-cloned into IndexedDB; store the plain snapshot.
 				diagnosis: $state.snapshot(diagnosis),
 				demo: demoId ?? undefined,
-				base,
-				signal: controller.signal,
-				onSteps: (s) => (steps = s)
+				base
 			});
-			await goto(`${base}${resultsPath(record.id)}`);
+			await goto(`${base}${reportPath(id)}`);
 		} catch (err) {
-			if (err instanceof Error && err.name === 'AbortError') {
-				runError = 'Run cancelled.';
-			} else {
-				runError = err instanceof Error ? err.message : String(err);
-			}
+			startError = err instanceof Error && err.name === 'AbortError' ? 'Cancelled.' : err instanceof Error ? err.message : String(err);
 			autorun = false;
 		} finally {
-			running = false;
+			starting = false;
 			controller = null;
+			startMessage = null;
 		}
 	}
 
@@ -331,293 +311,146 @@
 </script>
 
 <svelte:head>
-	<title>Analyze · HyphAeon</title>
+	<title>Analyzing · HyphAeon</title>
 </svelte:head>
 
-<div class="container container--narrow" class:autorun>
+<div class="container container--narrow">
 	{#if autorun}
 		<p class="eyebrow">Analyzing</p>
 		<h1>{alignmentName ?? demoId ?? 'Your alignment'}</h1>
-		<p class="intro">
-			{#if diagnosisPending}Checking the inputs…{:else if running}Running every analysis in this browser.{:else}Starting…{/if}
+		<p class="intro" aria-live="polite">
+			{#if starting}{startMessage ?? 'Starting…'}{:else if diagnosisPending || !diagnosis}Checking the inputs…{:else}Starting…{/if}
 		</p>
-	{:else}
-	<p class="eyebrow">Analyze</p>
-	<h1>Upload an alignment</h1>
-	<p class="intro">
-		A codon alignment in FASTA, NEXUS or PHYLIP (optionally gzipped), and a Newick tree if you have
-		one. Without a tree, one is inferred here; without branch lengths, they are fitted here. The
-		file never leaves this page.
-	</p>
-	{/if}
-
-	<div class="demos" aria-label="Bundled examples" hidden={autorun}>
-		<span class="demos__label">Try an example:</span>
-		{#each DEMOS as demo (demo.id)}
-			<button
-				type="button"
-				class="chip"
-				class:chip--active={demoId === demo.id}
-				title={demo.note}
-				disabled={running}
-				onclick={() => useDemo(demo.id)}
-			>
-				{demo.label}
-			</button>
-		{/each}
-	</div>
-
-	{#if loadError}
-		<p class="error" role="alert">{loadError}</p>
-	{/if}
-
-	<form class="card" class:card--autorun={autorun} onsubmit={(e) => { e.preventDefault(); void run(); }}>
-		<!-- Alignment -->
-		<fieldset disabled={running}>
-			<legend>Alignment</legend>
-			<div
-				class="dropzone"
-				class:dropzone--active={alignmentDragging}
-				role="group"
-				aria-label="Alignment drop zone"
-				ondragover={(e) => {
-					e.preventDefault();
-					alignmentDragging = true;
-				}}
-				ondragleave={() => (alignmentDragging = false)}
-				ondrop={(e) => onDrop(e, 'alignment')}
-			>
-				<p>
-					Drop a file here, or
-					<label class="filelabel">
-						choose one
-						<input
-							type="file"
-							accept=".fasta,.fa,.fna,.nex,.nexus,.phy,.phylip,.txt,.gz"
-							onchange={(e) => onPick(e, 'alignment')}
-						/>
-					</label>
-				</p>
-				{#if alignmentName}
-					<p class="filename"><code>{alignmentName}</code></p>
-				{/if}
-			</div>
-			<label class="field">
-				<span>Or paste it</span>
-				<textarea
-					bind:value={alignmentText}
-					rows="6"
-					spellcheck="false"
-					placeholder=">hg38&#10;ATGGCC...&#10;>panTro4&#10;ATGGCC..."
-					oninput={() => {
-						alignmentName = null;
-						demoId = null;
-					}}
-				></textarea>
-			</label>
-			{#if hasAlignment}
-				<p class="summary" aria-live="polite">
-					{#if format === 'unknown' && names.length === 0}
-						Format not recognised from the first line. Expected FASTA (<code>&gt;</code>), NEXUS
-						(<code>#NEXUS</code>) or PHYLIP (<code>ntaxa nsites</code>).
-					{:else}
-						{format === 'unknown' ? 'Alignment' : format.toUpperCase()} · {names.length} sequence{names.length === 1 ? '' : 's'}
-						{#if diagnosis?.summary.codons}
-							· {(diagnosis.summary.codons as number).toLocaleString()} codons
-						{/if}
-						{#if embeddedTree || embeddedSniffed}
-							· embedded tree found
-						{/if}
-					{/if}
-				</p>
-			{/if}
-		</fieldset>
-
-		<!-- Tree -->
-		<fieldset disabled={running}>
-			<legend>Tree <span class="optional">optional</span></legend>
-			{#if embeddedTree || embeddedSniffed}
-				<p class="hint">The alignment carries a tree; a file here overrides it.</p>
-			{/if}
-			<div
-				class="dropzone dropzone--compact"
-				class:dropzone--active={treeDragging}
-				role="group"
-				aria-label="Tree drop zone"
-				ondragover={(e) => {
-					e.preventDefault();
-					treeDragging = true;
-				}}
-				ondragleave={() => (treeDragging = false)}
-				ondrop={(e) => onDrop(e, 'tree')}
-			>
-				<p>
-					Drop a Newick file, or
-					<label class="filelabel">
-						choose one
-						<input
-							type="file"
-							accept=".nwk,.newick,.tre,.tree,.txt,.gz"
-							onchange={(e) => onPick(e, 'tree')}
-						/>
-					</label>
-				</p>
-				{#if treeName}
-					<p class="filename"><code>{treeName}</code></p>
-				{/if}
-			</div>
-			<label class="field">
-				<span>Or paste Newick</span>
-				<textarea
-					bind:value={treeText}
-					rows="2"
-					spellcheck="false"
-					placeholder="((hg38:0.01,panTro4:0.01):0.02,...);"
-					oninput={() => (treeName = null)}
-				></textarea>
-			</label>
-		</fieldset>
-
-		<!-- Before you run -->
-		{#if hasAlignment}
-			<BeforeYouRun
-				{model}
-				{prescreen}
-				pending={diagnosisPending}
-				{variant}
-				onVariant={(v) => {
-					variant = v;
-					variantTouched = true;
-				}}
-			/>
-			{#if diagnosisError}
-				<p class="error" role="alert">Diagnostics failed: {diagnosisError}</p>
-			{/if}
+		<div class="live">
+			<span class="dot" aria-hidden="true"></span>
+			<span>Every analysis runs in this browser; the report opens as soon as the inputs are ready and fills in section by section.</span>
+			{#if starting}<button type="button" class="button button--secondary" onclick={cancel}>Cancel</button>{/if}
+		</div>
+		{#if hasAlignment && diagnosis}
+			<BeforeYouRun {model} {prescreen} pending={diagnosisPending} {variant} onVariant={(v) => { variant = v; variantTouched = true; }} />
 		{/if}
+	{:else}
+		<p class="eyebrow">Analyze</p>
+		<h1>{refused ? 'The inputs need a change' : 'Upload an alignment'}</h1>
+		<p class="intro">
+			{#if refused}
+				The checks below refused this dataset as it stands. Adjust the inputs or the two settings that can
+				unblock it, and run again; everything else is set from the diagnostics and can be changed on the report.
+			{:else}
+				The landing page is the usual way in: drop a file there and everything runs. This form is the fallback
+				for when the diagnostics refuse a dataset, or to paste one by hand.
+			{/if}
+		</p>
 
-		<!-- Options -->
-		<fieldset class="options" disabled={running}>
-			<legend>Options</legend>
-
-			<label class="field">
-				<span>Reference sequence</span>
-				<select
-					bind:value={reference}
-					disabled={names.length === 0}
-					onchange={() => (referenceTouched = true)}
-				>
-					{#if names.length === 0}
-						<option value="">Load an alignment first</option>
-					{:else}
-						{#each names as name (name)}
-							<option value={name}>{name}</option>
-						{/each}
-					{/if}
-				</select>
-				<small>Site coordinates and the codon column are reported in this sequence's frame.</small>
-			</label>
-
-			<label class="field">
-				<span>Max species</span>
-				<input
-					type="number"
-					bind:value={maxSpecies}
-					min={MIN_SPECIES}
-					max={MAX_SPECIES_HARD}
-					step="1"
-					onchange={clampSpecies}
-				/>
-				<small>
-					Default {MAX_SPECIES_DEFAULT}, hard maximum {MAX_SPECIES_HARD}. Larger alignments are
-					reduced by Faith's phylogenetic diversity after identical sequences are collapsed.
-				</small>
-			</label>
-
-			<div class="field" role="radiogroup" aria-labelledby="variant-label">
-				<span id="variant-label">Model variant</span>
-				<label class="radio">
-					<input type="radio" name="variant" value="general" bind:group={variant} onchange={() => (variantTouched = true)} />
-					<span><strong>General</strong> — trained on 742 mammalian species; deep, cross-species trees.</span>
-				</label>
-				<label class="radio">
-					<input type="radio" name="variant" value="viral" bind:group={variant} onchange={() => (variantTouched = true)} />
-					<span><strong>Viral</strong> — fine-tuned on ~9,300 viral alignments; shallow trees.</span>
-				</label>
-				<small>
-					{#if model}
-						Suggested from the tree depth: <strong>{model.suggestedVariant}</strong>{#if !variantTouched}&nbsp;(followed automatically until you choose){/if}.
-					{:else}
-						The diagnostics suggest a variant from the tree depth once an alignment is loaded.
-					{/if}
-				</small>
-			</div>
-
-			<div class="field" role="radiogroup" aria-labelledby="callmode-label">
-				<span id="callmode-label">Call mode</span>
-				<label class="radio">
-					<input type="radio" name="callmode" value="percentile" bind:group={callMode} />
-					<span><strong>Percentile</strong> (default) — the top 2% of this alignment's variable sites as Tier 1, the next 3% as Tier 2; a ranking, always non-empty.</span>
-				</label>
-				<label class="radio">
-					<input type="radio" name="callmode" value="zscore" bind:group={callMode} />
-					<span><strong>Z-score</strong> — Z ≥ 2.5 / 2.0 above the alignment's own mean predicted LRT.</span>
-				</label>
-				<label class="radio">
-					<input type="radio" name="callmode" value="pvalue" bind:group={callMode} />
-					<span><strong>p-value / q</strong> — the reference's fixed LRT gates (4.45 / 3.12); usually reports nothing.</span>
-				</label>
-			</div>
-
-			<div class="field">
-				<span>Extras</span>
-				<label class="check">
-					<input type="checkbox" bind:checked={filter} />
-					<span><strong>Filter</strong> — <code>--filter</code>: screen for alignment artifacts (outlier patches), mask them and re-score.</span>
-				</label>
-				<label class="check">
-					<input type="checkbox" bind:checked={attribute} />
-					<span><strong>Attribute</strong> — <code>--attribute</code>: per-taxon counterfactual ΔLRT on sites with LRT ≥ 3.84 (one extra pass per taxon per site).</span>
-				</label>
-			</div>
-		</fieldset>
-
-		<div class="run">
-			<button class="button" type="submit" disabled={!canRun} aria-describedby="run-note">
-				{running ? 'Running…' : 'Run'}
-			</button>
-			<p id="run-note" class="hint">
-				{#if runDisabledReason && !running}
-					{runDisabledReason}
-				{:else if running}
-					Runs in Web Workers on this machine; the page stays usable. Cancel stops between batches.
-				{:else}
-					Runs in Web Workers on this machine; nothing is uploaded. The result is stored in this browser's IndexedDB.
-				{/if}
-			</p>
+		<div class="demos" aria-label="Bundled examples">
+			<span class="demos__label">Try an example:</span>
+			{#each DEMOS as demo (demo.id)}
+				<button type="button" class="chip" class:chip--active={demoId === demo.id} title={demo.note} disabled={starting} onclick={() => useDemo(demo.id)}>{demo.label}</button>
+			{/each}
 		</div>
 
-		{#if running || steps.some((s) => s.status !== 'pending')}
-			<ProgressChecklist {steps} cancel={running ? cancel : undefined} />
-		{/if}
-		{#if runError}
-			<p class="error" role="alert">{runError}</p>
-		{/if}
-	</form>
+		{#if loadError}<p class="error" role="alert">{loadError}</p>{/if}
+
+		<form class="card" onsubmit={(e) => { e.preventDefault(); void run(); }}>
+			<fieldset disabled={starting}>
+				<legend>Alignment</legend>
+				<p class="pick">
+					<label class="filelabel">Choose a file<input type="file" accept=".fasta,.fa,.fna,.nex,.nexus,.phy,.phylip,.txt,.gz" onchange={(e) => onPick(e, 'alignment')} /></label>
+					{#if alignmentName}<code>{alignmentName}</code>{/if}
+				</p>
+				<label class="field">
+					<span>Or paste it</span>
+					<textarea bind:value={alignmentText} rows="6" spellcheck="false" placeholder=">hg38&#10;ATGGCC...&#10;>panTro4&#10;ATGGCC..." oninput={() => { alignmentName = null; demoId = null; }}></textarea>
+				</label>
+				{#if hasAlignment}
+					<p class="summary" aria-live="polite">
+						{#if format === 'unknown' && names.length === 0}
+							Format not recognised from the first line. Expected FASTA (<code>&gt;</code>), NEXUS (<code>#NEXUS</code>) or PHYLIP (<code>ntaxa nsites</code>).
+						{:else}
+							{format === 'unknown' ? 'Alignment' : format.toUpperCase()} · {names.length} sequence{names.length === 1 ? '' : 's'}
+							{#if diagnosis?.summary.codons}· {(diagnosis.summary.codons as number).toLocaleString()} codons{/if}
+							{#if embeddedTree || embeddedSniffed}· embedded tree found{/if}
+						{/if}
+					</p>
+				{/if}
+			</fieldset>
+
+			<fieldset disabled={starting}>
+				<legend>Tree <span class="optional">optional</span></legend>
+				{#if embeddedTree || embeddedSniffed}<p class="hint">The alignment carries a tree; a file here overrides it.</p>{/if}
+				<p class="pick">
+					<label class="filelabel">Choose a Newick file<input type="file" accept=".nwk,.newick,.tre,.tree,.txt,.gz" onchange={(e) => onPick(e, 'tree')} /></label>
+					{#if treeName}<code>{treeName}</code>{/if}
+				</p>
+				<label class="field">
+					<span>Or paste Newick</span>
+					<textarea bind:value={treeText} rows="2" spellcheck="false" placeholder="((hg38:0.01,panTro4:0.01):0.02,...);" oninput={() => (treeName = null)}></textarea>
+				</label>
+			</fieldset>
+
+			{#if hasAlignment}
+				<BeforeYouRun {model} {prescreen} pending={diagnosisPending} {variant} onVariant={(v) => { variant = v; variantTouched = true; }} />
+				{#if diagnosisError}<p class="error" role="alert">Diagnostics failed: {diagnosisError}</p>{/if}
+			{/if}
+
+			<fieldset class="options" disabled={starting}>
+				<legend>Settings that can unblock a refusal</legend>
+				<label class="field">
+					<span>Reference sequence</span>
+					<select bind:value={reference} disabled={names.length === 0} onchange={() => (referenceTouched = true)}>
+						{#if names.length === 0}<option value="">Load an alignment first</option>{:else}{#each names as name (name)}<option value={name}>{name}</option>{/each}{/if}
+					</select>
+				</label>
+				<label class="field">
+					<span>Taxon cap</span>
+					<input type="number" bind:value={maxSpecies} min={MIN_SPECIES} max={MAX_SPECIES_HARD} step="1" onchange={clampSpecies} />
+					<small>Default {MAX_SPECIES_DEFAULT}, hard maximum {MAX_SPECIES_HARD}; larger alignments are reduced by Faith's PD.</small>
+				</label>
+				<div class="field" role="radiogroup" aria-labelledby="variant-label">
+					<span id="variant-label">Model variant</span>
+					<label class="radio"><input type="radio" name="variant" value="general" bind:group={variant} onchange={() => (variantTouched = true)} /> <span><strong>General</strong> — deep, cross-species trees</span></label>
+					<label class="radio"><input type="radio" name="variant" value="viral" bind:group={variant} onchange={() => (variantTouched = true)} /> <span><strong>Viral</strong> — shallow trees</span></label>
+					<small>{#if model}Suggested from the tree depth: <strong>{model.suggestedVariant}</strong>{#if !variantTouched} (followed until you choose){/if}.{:else}Suggested from the tree depth once an alignment is loaded.{/if}</small>
+				</div>
+				<p class="hint">Seed, permutations, call mode and the digital DMS budget are set on the report's "Re-run with…" disclosure.</p>
+			</fieldset>
+
+			<div class="run">
+				<button class="button" type="submit" disabled={!canRun}>{starting ? (startMessage ?? 'Starting…') : 'Run everything'}</button>
+				<p class="hint">
+					{#if runDisabledReason && !starting}{runDisabledReason}{:else}Runs in Web Workers on this machine; nothing is uploaded. The report is stored in this browser.{/if}
+				</p>
+				{#if starting}<button type="button" class="button button--secondary" onclick={cancel}>Cancel</button>{/if}
+			</div>
+			{#if startError}<p class="error" role="alert">{startError}</p>{/if}
+		</form>
+	{/if}
 </div>
 
 <style>
-	/* Autorun (landing-page handoff or ?autorun=1): the inputs and options are decided, so the
-	   form collapses to the diagnostics panel and the progress checklist. */
-	.card--autorun > fieldset,
-	.card--autorun button[type='submit'],
-	.card--autorun #run-note {
-		display: none;
-	}
 	.intro {
 		color: var(--text-muted);
 		margin-bottom: var(--space-4);
 	}
-
+	.live {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		border: 1px solid var(--brand);
+		background: var(--brand-soft);
+		border-radius: var(--radius);
+		padding: var(--space-3) var(--space-4);
+		font-size: var(--text-sm);
+		margin-bottom: var(--space-4);
+	}
+	.dot {
+		width: 0.7rem;
+		height: 0.7rem;
+		border-radius: 50%;
+		background: var(--brand);
+		flex: none;
+		animation: pulse 1.2s ease-in-out infinite;
+	}
 	.demos {
 		display: flex;
 		flex-wrap: wrap;
@@ -648,18 +481,12 @@
 		border-color: var(--brand);
 		color: var(--brand);
 	}
-	.chip:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-
 	.error {
 		color: var(--danger);
 		background: var(--danger-soft);
 		border-radius: var(--radius);
 		padding: var(--space-2) var(--space-3);
 	}
-
 	.card {
 		border: 1px solid var(--border);
 		border-radius: var(--radius-lg);
@@ -669,7 +496,6 @@
 		display: grid;
 		gap: var(--space-5);
 	}
-
 	fieldset {
 		border: 0;
 		padding: 0;
@@ -693,30 +519,12 @@
 		color: var(--text-faint);
 		margin-left: var(--space-2);
 	}
-
-	.dropzone {
-		border: 2px dashed var(--border-strong);
-		border-radius: var(--radius);
-		padding: var(--space-5);
-		text-align: center;
-		color: var(--text-muted);
-		background: var(--bg-subtle);
-		transition:
-			border-color 120ms ease,
-			background 120ms ease;
-	}
-	.dropzone--compact {
-		padding: var(--space-3);
-	}
-	.dropzone--active {
-		border-color: var(--brand);
-		background: var(--brand-soft);
-	}
-	.dropzone p {
+	.pick {
 		margin: 0;
-	}
-	.filename {
-		margin-top: var(--space-2) !important;
+		display: flex;
+		gap: var(--space-3);
+		align-items: center;
+		font-size: var(--text-sm);
 	}
 	.filelabel {
 		color: var(--link);
@@ -730,7 +538,6 @@
 		opacity: 0;
 		overflow: hidden;
 	}
-
 	.field {
 		display: grid;
 		gap: var(--space-1);
@@ -760,39 +567,40 @@
 	input[type='number'] {
 		max-width: 8rem;
 	}
-
 	.options {
 		gap: var(--space-4);
 	}
-	.radio,
-	.check {
+	.radio {
 		display: flex;
 		gap: var(--space-2);
 		align-items: flex-start;
 		font-size: var(--text-sm);
 		font-weight: 400;
 	}
-	.radio input,
-	.check input {
-		margin-top: 0.3em;
-	}
-
 	.summary,
 	.hint {
 		font-size: var(--text-sm);
 		color: var(--text-muted);
 		margin: 0;
 	}
-
 	.run {
 		display: flex;
 		gap: var(--space-4);
-		align-items: flex-start;
+		align-items: center;
 		flex-wrap: wrap;
 		border-top: 1px solid var(--border);
 		padding-top: var(--space-4);
 	}
 	.run .hint {
 		flex: 1 1 18rem;
+	}
+	@keyframes pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.4;
+		}
 	}
 </style>

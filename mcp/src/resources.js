@@ -4,14 +4,14 @@
  * WHY THIS FILE EXISTS
  *
  * PLAN.md 3.6: hyphaeon://models, hyphaeon://methods/requirements, hyphaeon://caveats,
- * hyphaeon://examples/{name}; Phase 1b adds hyphaeon://gallery and hyphaeon://gallery/{name}.
- * Modelled on datamonkey-js-server lib/mcp/resources.js (static resources plus ResourceTemplates),
- * in ESM.
+ * hyphaeon://examples/{name}; Phase 1b added hyphaeon://gallery and hyphaeon://gallery/{name};
+ * Phase 2 adds hyphaeon://report/{id}. Modelled on datamonkey-js-server lib/mcp/resources.js
+ * (static resources plus ResourceTemplates), in ESM.
  *
  *   models        the manifest as the runtime's reader validates it (src/models.js over
  *                 runtime/src/manifest.js `loadManifest`), with per-variant graph paths;
  *   requirements  per-pillar requirements: tree rules, options with the CLI defaults from
- *                 hyphaeon/cli.py (veg/HyphAeon phase-1a), the caps from src/caps.js, the warning
+ *                 hyphaeon/cli.py (veg/HyphAeon phase-2a), the caps from src/caps.js, the warning
  *                 codes hyphaeon_validate can emit, and which pillars run in-process — so a client
  *                 can plan a call without trial and error;
  *   caveats       mcp/caveats.json: the model card facts of PLAN.md 2 and the numbers of
@@ -21,12 +21,22 @@
  *   gallery       the prebaked site-selection records web/scripts/prebake-gallery.mjs writes under
  *                 web/static/gallery (env HYPHAEON_GALLERY_DIR): the index, and one record per
  *                 example by id (`bat_oas1`, `Smc6`, ...) — the same documents the /gallery page
- *                 opens, so a client can read a result without running anything.
+ *                 opens, so a client can read a result without running anything;
+ *   report        a FINISHED hyphaeon_analyze report by job id (the ReportRecord of PLAN.md 4.0,
+ *                 `schema_version: 2, kind: "report"`), read from the job store for as long as
+ *                 the job lives (TTL 7 days, PLAN.md 3.5). The list callback enumerates the
+ *                 completed report jobs; a running or unknown id reads as an error text that says
+ *                 which sections are ready, so a client that polls the resource learns the same
+ *                 thing job_status would tell it. Per-pillar jobs are not reports and are not
+ *                 listed here — get_results is their reader.
  */
 
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFile } from "node:fs/promises";
 import {
+  ANALYZE_INLINE_MAX_BYTES,
+  ANALYZE_WAIT_DEFAULT_SEC,
+  ANALYZE_WAIT_MAX_SEC,
   DMS_MUTANTS_PER_SITE,
   JOB_TIMEOUT_MS,
   MAX_ALIGNMENT_CHARS,
@@ -50,9 +60,45 @@ const TREE_RULE =
   "sequence names (exact, then quote-stripped, then case-insensitive). Topology-only trees get " +
   "HKY85 branch lengths from HyPhy when the server has an estimator (list_models reports it), else " +
   "dataset.py's 1e-3 defaults; max patristic > 10 is rescaled. use_tn93 (TN93 distances instead of " +
-  "a tree) is accepted by the bridged pillars only.";
+  "a tree) is accepted by the bridged pillar (phenotype) only.";
+
+const MDS_SIGN_OPTION = {
+  cli: "--mds-sign",
+  default: "canonical",
+  values: ["canonical", "lapack"],
+  note: "In-process the library computes canonical signs only (MDS_SIGN.md); `lapack` is refused with an input error. Recorded as provenance.mds_sign."
+};
+
+/** The report's sections, in the order PLAN.md 4.0 computes them; `get_results section=` and hyphaeon://report/{id} use these names. */
+export const REPORT_SECTIONS = Object.freeze(["diagnostics", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype", "provenance", "timings"]);
 
 export const METHOD_REQUIREMENTS = {
+  analyze: {
+    name: "The whole report (one action: upload, everything runs)",
+    tool: "hyphaeon_analyze",
+    engine: "in-process",
+    cli: "(app-side: runs `hyphaeon meme --attribute --filter`, `hyphaeon busted`, `hyphaeon epistasis`, `hyphaeon dms` over ONE forward pass and one loaded alignment)",
+    requires_codon_alignment: true,
+    tree: TREE_RULE + " With no tree at all the report builds a neighbour-joining tree first (tree_source \"nj\").",
+    model_outputs: ["lrt", "mean_root_attns", "root_repr"],
+    surrogate_for: "MEME (sites), BUSTED (gene); the network, DMS and attribution have no HyPhy counterpart",
+    sections_in_order: ["diagnostics", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype (null: offered, not run)"],
+    options: {
+      variant: { default: "chosen from tree depth by diagnostics (general | viral)", values: ["general", "viral"] },
+      max_species: { default: "the manifest's default_taxon_cap (256)", range: [MIN_TAXA, TAXON_CAP] },
+      reference_sequence: { default: "the first matched taxon", note: "whose codons the site table shows as refCodon" },
+      call_mode: { default: "percentile", values: ["percentile", "zscore", "pvalue"] },
+      seed: { default: 42, note: "the sector permutation null" },
+      permutations: { default: 1000, max: MAX_PERMUTATIONS, note: "the report's B; the CLI's default is 10,000 — p_perm at B = 1,000 carries about +/-0.03 (PHASE2A.md)" },
+      dms: { default: true, note: "the digital DMS section, last, progressive, capped by dms_work_budget" },
+      dms_work_budget: { default: "the runtime's default", note: "forward passes the DMS section may spend (19 per site); above it the report says the scan is partial" },
+      wait_seconds: { default: ANALYZE_WAIT_DEFAULT_SEC, max: ANALYZE_WAIT_MAX_SEC, note: "app-side: how long the call waits for the report before returning the job id with the sections that are ready" },
+      section: { values: REPORT_SECTIONS, note: "get_results / the tool: return one section of the report" }
+    },
+    result_keys: ["schema_version (2)", "kind (report)", "id", "createdAt", "inputs", "options", "diagnostics", "sections{sites, gene, epistasis, attribution, filter, dms, phenotype: null}", "provenance", "timings{phase: seconds}"],
+    inline_limit_bytes: ANALYZE_INLINE_MAX_BYTES,
+    paging: "Above inline_limit_bytes the tool returns {job_id, summary, sections_ready}; get_results section=<name> [top, fields, summary_only] pages one section; hyphaeon://report/{id} serves the finished record."
+  },
   meme: {
     name: "Site selection (MEME surrogate)",
     tool: "hyphaeon_meme",
@@ -73,6 +119,7 @@ export const METHOD_REQUIREMENTS = {
       attribution_min_lrt: { cli: "--attribution-min-lrt", default: 3.84 },
       no_prune_duplicates: { cli: "--no-prune-duplicates", default: false },
       batch_size: { cli: "--batch-size", default: "adaptive" },
+      mds_sign: MDS_SIGN_OPTION,
       cpu: { cli: "--cpu", default: false, note: "always CPU in-process" }
     },
     result_keys: ["alignment", "tree", "taxa_count", "codon_count", "runtime_sec", "filter_enabled", "artifacts_masked", "attribution_enabled", "attributions", "sites[]", "summary"],
@@ -93,6 +140,7 @@ export const METHOD_REQUIREMENTS = {
       use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
       batch_size: { cli: "--batch-size", default: "adaptive" },
       gene: { default: "the alignment file's stem" },
+      mds_sign: MDS_SIGN_OPTION,
       cpu: { cli: "--cpu", default: false }
     },
     result_keys: ["alignment", "gene", "taxa", "sites", "p_value_acat", "p_value_simes", "omnibus_lrt", "predicted_gene_lrt", "selection_probability", "synonymous_rate_variation", "total_selection_energy", "sig_sites_p05", "sig_sites_p10", "rate_distributions{omega_k, proportion_k}", "positive_selection_detected", "elapsed_seconds", "sites_detail[]", "statistics", "summary"],
@@ -102,49 +150,55 @@ export const METHOD_REQUIREMENTS = {
   epistasis: {
     name: "Co-selection network and epistatic sectors",
     tool: "hyphaeon_epistasis",
-    engine: "python-reference",
+    engine: "in-process",
     cli: "hyphaeon epistasis (aliases coselection, sector, network)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
     model_outputs: ["lrt", "mean_root_attns"],
     surrogate_for: "MEME (site signal) — the network itself has no HyPhy counterpart",
     options: {
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false },
-      focal_taxon: { cli: "--focal-taxon", default: "consensus" },
-      min_sim: { cli: "--min-sim", default: 0.3 },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
+      focal_taxon: { cli: "--focal-taxon", default: "consensus (taxon 0)" },
+      min_sim: { cli: "--min-sim", default: 0.3, note: "the CLI's default; the underlying function's is 0.35" },
       min_shared: { cli: "--min-shared", default: 2 },
       max_fdr: { cli: "--max-fdr", default: 0.05 },
       min_lrt: { cli: "--min-lrt", default: 1.0 },
       min_clique_size: { cli: "--min-clique-size", default: 3 },
-      max_overlap: { cli: "--max-overlap", default: 0.5 },
+      max_overlap: { cli: "--max-overlap", default: 0.5, note: "accepted and never used by the reference" },
       min_coherence: { cli: "--min-coherence", default: 0.5 },
-      n_permutations: { cli: "--n-permutations", default: 10000, max: MAX_PERMUTATIONS },
+      n_permutations: { cli: "--n-permutations", default: 10000, max: MAX_PERMUTATIONS, note: "p_perm is Monte Carlo: +/-0.03 at B = 1,000" },
       max_perm_p: { cli: "--max-perm-p", default: null },
+      seed: { cli: "--seed", default: 42, note: "the sector permutation null (xoshiro256** here, PCG64 in the reference: statistical parity)" },
       no_dms: { cli: "--no-dms", default: false },
+      mds_sign: MDS_SIGN_OPTION,
       cpu: { cli: "--cpu", default: false },
-      model_variant: { cli: "(not available on this subcommand)", default: "general" }
+      model_variant: { cli: "(not available on this subcommand)", default: "general (HYPHAEON_VARIANT)" }
     },
-    result_keys: ["taxa_count", "codon_count", "edges[]", "sectors[]", "plasticity[]"],
+    result_keys: ["alignment", "tree", "taxa_count", "codon_count", "evaluated_taxa", "coselection_edges_count", "discovered_sectors_count", "edges[]", "sectors[]", "plasticity[]", "coselection_edges[]", "epistatic_sectors[]", "selection_dms_plasticity[]", "graph (app)", "permutations (app)", "dms_sites (app)"],
     edge_keys: ["site_u", "site_v", "ref_u", "ref_v", "lrt_u", "lrt_v", "similarity", "shared_taxa", "shared_branches", "p_val", "hyper_p", "fdr_q", "cesi"],
-    sector_keys: ["sector_id", "size", "sites[]", "spectral_coherence", "p_perm", "null_coherence_mean", "null_coherence_std", "null_coherence_95", "isotropic_baseline", "mean_lrt", "pars_signature"]
+    sector_keys: ["sector_id", "size", "sites[]", "spectral_coherence", "p_perm", "null_coherence_mean", "null_coherence_std", "null_coherence_95", "isotropic_baseline", "shared_taxa", "shared_branches", "mean_lrt", "pars_signature", "consensus_signature", "focal_taxon?", "focal_signature?", "focal_mutations?"],
+    parity: "edges exact (order, ints, strings; floats at 1e-6), sector membership exact, spectral_coherence 1e-6, p_perm within 3*sqrt(p(1-p)/B), plasticity 1e-5 (HyphAeon/PHASE2A.md)"
   },
   dms: {
     name: "Digital deep mutational scan",
     tool: "hyphaeon_dms",
-    engine: "python-reference",
+    engine: "in-process",
     cli: "hyphaeon dms (aliases essm, digital-dms)",
     requires_codon_alignment: true,
     tree: TREE_RULE,
     model_outputs: ["lrt (19 x L passes)"],
     surrogate_for: "no HyPhy counterpart; delta-LRT of the MEME surrogate under substitution",
     options: {
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false },
-      focal_taxon: { cli: "--focal-taxon", default: "consensus" },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
+      focal_taxon: { cli: "--focal-taxon", default: "consensus (taxon 0)" },
+      sites: { cli: "(app-side; the CLI sweeps every site)", default: "all", note: "1-indexed codon sites to sweep; total_mutations stays 19 x codon_count as the reference computes it" },
+      mds_sign: MDS_SIGN_OPTION,
       cpu: { cli: "--cpu", default: false },
-      model_variant: { cli: "(not available on this subcommand)", default: "general" }
+      model_variant: { cli: "(not available on this subcommand)", default: "general (HYPHAEON_VARIANT)" }
     },
-    result_keys: ["taxa_count", "codon_count", "focal_taxon", "total_mutations", "plasticity[]"],
-    plasticity_keys: ["site", "wt_aa", "baseline_lrt", "p_value", "intrinsic_plasticity", "mean_delta_lrt", "max_delta_lrt", "min_delta_lrt", "mutant_deltas{AA: dLRT}"]
+    result_keys: ["alignment", "tree", "taxa_count", "codon_count", "focal_taxon", "total_mutations", "plasticity[]", "selection_dms_plasticity[]", "progress (app)"],
+    plasticity_keys: ["site", "wt_aa", "baseline_lrt", "p_value", "intrinsic_plasticity", "mean_delta_lrt", "max_delta_lrt", "min_delta_lrt", "mutant_deltas{AA: dLRT}"],
+    parity: "every record at 1e-5 relative to max(1, |x|), keys and strings exact (fixtures/dms)"
   },
   phenotype: {
     name: "Phenotype association (PhyloWAS)",
@@ -170,6 +224,8 @@ export const METHOD_REQUIREMENTS = {
       alpha: { cli: "--alpha", default: 0.05 },
       n_permutations: { cli: "--n-permutations", default: 10000, max: MAX_PERMUTATIONS },
       max_perm_p: { cli: "--max-perm-p", default: null },
+      seed: { cli: "--seed", default: 42, note: "permulations and the trait-sector null" },
+      mds_sign: { cli: "--mds-sign", default: "canonical", values: ["canonical", "lapack"], note: "passed to the CLI" },
       use_tn93: { cli: "--use-tn93 / --no-tree", default: false },
       cpu: { cli: "--cpu", default: false }
     },
@@ -199,22 +255,33 @@ export const CAPS = {
   taxa: { min: MIN_TAXA, max: MAX_TAXA, model_cap: TAXON_CAP },
   codons_max: MAX_CODONS,
   work: {
-    definition: "codon sites x sequences^2 (x " + DMS_MUTANTS_PER_SITE + " for dms), measured on the file as submitted",
+    definition: "codon sites x sequences^2 (x " + DMS_MUTANTS_PER_SITE + " for dms; analyze is sized like meme and caps its DMS section by its own budget), measured on the file as submitted",
     sync_max: MAX_SYNC_WORK,
     hard_max: MAX_WORK,
     sync_codons_max: MAX_SYNC_CODONS
   },
   permutations_max: MAX_PERMUTATIONS,
   permulations_max: MAX_PERMULATIONS,
-  job_timeout_sec: JOB_TIMEOUT_MS / 1000
+  job_timeout_sec: JOB_TIMEOUT_MS / 1000,
+  analyze: { wait_default_sec: ANALYZE_WAIT_DEFAULT_SEC, wait_max_sec: ANALYZE_WAIT_MAX_SEC, inline_limit_bytes: ANALYZE_INLINE_MAX_BYTES }
 };
+
+/** The completed hyphaeon_analyze jobs in a job store, newest first. */
+export function listReports(jobs) {
+  if (!jobs || typeof jobs.list !== "function") return [];
+  return jobs
+    .list()
+    .filter((j) => j.analysis === "analyze" && j.status === "completed")
+    .sort((a, b) => String(b.finished_at || "").localeCompare(String(a.finished_at || "")));
+}
 
 /**
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
- * @param {{env?: object, logger?: object}} [deps]
+ * @param {{env?: object, logger?: object, jobs?: ReturnType<import("./jobs.js").createJobStore>}} [deps]
  */
 export function registerResources(server, deps = {}) {
   const env = deps.env || process.env;
+  const jobs = deps.jobs || null;
 
   server.registerResource(
     "models",
@@ -234,7 +301,7 @@ export function registerResources(server, deps = {}) {
     "hyphaeon://methods/requirements",
     {
       title: "HyphAeon method requirements",
-      description: "Per-pillar inputs, options with CLI defaults, result keys, size caps, which pillars run in-process, and the warning codes hyphaeon_validate emits.",
+      description: "Per-pillar inputs, options with CLI defaults, result keys, size caps, which pillars run in-process, the report's sections, and the warning codes hyphaeon_validate emits.",
       mimeType: "application/json"
     },
     async (uri) => ({
@@ -245,11 +312,12 @@ export function registerResources(server, deps = {}) {
           text: JSON.stringify(
             {
               pillars: METHOD_REQUIREMENTS,
+              report_sections: REPORT_SECTIONS,
               caps: CAPS,
               validation_codes: CODES,
               provenance: {
                 native: { surfaces: ["mcp-stdio", "mcp-http"], analyses: [...NATIVE_ANALYSES], note: "Computed in the MCP process by @veg/hyphaeon-js through @veg/hyphaeon-runtime over onnxruntime-node." },
-                bridged: { surface: "python-reference", analyses: [...BRIDGED_ANALYSES], note: "Run through the Python reference CLI until the port lands (PLAN.md 8, phases 2-3)." }
+                bridged: { surface: "python-reference", analyses: [...BRIDGED_ANALYSES], note: "Run through the Python reference CLI until the port lands (PLAN.md 8, phase 3: phenotype)." }
               }
             },
             null,
@@ -317,7 +385,7 @@ export function registerResources(server, deps = {}) {
     "hyphaeon://gallery",
     {
       title: "Prebaked gallery index",
-      description: "The gallery index (web/static/gallery/index.json): one prebaked site-selection run per bundled example, with the card numbers and which entries have a record.",
+      description: "The gallery index (web/static/gallery/index.json, schema 3): one prebaked full report per bundled example (sites, gene, epistasis, attribution, filter, DMS), with the summary numbers and which entries have a record.",
       mimeType: "application/json"
     },
     async (uri) => {
@@ -371,7 +439,7 @@ export function registerResources(server, deps = {}) {
     }),
     {
       title: "Prebaked gallery records",
-      description: "The prebaked site-selection result document for a bundled example, by gallery id (e.g. bat_oas1, Smc6); the same document the /gallery page opens.",
+      description: "The prebaked ReportRecord (schema_version 2) for a bundled example, by gallery id (e.g. bat_oas1, Smc6); the same document /report/gallery/<id>/ renders.",
       mimeType: "application/json"
     },
     async (uri, variables) => {
@@ -384,6 +452,56 @@ export function registerResources(server, deps = {}) {
       }
     }
   );
+
+  server.registerResource(
+    "report",
+    new ResourceTemplate("hyphaeon://report/{id}", {
+      list: async () => ({
+        resources: listReports(jobs).map((j) => ({
+          uri: "hyphaeon://report/" + j.job_id,
+          name: "report " + j.job_id.slice(0, 8),
+          description: "hyphaeon_analyze report finished " + j.finished_at + " (" + j.elapsed_sec + " s)",
+          mimeType: "application/json"
+        }))
+      }),
+      complete: {
+        id: async (value) => listReports(jobs).map((j) => j.job_id).filter((id) => id.startsWith(value || ""))
+      }
+    }),
+    {
+      title: "Finished HyphAeon reports",
+      description:
+        "The ReportRecord of a completed hyphaeon_analyze job by its id (schema_version 2, kind \"report\": inputs, options, " +
+        "diagnostics, sections{sites, gene, epistasis, attribution, filter, dms, phenotype}, provenance, timings), for as long " +
+        "as the job lives. A running job reads as an error naming the sections that are ready.",
+      mimeType: "application/json"
+    },
+    async (uri, variables) => {
+      const id = Array.isArray(variables.id) ? variables.id[0] : variables.id;
+      const text = reportText(jobs, id);
+      return { contents: [{ uri: uri.href, mimeType: text.startsWith("Error") ? "text/plain" : "application/json", text }] };
+    }
+  );
+}
+
+/** The JSON text of a finished report, or an "Error: ..." line that says why there is none. */
+export function reportText(jobs, id) {
+  if (!jobs) return "Error: this server keeps no job store, so no reports are available.";
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id)) return "Error: a report id is the 32-hex job_id hyphaeon_analyze returned.";
+  const job = jobs.get(id);
+  if (!job) return "Error: no job " + id + " (jobs expire after their TTL).";
+  if (job.analysis !== "analyze") return "Error: job " + id + " is a hyphaeon_" + job.analysis + " run, not a report; read it with get_results.";
+  if (job.status !== "completed") {
+    const ready = Array.isArray(job.sections_ready) ? job.sections_ready : [];
+    return (
+      "Error: report " + id + " is " + job.status +
+      (job.status === "running" ? " (sections ready: " + (ready.length ? ready.join(", ") : "none yet") + "; get_results section=<name> serves them now)" : "") +
+      (job.status === "failed" && job.error ? ": " + job.error.message : "") +
+      "."
+    );
+  }
+  const result = jobs.result(id);
+  return JSON.stringify(result && result.result ? result.result : result, null, 2);
 }
 
 function mimeFor(name) {

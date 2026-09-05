@@ -6,7 +6,20 @@
 	Datamonkey deep link for a real MEME run, the MCP reproduction snippet (§3.6) and the
 	downloads. Everything shown is read from `record.provenance`; nothing is inferred, so a field
 	the surface did not record prints as "not recorded" rather than a default.
+
+	PHASE 2. The report page (lib/report/ProvenanceSection.svelte) reuses this panel for the whole
+	report and passes `extraDownloads` (the report's JSON / CSV / GraphML / Newick, which replace
+	the per-analysis buttons) and `snippet` (the `hyphaeon_analyze` call, which replaces the
+	`hyphaeon_meme` one). Without those props the panel behaves as in Phase 1.
 -->
+<script lang="ts" module>
+	export interface ExtraDownload {
+		label: string;
+		title?: string;
+		disabled?: boolean;
+		run: () => Promise<void>;
+	}
+</script>
 <script lang="ts">
 	import type { MemeRecord } from '$lib/results/types';
 	import { MCP_ADD_LINE, mcpSnippet } from '$lib/results/mcpSnippet';
@@ -14,17 +27,34 @@
 
 	interface Props {
 		record: MemeRecord;
+		/** Report-level downloads; when given they replace the JSON/CSV/tree buttons below. */
+		extraDownloads?: ExtraDownload[] | null;
+		/** A snippet to show instead of the `hyphaeon_meme` one. */
+		snippet?: string | null;
+		snippetTool?: string;
 	}
-	let { record }: Props = $props();
+	let { record, extraDownloads = null, snippet: snippetOverride = null, snippetTool = 'hyphaeon_meme' }: Props = $props();
 
 	const p = $derived(record.provenance);
 	const pre = $derived(p.preprocessing);
-	const snippet = $derived(mcpSnippet(record));
+	const snippet = $derived(snippetOverride ?? mcpSnippet(record));
 	let busy = $state<string | null>(null);
 	let downloadError = $state<string | null>(null);
 	let copied = $state(false);
 
 	const DATAMONKEY_MEME = 'https://www.datamonkey.org/meme';
+
+	async function runExtra(d: ExtraDownload, i: number) {
+		downloadError = null;
+		busy = `extra-${i}`;
+		try {
+			await d.run();
+		} catch (e) {
+			downloadError = `Download failed: ${(e as Error).message}`;
+		} finally {
+			busy = null;
+		}
+	}
 
 	async function download(kind: 'json' | 'csv' | 'tree') {
 		downloadError = null;
@@ -139,6 +169,13 @@
 	<section>
 		<h3>Downloads</h3>
 		<div class="actions">
+			{#if extraDownloads}
+				{#each extraDownloads as d, i (d.label)}
+					<button type="button" class="button button--secondary" disabled={busy !== null || d.disabled} title={d.title} onclick={() => runExtra(d, i)}>
+						{busy === `extra-${i}` ? '…' : d.label}
+					</button>
+				{/each}
+			{:else}
 			<button type="button" class="button button--secondary" disabled={busy !== null} onclick={() => download('json')}>
 				JSON ({busy === 'json' ? '…' : 'hyphaeon meme format'})
 			</button>
@@ -149,18 +186,19 @@
 				title={record.tree ? 'The Newick tree the model was given' : 'This record has no tree'}>
 				Tree (Newick)
 			</button>
+			{/if}
 		</div>
 		{#if downloadError}<p class="error">{downloadError}</p>{/if}
 		<p class="hint">
-			The JSON and CSV are written by the same writers as <code>hyphaeon meme</code>, so they feed
-			<code>hyphaeon evaluate</code> and the parity harness unchanged.
+			The site JSON and CSV are written by the same writers as <code>hyphaeon meme</code>, so they feed
+			<code>hyphaeon evaluate</code> and the parity harness unchanged{#if extraDownloads}; the GraphML is <code>nx.write_graphml</code>'s layout over the co-selection edges{/if}.
 		</p>
 	</section>
 
 	<section>
 		<h3>Reproduce with MCP</h3>
 		<p class="hint">
-			Add the server once with <code>{MCP_ADD_LINE}</code>, then ask for this call. The paths are
+			Add the server once with <code>{MCP_ADD_LINE}</code>, then ask for this <code>{snippetTool}</code> call. The paths are
 			placeholders: the stdio server reads local files, and this page never had a path to your file.
 		</p>
 		<div class="snippet">

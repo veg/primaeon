@@ -1,0 +1,65 @@
+{
+	"WHY THIS FILE EXISTS": "The catalogue of the five bundled examples, in one place for the two things that read it: the landing page's example chips (web/src/routes/+page.svelte, which links each to /report/gallery/<id>/ and puts `description` in the chip's title) and the build-time prebake (web/scripts/prebake-gallery.mjs, which runs every analysis on each and writes static/gallery/<id>.json). `description` is the one-line 'Description & Biological Domain' cell of the HyphAeon README's 'Included Benchmark Datasets' table (veg/HyphAeon@phase-2a README.md), verbatim; `paper.taxa`/`paper.codons` are that table's N and L before duplicate pruning and the taxon cap; `reference_runtime_sec` is PLAN.md section 1's measured `hyphaeon meme` wall time on a laptop CPU, the fallback when the engine's fixtures/manifest.json `e2e_wall_seconds` is absent. RHO is NEXUS with its tree embedded, so it has no tree file. Order is the landing page's chip order: the two small ones first, then the two that need a HyPhy branch-length fit, then the largest.",
+	"examples": [
+		{
+			"id": "bat_oas1",
+			"name": "Bat OAS1",
+			"gene": "2'-5'-oligoadenylate synthetase 1",
+			"description": "Chiropteran OAS1 2'-5'-oligoadenylate synthetase (innate immunity escape).",
+			"regime": "Bats · cross-species",
+			"alignment": "bat_oas1.fasta",
+			"tree": "bat_oas1.nwk",
+			"format": "fasta",
+			"paper": { "taxa": 18, "codons": 351 },
+			"reference_runtime_sec": 1.7
+		},
+		{
+			"id": "Smc6",
+			"name": "Smc6",
+			"gene": "Structural maintenance of chromosomes 6",
+			"description": "Primate Smc6 structural maintenance of chromosomes (antiviral host restriction).",
+			"regime": "Primates · cross-species",
+			"alignment": "Smc6.fasta",
+			"tree": "Smc6.nwk",
+			"format": "fasta",
+			"paper": { "taxa": 20, "codons": 1097 },
+			"reference_runtime_sec": 3.5
+		},
+		{
+			"id": "camelid",
+			"name": "Camelid VHH",
+			"gene": "Single-domain antibody heavy-chain variable domain",
+			"description": "Camelid single-domain antibody heavy-chain variable domain (antigenic diversity).",
+			"regime": "Camelids · antibody repertoire",
+			"alignment": "camelid.fasta",
+			"tree": "camelid.nwk",
+			"format": "fasta",
+			"paper": { "taxa": 212, "codons": 96 },
+			"reference_runtime_sec": 4.0
+		},
+		{
+			"id": "HIV1_RT",
+			"name": "HIV-1 RT",
+			"gene": "Reverse transcriptase polymerase domain",
+			"description": "Retroviral Reverse Transcriptase polymerase domain (drug resistance & epistasis).",
+			"regime": "HIV-1 · within-host viral",
+			"alignment": "HIV1_RT.fasta",
+			"tree": "HIV1_RT.nwk",
+			"format": "fasta",
+			"paper": { "taxa": 476, "codons": 335 },
+			"reference_runtime_sec": 17.3
+		},
+		{
+			"id": "RHO",
+			"name": "Rhodopsin",
+			"gene": "Rhodopsin visual pigment",
+			"description": "Mammalian Rhodopsin visual pigments (deep-sea diving sensory adaptation).",
+			"regime": "Mammals · cross-species, embedded tree",
+			"alignment": "RHO.fasta",
+			"tree": null,
+			"format": "nexus",
+			"paper": { "taxa": 710, "codons": 349 },
+			"reference_runtime_sec": null
+		}
+	]
+}

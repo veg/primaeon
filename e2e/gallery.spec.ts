@@ -1,53 +1,103 @@
 /**
- * gallery.spec.ts — the prebaked gallery: five cards on /gallery/, and a prebaked record
- * rendering on /results/gallery/<id>/ without any model or runtime bytes.
+ * gallery.spec.ts — the prebaked examples: five chips on `/`, a prebaked report rendering every
+ * section on /report/gallery/<id>/ without any model or runtime bytes, the retired routes
+ * redirecting, and the gallery Smc6 record's epistasis against the CLI fixture.
  *
- * WHY THIS FILE EXISTS. PLAN.md §4.1: "/gallery — bundled examples with prebaked results", and
- * §4.4: the lazy assets are fetched on first use from /analyze, never elsewhere. The gallery
- * cards come from static/gallery/index.json (web/scripts/prebake-gallery.mjs) and the results
- * page reads static/gallery/<id>.json, so neither route has a reason to touch the 21 MB of ORT
- * and graph or the 6.4 MB of HyPhy WASM; a request for any of them here would be a wrong import
- * in the results bundle (downloads.ts imports the writers lazily, on click, for that reason).
- * The five names are the README examples the prebake enumerates (gallery-prebake report).
+ * WHY THIS FILE EXISTS. PLAN.md §4.1 (D21): "`/analyze` and `/gallery` from Phase 1 fold into `/`
+ * and `/report/gallery/…`; `/results/…` redirects to `/report/…`". The chips come from
+ * lib/gallery/examples.json (the README's five datasets) and the report page reads
+ * static/gallery/<id>.json (web/scripts/prebake-gallery.mjs, a ReportRecord v2 baked under
+ * onnxruntime-node), so neither route has a reason to touch the 21 MB of ORT and graph or the
+ * 6.4 MB of HyPhy WASM; a request for any of them here would be a wrong import in the report
+ * bundle (downloads are imported lazily, on click, for that reason).
+ *
+ * PARITY (PLAN.md §5.4). The prebaked Smc6 record was produced by the same `runEverything` the
+ * browser runs, under onnxruntime-node; its epistasis section is compared against
+ * fixtures/e2e/epistasis_Smc6_n_permutations_1000.json exactly on edges and sectors (graph class on
+ * the ORT-derived fields, statistical class on `p_perm`). report.spec.ts makes the same
+ * comparison on a record the BROWSER produced and writes the surface file for scripts/parity.py.
  */
 
 import { expect, test } from '@playwright/test';
-import { HEAVY_ASSET, trackRequests } from './helpers';
+import { COMPUTED_SECTIONS, HEAVY_ASSET, compareEpistasis, referenceEpistasis, section, trackRequests, type CliEpistasis } from './helpers';
 
 const EXAMPLES = ['Smc6', 'bat_oas1', 'camelid', 'HIV1_RT', 'RHO'];
 
 test.describe('gallery', () => {
-	test('/gallery/ lists five cards linking to prebaked results, fetching no heavy asset', async ({ page, baseURL }) => {
+	test('/ lists five example chips linking to prebaked reports', async ({ page, baseURL }) => {
 		const requests = trackRequests(page);
-		await page.goto('/gallery/');
+		await page.goto('/');
 		await page.waitForLoadState('networkidle');
 
-		const cards = page.locator('ul[aria-label="Examples"] > li.card');
-		await expect(cards).toHaveCount(5);
+		const chips = page.locator('p.examples a.chip');
+		await expect(chips).toHaveCount(5);
 		for (const id of EXAMPLES) {
-			const link = page.locator(`ul[aria-label="Examples"] a.button[href$="/results/gallery/${id}/"]`);
-			await expect(link, `View results link for ${id}`).toHaveCount(1);
+			const chip = page.locator(`p.examples a.chip[href$="/report/gallery/${id}/"]`);
+			await expect(chip, `chip for ${id}`).toHaveCount(1);
+			const title = await chip.getAttribute('title');
+			expect(title, `chip ${id} carries the README description as its title`).toBeTruthy();
 		}
-		await expect(page.locator('ul[aria-label="Examples"] li.card--unavailable')).toHaveCount(0);
 
 		const origin = new URL(baseURL!).origin;
 		expect(requests.offOrigin(origin)).toEqual([]);
 		expect(requests.matching(HEAVY_ASSET)).toEqual([]);
 	});
 
-	test('/results/gallery/Smc6/ renders the plot and the table from the prebaked JSON', async ({ page, baseURL }) => {
+	test('/report/gallery/Smc6/ renders every section from the prebaked record, fetching no heavy asset', async ({ page, baseURL }) => {
 		const requests = trackRequests(page);
-		await page.goto('/results/gallery/Smc6/');
-		await expect(page.locator('canvas[aria-label^="Predicted LRT by codon site"]')).toBeVisible({ timeout: 30_000 });
-		await expect(page.locator('.table .count')).toHaveText('1097 of 1097 sites');
-		expect(await page.locator('table tbody tr.row').count()).toBe(25);
-		await expect(page.locator('dl.tiles .tile--accent dd strong')).toHaveText(/^\d[\d,]*$/);
-		await expect(page.getByRole('heading', { level: 1 })).toContainText(/Smc6/i);
-		await page.waitForLoadState('networkidle');
+		await page.goto('/report/gallery/Smc6/');
+		await expect(page.getByRole('heading', { level: 1 })).toContainText(/Smc6/i, { timeout: 30_000 });
+		await expect(page.locator('.head .eyebrow')).toContainText(/bundled example/i);
+		await expect(page.locator('dl[aria-label="Report overview"]')).toBeVisible();
 
+		for (const name of COMPUTED_SECTIONS) {
+			await expect(section(page, name), `section ${name} is done`).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
+		}
+		await expect(section(page, 'phenotype')).toContainText(/phenotype/i);
+
+		await expect(page.locator('canvas[aria-label^="Predicted LRT by codon site"]')).toBeVisible();
+		await expect(page.locator('.table .count')).toHaveText('1097 of 1097 sites');
+		await expect(page.locator('#gene dl.stats dd.num').first()).toHaveText(/^\d\.\d{4}$|e-/);
+		await expect(page.locator('#epistasis p.lede strong').first()).toHaveText(/^\d+$/);
+		await expect(page.locator('canvas[aria-label^="Digital DMS heatmap"]')).toBeVisible();
+		// Taxa tile: 20 primates (README).
+		await expect(page.locator('dl[aria-label="Report overview"] .tile', { hasText: 'Taxa' }).locator('dd strong')).toHaveText('20');
+
+		await page.waitForLoadState('networkidle');
 		const origin = new URL(baseURL!).origin;
 		expect(requests.offOrigin(origin)).toEqual([]);
 		expect(requests.matching(/\/gallery\/Smc6\.json(\?|$)/).length, 'the prebaked record was fetched').toBeGreaterThanOrEqual(1);
 		expect(requests.matching(HEAVY_ASSET)).toEqual([]);
+	});
+
+	test('/gallery/ redirects to the landing page', async ({ page }) => {
+		await page.goto('/gallery/');
+		await page.waitForURL((url) => url.pathname === '/', { timeout: 15_000 });
+		await expect(page.getByText(/drop your alignment here/i)).toBeVisible();
+	});
+
+	test('/results/gallery/Smc6/ redirects to /report/gallery/Smc6/', async ({ page }) => {
+		await page.goto('/results/gallery/Smc6/');
+		await page.waitForURL(/\/report\/gallery\/Smc6\/?$/, { timeout: 15_000 });
+		await expect(page.getByRole('heading', { level: 1 })).toContainText(/Smc6/i, { timeout: 30_000 });
+		await expect(section(page, 'sites')).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
+	});
+
+	test('parity: the prebaked Smc6 epistasis matches the CLI fixture at B = 1,000', async ({ request }) => {
+		const reference = referenceEpistasis('Smc6', 1000);
+		test.skip(reference === null, 'fixtures/e2e/epistasis_Smc6_n_permutations_1000.json not found in the engine checkout');
+		const res = await request.get('/gallery/Smc6.json');
+		expect(res.ok()).toBe(true);
+		const record = await res.json();
+		expect(record.schema_version).toBe(2);
+		expect(record.kind).toBe('report');
+		expect(record.options.permutations).toBe(1000);
+		expect(record.options.seed).toBe(42);
+		const epi = record.sections.epistasis as CliEpistasis;
+		expect(epi.permutations?.n).toBe(1000);
+		const cmp = compareEpistasis(epi, reference!, 1000);
+		test.info().annotations.push({ type: 'gallery-vs-python', description: `${cmp.edges} edges, ${cmp.sectors} sectors exact (surface ${record.provenance?.surface}); ${cmp.statistical.join('; ')}` });
+		expect(cmp.violations, `exact/graph-class violations: ${cmp.violations.join(' | ')}`).toEqual([]);
+		expect(cmp.statViolations, `statistical-class violations: ${cmp.statViolations.join(' | ')}`).toEqual([]);
 	});
 });

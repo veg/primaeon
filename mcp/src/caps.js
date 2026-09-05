@@ -5,10 +5,10 @@
  *
  * The analysis tools answer INSIDE the tool call when the input is small enough, and hand back a
  * job id otherwise (PLAN.md 3.6). Something has to decide "small enough", and it has to be one
- * decision shared by every tool, measured on the file as submitted, before any subprocess starts.
- * In Phase 0 the work happens in a Python subprocess (src/bridge.js), so the caller's process is
- * not stalled the way datamonkey-js-server's axomeme_scan stalls its event loop; the caps exist for
- * a different reason here: a single MCP tool call has to come back in a time a human and a client
+ * decision shared by every tool, measured on the file as submitted, before any model is loaded
+ * or subprocess started. Since Phase 1b most pillars run in this process (src/engine.js), so the
+ * caps also keep one tool call from monopolising the server's event loop; the reason they exist
+ * is the same either way: a single MCP tool call has to come back in a time a human and a client
  * will wait for, and a laptop has to survive the run.
  *
  * Where the numbers come from:
@@ -30,7 +30,11 @@
  *   MAX_CODONS           PLAN.md 3.5: "codons <= 30,000 (meme/busted), <= 3,000 (dms)". Epistasis
  *                        and phenotype are not named there; they share the 30,000 figure because
  *                        their forward-pass cost is the meme cost plus attention, and the DMS sweep
- *                        inside epistasis runs only on sector nodes, not every site.
+ *                        inside epistasis runs only on sector nodes, not every site. `analyze`
+ *                        (hyphaeon_analyze, the whole PLAN.md 4.0 report) is sized like meme: its
+ *                        DMS section is capped by its OWN work budget inside the runtime
+ *                        (progressive, cancellable, "above the cap the report says so"), so the
+ *                        19x term is not part of the sync/job decision here.
  *   DMS_MUTANTS_PER_SITE 19. PLAN.md 1: dms is "19 substitutions x L sites" and "capped by work
  *                        19·L·N²", so the work term for dms is multiplied by 19.
  *   MIN_TAXA / MAX_TAXA  3 and 1,000. PLAN.md 3.5 and 4.3: "Taxa < 3 | refuse (#7)", "> 1,000
@@ -66,7 +70,8 @@ export const MAX_CODONS = Object.freeze({
   busted: 30000,
   epistasis: 30000,
   phenotype: 30000,
-  dms: 3000
+  dms: 3000,
+  analyze: 30000
 });
 
 export const DMS_MUTANTS_PER_SITE = 19;
@@ -78,8 +83,37 @@ export const JOB_TIMEOUT_MS = 10 * 60 * 1000;
 export const JOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_JOBS = 200;
 
+/**
+ * How long hyphaeon_analyze waits inside the call for the whole report before handing back the
+ * job id with the sections that are ready (app-side semantics, not a CLI behaviour: the report
+ * streams section by section, PLAN.md 4.0, and DMS runs last and may be minutes). The default is
+ * what a human and an MCP client will sit through; the maximum is the job timeout.
+ */
+export const ANALYZE_WAIT_DEFAULT_SEC = 120;
+export const ANALYZE_WAIT_MAX_SEC = JOB_TIMEOUT_MS / 1000;
+
+/**
+ * Above this many bytes of JSON, hyphaeon_analyze answers with the report's summary and the job
+ * id (get_results pages it by `section`) instead of inlining the whole ReportRecord: an epistasis
+ * section with attention-derived edges plus a 20 x L DMS grid is megabytes no client wants in one
+ * tool result.
+ */
+export const ANALYZE_INLINE_MAX_BYTES = 256 * 1024;
+
 /** The analyses that run the network and therefore fall under the work caps. */
-export const MODEL_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype"]);
+export const MODEL_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype", "analyze"]);
+
+/**
+ * Which pillars run IN THIS PROCESS (runtime/ over onnxruntime-node; provenance.surface
+ * "mcp-stdio" / "mcp-http") and which still shell to the Python reference (src/bridge.js;
+ * "python-reference"). Phase 1b moved meme, busted and evaluate; Phase 2a's library port moved
+ * epistasis and dms; phenotype is Phase 3 and the ONLY bridged pillar left. `analyze` is the
+ * app's own tool (hyphaeon_analyze: the whole report) and is native by construction. Defined in
+ * this leaf so src/validate.js, src/engine.js and src/tools.js share one list without importing
+ * each other.
+ */
+export const NATIVE_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "evaluate", "analyze"]);
+export const BRIDGED_ANALYSES = Object.freeze(["phenotype"]);
 
 /**
  * Work term for an analysis: sites x taxa^2, times 19 for the digital DMS sweep.
@@ -207,6 +241,8 @@ export function classifyRun(analysis, { codons, taxa }) {
  */
 export function estimateSeconds(analysis, codons, taxa) {
   const work = workFor(analysis, codons, taxa);
-  const passes = analysis === "epistasis" ? 2 : 1; // attribution + forward, roughly
+  // attribution + forward for epistasis, roughly; the report runs meme, busted, epistasis, the
+  // attribution loop and two filter passes before its (budget-capped) DMS.
+  const passes = analysis === "epistasis" ? 2 : analysis === "analyze" ? 4 : 1;
   return 1.5 + passes * (2e-4 * codons + 2.1e-7 * work);
 }

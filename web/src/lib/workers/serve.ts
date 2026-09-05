@@ -18,6 +18,8 @@ import type { FromWorker, ToWorker } from './protocol';
 
 export interface HandlerContext {
 	progress: (phase: string, done: number, total: number, message: string) => void;
+	/** Post one report section (analyze worker); `final` false for a progressive DMS update. */
+	section: (name: string, payload: unknown, final: boolean) => void;
 	signal: AbortSignal;
 }
 
@@ -49,7 +51,8 @@ export function serve<Req, Res>(handler: Handler<Req, Res>): void {
 				if (controller.signal.aborted) throw abortError();
 				const result = await handler(payload, {
 					signal: controller.signal,
-					progress: (phase, done, total, message) => post<Res>({ id, kind: 'progress', phase, done, total, message })
+					progress: (phase, done, total, message) => post<Res>({ id, kind: 'progress', phase, done, total, message }),
+					section: (name, payload, final) => post<Res>({ id, kind: 'section', name, payload, final })
 				});
 				post<Res>({ id, kind: 'result', payload: result });
 			} catch (err) {
