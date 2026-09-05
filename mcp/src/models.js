@@ -39,7 +39,7 @@ const APP_ROOT = path.resolve(HERE, "..", "..");
 const SIBLING_ENGINE = path.resolve(APP_ROOT, "..", "HyphAeon");
 const WEB_STATIC = path.join(APP_ROOT, "web", "static");
 
-/** What the Python reference knows about its variants (hyphaeon/weights.py:41-69, :72-76). */
+/** What the reference implementation knows about its variants (hyphaeon/weights.py:41-69, :72-76). */
 export const KNOWN_VARIANTS = Object.freeze([
   {
     variant: "general",
@@ -141,7 +141,7 @@ export async function readManifest(env = process.env) {
       : {
           note:
             "No models/manifest.json found (it is written by `hyphaeon export-onnx`, PLAN.md 7.1). " +
-            "Listing the variants the Python reference knows about instead; the native tools cannot run."
+            "Listing the variants the reference implementation knows about instead; no tool can score without it."
         }
   );
 }

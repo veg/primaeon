@@ -3,7 +3,6 @@ node_modules
 build
 web/static/ort
 web/static/models
-web/static/wasm
 playwright-report
 test-results
 .env

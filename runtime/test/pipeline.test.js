@@ -93,6 +93,21 @@ const ALIGNMENT =
 		.join('\n') + '\n';
 const TREE = '((a:0.1,b:0.2):0.05,(c:0.3,d:0.4):0.05);';
 
+// A SECOND toy alignment, for the tree-free tests only. The one above is four maximally divergent
+// sequences (ATG / TTT / GGG / CCC), which is fine for a tree run and impossible for TN93: every
+// pair is saturated, so the tn93 package's own `math.log` of a non-positive number raises
+// (../HyphAeon/PHASE3A.md). These four differ at a handful of positions instead, so the distance
+// matrix exists and the tree-free path can be exercised on a fake session.
+const TN93_SEQS = {
+	a: 'ATGAAACCCGGGTTTACGATG',
+	b: 'ATGAAGCCCGGATTTACGATG',
+	c: 'ATGAAACCTGGGTTCACGATG',
+	d: 'ATGAGACCCGGGTTTACGATG'
+};
+const TN93_ALIGNMENT = Object.entries(TN93_SEQS).map(([n, q]) => `>${n}\n${q}`).join('\n') + '\n';
+/** The same four taxa with a topology and no branch lengths: D22's `no_branch_lengths`. */
+const TOPOLOGY_ONLY_TREE = '((a,b),(c,d));';
+
 describe('clampMaxSpecies', () => {
 	it('defaults, clamps, and treats Infinity as no cap (the CLI default)', () => {
 		expect(clampMaxSpecies(undefined)).toBe(256);
@@ -250,54 +265,102 @@ describe('runMeme over a fake session', () => {
 		expect(result.sites).toHaveLength(7);
 	});
 
-	it('refuses to run without a tree, with too few taxa, or with unknown modes / surfaces', async () => {
+	it('refuses too few taxa and unknown modes / surfaces (but no longer refuses a missing tree)', async () => {
 		const { handle } = fakeSession();
-		await expect(runMeme({ alignmentText: ALIGNMENT, treeText: '', session: handle })).rejects.toThrow(NO_TREE_MESSAGE);
 		await expect(runMeme({ alignmentText: '>a\nATGATG\n>b\nATGTTT\n', treeText: '(a:0.1,b:0.1);', session: handle })).rejects.toThrow(new RegExp(`at least ${MIN_SPECIES}`));
 		await expect(runMeme({ alignmentText: ALIGNMENT, treeText: TREE, session: handle, options: { callMode: 'z-score' } })).rejects.toThrow(/Unknown callMode/);
 		await expect(runMeme({ alignmentText: ALIGNMENT, treeText: TREE, session: handle, surface: 'cloud' })).rejects.toThrow(/unknown surface/);
 		await expect(runMeme({ alignmentText: ALIGNMENT, treeText: TREE })).rejects.toThrow(/loadSession/);
 	});
 
-	it('takes the reference\'s "HyPhy not found" branch for a tree without branch lengths, and records it', async () => {
+	it('goes tree-free for a tree with no branch lengths, records the reason, and draws NJ instead (D22)', async () => {
 		const { handle } = fakeSession();
-		const result = await runMeme({ alignmentText: ALIGNMENT, treeText: '((a,b),(c,d));', session: handle });
-		expect(result.provenance.preprocessing.branch_lengths_missing).toBe(true);
-		expect(result.provenance.preprocessing.branch_lengths_estimated).toBe(false);
-		expect(result.provenance.warnings.map((w) => w.code)).toContain('BRANCH_LENGTHS_MISSING');
-		// A caller may insist instead.
+		const result = await runMeme({ alignmentText: TN93_ALIGNMENT, treeText: TOPOLOGY_ONLY_TREE, session: handle });
+		const pp = result.provenance.preprocessing;
+		expect(pp.tree_source).toBe('tn93');
+		expect(pp.tree_provided).toBe('user');
+		expect(pp.tree_free).toEqual({ reason: 'no_branch_lengths', taxa_order: 'alignment' });
+		expect(pp.branch_lengths_missing).toBe(true);
+		// Nothing estimates branch lengths any more: the field stays, always false.
+		expect(pp.branch_lengths_estimated).toBe(false);
+		const w = result.provenance.warnings.find((x) => x.code === 'TREE_FREE_TN93');
+		expect(w).toBeDefined();
+		expect(w.severity).toBe('info');
+		expect(w.data.reason).toBe('no_branch_lengths');
+		expect(result.provenance.warnings.map((x) => x.code)).not.toContain('BRANCH_LENGTHS_MISSING');
+		// The display tree is the NJ one, and it is not what the model was given.
+		expect(result.display_tree.source).toBe('nj');
+		expect(pp.display_tree_source).toBe('nj');
+		expect(result.display_tree.newick).toMatch(/^\(.*\);$/);
+		for (const name of Object.keys(TN93_SEQS)) expect(result.display_tree.newick).toContain(name);
+		// A caller may still insist on a real tree.
 		await expect(
-			runMeme({ alignmentText: ALIGNMENT, treeText: '((a,b),(c,d));', session: handle, options: { requireBranchLengths: true } })
+			runMeme({ alignmentText: TN93_ALIGNMENT, treeText: TOPOLOGY_ONLY_TREE, session: handle, options: { requireBranchLengths: true } })
 		).rejects.toThrow(NO_BRANCH_LENGTHS_MESSAGE);
 	});
 
-	it('calls the estimateTree hook for a tree without branch lengths and reloads with its answer', async () => {
+	it('goes tree-free when there is no tree at all, and refuses only when asked to', async () => {
 		const { handle } = fakeSession();
-		const calls = [];
-		const result = await runMeme({
-			alignmentText: ALIGNMENT,
-			treeText: '((a,b),(c,d));',
-			session: handle,
-			options: {
-				estimateTree: async (alignmentText, treeText) => {
-					calls.push({ alignmentText, treeText });
-					return { treeText: TREE, source: 'nj' };
-				}
-			}
-		});
-		expect(calls).toHaveLength(1);
-		expect(calls[0].treeText).toBe('((a,b),(c,d));');
-		expect(result.provenance.preprocessing.branch_lengths_estimated).toBe(true);
-		expect(result.provenance.preprocessing.tree_source).toBe('nj');
-		expect(result.provenance.preprocessing.branch_lengths_missing).toBe(false);
+		const result = await runMeme({ alignmentText: TN93_ALIGNMENT, treeText: null, session: handle });
+		const pp = result.provenance.preprocessing;
+		expect(pp.tree_source).toBe('tn93');
+		expect(pp.tree_provided).toBe(null);
+		expect(pp.tree_free.reason).toBe('no_tree');
+		expect(pp.match_tier).toBe(null); // no tree, so no taxon matching happened
+		expect(result.display_tree.source).toBe('nj');
+		await expect(
+			runMeme({ alignmentText: TN93_ALIGNMENT, treeText: '', session: handle, options: { requireBranchLengths: true } })
+		).rejects.toThrow(NO_TREE_MESSAGE);
 	});
 
-	it('finds a tree embedded in the alignment when none is given', async () => {
+	it('takes the tree-free path on request, as the reference\'s --use-tn93 does', async () => {
+		const { handle } = fakeSession();
+		for (const [label, args] of [
+			['options.useTn93', { alignmentText: TN93_ALIGNMENT, treeText: TREE, options: { useTn93: true } }],
+			['treeText "tn93"', { alignmentText: TN93_ALIGNMENT, treeText: 'tn93', options: {} }],
+			['treeText "none"', { alignmentText: TN93_ALIGNMENT, treeText: 'none', options: {} }]
+		]) {
+			const result = await runMeme({ ...args, session: handle });
+			expect(result.provenance.preprocessing.tree_free.reason, label).toBe('requested');
+			expect(result.provenance.preprocessing.tree_source, label).toBe('tn93');
+		}
+	});
+
+	it('still raises on tree TEXT that will not parse — a bad input is not a missing one', async () => {
+		const { handle } = fakeSession();
+		await expect(
+			runMeme({ alignmentText: TN93_ALIGNMENT, treeText: 'this is not a tree', session: handle })
+		).rejects.toThrow(/Could not parse phylogenetic tree/);
+	});
+
+	it('explains the tn93 package\'s own ValueError instead of leaking it', async () => {
+		const { handle } = fakeSession();
+		// ALIGNMENT is four maximally divergent sequences: every TN93 pair is saturated.
+		await expect(runMeme({ alignmentText: ALIGNMENT, treeText: null, session: handle })).rejects.toThrow(
+			/TN93 distances could not be computed/
+		);
+	});
+
+	it('finds a tree embedded in the alignment when none is given, and draws that tree', async () => {
 		const { handle } = fakeSession();
 		const result = await runMeme({ alignmentText: ALIGNMENT + TREE + '\n', treeText: null, session: handle });
 		expect(result.taxa_count).toBe(4);
 		expect(result.provenance.preprocessing.tree_source).toBe('embedded');
+		expect(result.provenance.preprocessing.tree_provided).toBe('embedded');
+		expect(result.provenance.preprocessing.tree_free).toBe(null);
 		expect(result.provenance.inputs.tree).toBe('embedded_in_alignment');
+		// The display tree is the user's own, serialised back out of the parse — not NJ.
+		expect(result.display_tree.source).toBe('user');
+		expect(result.display_tree.from).toBe('alignment');
+		expect(result.display_tree.newick).toContain('a:0.1');
+	});
+
+	it('hands the uploaded tree text back as the display tree when the run used it', async () => {
+		const { handle } = fakeSession();
+		const result = await runMeme({ alignmentText: ALIGNMENT, treeText: TREE, session: handle });
+		expect(result.display_tree).toEqual({ newick: TREE, source: 'user', from: 'tree-text', taxa: 4 });
+		expect(result.provenance.preprocessing.tree_free).toBe(null);
+		expect(result.provenance.preprocessing.tree_source).toBe('user');
 	});
 
 	it('honours an abort signal', async () => {

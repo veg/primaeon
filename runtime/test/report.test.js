@@ -29,6 +29,9 @@ import {
 	epistasisGraphmlText,
 	dmsDocument,
 	dmsCsvText,
+	phenotypeDocument,
+	phenotypeJsonText,
+	phenotypeCsvText,
 	geneJsonText,
 	REPORT_SCHEMA_VERSION,
 	SECTION_ORDER,
@@ -51,7 +54,10 @@ describe('the record', () => {
 		expect(Date.parse(r.createdAt)).toBeGreaterThan(0);
 		expect(r.timings).toEqual({});
 		expect(REPORT_PHASES[0]).toBe('parse');
-		expect(REPORT_PHASES[REPORT_PHASES.length - 1]).toBe('postprocess');
+		// `postprocess` closes the automatic run; `phenotype` follows it because that section is
+		// requested afterwards, by the user, over a report that is already on screen (PLAN.md §4.0).
+		expect(REPORT_PHASES.at(-2)).toBe('postprocess');
+		expect(REPORT_PHASES.at(-1)).toBe('phenotype');
 	});
 
 	it('refuses a section it does not have, and accumulates timings per phase', () => {
@@ -164,6 +170,40 @@ describe.skipIf(!have)('downloads are the Python CLI\'s files', () => {
 		expect(csv.length).toBe(section.plasticity.length + 2);
 	});
 
+	it('writes `hyphaeon phenotype`\'s document in the reference\'s key order, and its CSV', () => {
+		const phenoRef = fixture('e2e/phenotype_RHO_marine_n_permutations_0.json')[0].outputs;
+		// A section as `runPhenotype` returns it: the reference's record plus the app's own block.
+		const section = {
+			...phenoRef,
+			trait: { source: 'foreground', preset: null, mode: 'discrete' },
+			permulations: { requested: 0, ran: 0, reason: 'not-requested', detail: 'x', seed: 42 },
+			sector_permutations: { n: 0, seed: 42, rng: 'xoshiro256**', note: 'x' },
+			attention_source: 'shared-pass',
+			options: { seed: 42 },
+			elapsed_sec: 1.5
+		};
+		const doc = phenotypeDocument(section);
+		expect(Object.keys(doc)).toEqual(Object.keys(phenoRef));
+		expect(doc.sites.length).toBe(phenoRef.sites.length);
+		expect(doc.phenotype_meta).toEqual(phenoRef.phenotype_meta);
+		// The app's keys are dropped from the CLI file unless asked for.
+		for (const extra of ['trait', 'permulations', 'attention_source', 'elapsed_sec']) {
+			expect(doc[extra]).toBeUndefined();
+		}
+		expect(Object.keys(phenotypeDocument(section, { extras: true }))).toContain('permulations');
+		const parsed = JSON.parse(phenotypeJsonText(section));
+		expect(parsed.compact_pars_signature).toBe(phenoRef.compact_pars_signature);
+		expect(parsed.sites[0].site).toBe(phenoRef.sites[0].site);
+		// cli.py:700-701 writes `res["sites"]` through the DataFrame writer, in that key order.
+		const csv = phenotypeCsvText(section).split('\n');
+		expect(csv[0]).toBe(
+			'site,ref_aa,derived_aa,hyphaeon_lrt,p_lrt,attribution_norm,fg_mean_attn,bg_mean_attn,' +
+				'association_rho,p_value,p_assoc,p_assoc_parametric,p_assoc_perm,score,foreground_freq_pct,' +
+				'background_freq_pct,q_value'
+		);
+		expect(csv.length).toBe(phenoRef.sites.length + 2);
+	});
+
 	it('offers one set of files per section that ran, and the record itself last', () => {
 		const r = storedReport();
 		const files = downloadsForReport(r);
@@ -184,5 +224,13 @@ describe.skipIf(!have)('downloads are the Python CLI\'s files', () => {
 		setSection(r, 'gene', { record: { alignment: 'Smc6.fasta', gene: 'Smc6', taxa: 20, sites: 1097, p_value_acat: 0.1, p_value_simes: 0.2, omnibus_lrt: 3.3, predicted_gene_lrt: null, selection_probability: null, synonymous_rate_variation: null, total_selection_energy: 84.8, sig_sites_p05: 5, sig_sites_p10: 12, rate_distributions: { omega_1: 0.1, proportion_1: null, omega_2: 1, proportion_2: null, omega_3: null, proportion_3: null }, positive_selection_detected: false, elapsed_seconds: null }, statistics: {} });
 		expect(JSON.parse(geneJsonText(r.sections.gene)).gene).toBe('Smc6');
 		expect(downloadsForReport(r).map((f) => f.name)).toContain('Smc6.busted.csv');
+		// The phenotype pair appears only once the user has answered the offer.
+		expect(downloadsForReport(r).map((f) => f.name)).not.toContain('Smc6.phenotype.csv');
+		setSection(r, 'phenotype', fixture('e2e/phenotype_RHO_marine_n_permutations_0.json')[0].outputs);
+		expect(downloadsForReport(r).map((f) => f.name)).toContain('Smc6.phenotype.json');
+		expect(downloadsForReport(r, { only: ['phenotype'] }).map((f) => f.section)).toEqual(['phenotype', 'phenotype', 'report']);
+		// A failed phenotype section contributes no file, only a message in the record.
+		setSection(r, 'phenotype', { failed: true, error: 'Insufficient foreground taxa (0)' });
+		expect(downloadsForReport(r).map((f) => f.name)).not.toContain('Smc6.phenotype.json');
 	});
 });

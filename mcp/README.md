@@ -3,9 +3,20 @@
 MCP server for [HyphAeon](https://github.com/veg/HyphAeon): one tool that runs the whole report
 from an alignment — site-level episodic selection (a neural surrogate for HyPhy MEME), the
 gene-level omnibus (BUSTED surrogate), co-selection networks and epistatic sectors, attribution,
-the alignment-artifact filter and a digital deep mutational scan — plus the per-pillar tools,
-phenotype association, and concordance evaluation against real MEME, as tools an MCP client
-(Claude Code, Claude Desktop, a claude.ai connector) can call.
+the alignment-artifact filter, a digital deep mutational scan and, when you give it a trait,
+phenotype association — plus the per-pillar tools and concordance evaluation against real MEME, as
+tools an MCP client (Claude Code, Claude Desktop, a claude.ai connector) can call.
+
+**Everything runs in this process.** There is no Python, no `hyphaeon` CLI, no HyPhy and no
+subprocess of any kind: the analyses are the JavaScript port of `hyphaeon/*.py`
+(`@veg/hyphaeon-js`) through `@veg/hyphaeon-runtime` over ONNX Runtime for Node, with the graphs
+named by `models/manifest.json` and hash-verified before they score anything.
+
+**A tree is optional on every tool.** One with branch lengths is used as it is. Without one — or
+with a tree that has none — HyphAeon computes pairwise Tamura-Nei 93 distances from the sequences
+and feeds those to the model: the reference's own `--use-tn93` path, which the manuscript measures
+at rho = 0.9997 against the tree-based one. Every result says which happened in
+`provenance.preprocessing.tree_source` (`user` | `embedded` | `tn93`).
 
 ## Install
 
@@ -23,6 +34,9 @@ and the library):
 claude mcp add hyphaeon -- node /path/to/hyphaeon-app/mcp/bin/hyphaeon-mcp.js
 ```
 
+Node 22 and a models directory are the whole requirement. Set `HYPHAEON_MODELS_DIR` if the
+manifest and the `.onnx` graphs are not where the search order below expects them.
+
 Remote, over streamable HTTP: the Node server (`server/`) mounts this package at `/mcp` behind
 its OAuth ceremony; add it as a connector the way the Datamonkey connector is added.
 
@@ -34,19 +48,19 @@ order, over ONE loaded alignment and ONE forward pass, into a `ReportRecord`:
 
 | Order | Section | What runs | In the report |
 |---|---|---|---|
-| 1 | `diagnostics` | the library's "Before you run" checks with the automatic repairs: U->T, trailing-codon trim, duplicate collapse, Faith's-PD taxon cap, the variant chosen from tree depth, HKY85 branch lengths from HyPhy WASM when the tree has none, a neighbour-joining tree from HyPhy when there is no tree at all | `{taxa_in_alignment, taxa_used, codon_count, preprocessing, warnings}` |
+| 1 | `diagnostics` | the library's "Before you run" checks with the automatic repairs: U->T, trailing-codon trim, duplicate collapse, Faith's-PD taxon cap, the variant chosen from tree depth, and the tree decision — a tree with branch lengths is used as it is, otherwise pairwise TN93 distances (`TREE_FREE_TN93`, info, with the reason) | `{taxa_in_alignment, taxa_used, codon_count, preprocessing, warnings}` |
 | 2 | `sites` | site selection (`hyphaeon meme`): LRT, MEME mixture p, BH q, invariable flag, the app's rank columns | `runMeme`'s `{sites, summary, ...}` |
 | 3 | `gene` | the omnibus (`hyphaeon busted`) from the same pass: ACAT, Simes, omnibus LRT, the busted head on the pooled representation | `{record, statistics, neural_head}` |
 | 4 | `epistasis` | co-selection network and sectors (`hyphaeon epistasis`) from the same pass's attention | `{edges, sectors, plasticity, graph, permutations}` |
 | 5 | `attribution` | per-taxon counterfactual attribution on the CALLED sites | `{attributions, attribution_enabled, gate}` |
 | 6 | `filter` | the alignment-artifact screen, reported BESIDE the primary sites (masked/unmasked toggle) | `{artifacts_masked, filter_enabled, cleaned}` |
-| 7 | `dms` | the digital DMS, LAST: progressive, cancellable, capped by a work budget; when partial the section says so | `{plasticity, focal_taxon, total_mutations, progress, cancelled?, skipped?}` |
-| 8 | `phenotype` | `null`: it needs a trait, so the report offers `hyphaeon_phenotype` instead of running it | — |
+| 7 | `dms` | the digital DMS: progressive, cancellable, capped by a work budget; when partial the section says so | `{plasticity, focal_taxon, total_mutations, progress, cancelled?, skipped?}` |
+| 8 | `phenotype` | **only with a `phenotype` trait block** (`preset`, `foreground` or `phenotype_file`), because a trait cannot be guessed. Given one, it is computed from the SAME forward pass the sections above used — graph maths, no extra inference (`provenance.phenotype_source: "report-pass"`) | `{sites, trait_sectors, coselection_pairs, permulations, ...}` or `null` |
 
 The record is `{schema_version: 2, kind: "report", id, createdAt, inputs, options, diagnostics,
 sections, provenance, timings}`. Advanced settings (`variant`, `max_species`, `reference_sequence`,
-`call_mode`, `seed`, `permutations`, `dms`, `dms_work_budget`) are the report's "Re-run with..."
-disclosure, not a prerequisite: the defaults come from diagnostics.
+`call_mode`, `seed`, `permutations`, `dms`, `dms_work_budget`, `use_tn93`, `phenotype`) are the
+report's "Re-run with..." disclosure, not a prerequisite: the defaults come from diagnostics.
 
 **How the call answers.** The run is always a job, so the report has an id from the first
 second. The call waits up to `wait_seconds` (default 120, max 600; `0` returns at once) and then:
@@ -64,15 +78,7 @@ finished record is the resource `hyphaeon://report/{id}` for as long as the job 
 The `interpret-report` prompt says how to read the sections, in order, and what each can and
 cannot support.
 
-## Native or bridged
-
-Everything except phenotype runs **in the MCP process**: the JavaScript library
-`@veg/hyphaeon-js` (the port of `hyphaeon/*.py`, at tag `phase-2a`) through
-`@veg/hyphaeon-runtime` over ONNX Runtime for Node, with the graphs named by
-`models/manifest.json` and hash-verified before they score anything. No Python is involved and
-nothing leaves the machine. Phenotype association is the ONE pillar whose port has not landed
-(Phase 3); its tool still shells out to the Python reference CLI (PLAN.md 3.6, "bridge, then
-port"), and every result says which engine ran in `provenance.surface`.
+## One engine
 
 | Tool | Engine | `provenance.surface` |
 |---|---|---|
@@ -82,18 +88,23 @@ port"), and every result says which engine ran in `provenance.surface`.
 | `hyphaeon_busted` | in-process (runtime `runBusted`: ACAT, Simes, omnibus LRT, the busted head) | `mcp-stdio` / `mcp-http` |
 | `hyphaeon_epistasis` | in-process (runtime `runEpistasis`: attributions, cosine network, sectors with the permutation null, sector-site DMS) | `mcp-stdio` / `mcp-http` |
 | `hyphaeon_dms` | in-process (runtime `runDms`: 19 substitutions per site, progressive) | `mcp-stdio` / `mcp-http` |
+| `hyphaeon_phenotype` | in-process (runtime `runPhenotype` over the library's `phenotype.py` port) | `mcp-stdio` / `mcp-http` |
 | `hyphaeon_evaluate` | in-process (runtime `runEvaluate` over the library's `evaluation.py` port) | `mcp-stdio` / `mcp-http` |
-| `hyphaeon_phenotype` | Python reference CLI (`src/bridge.js`) — the only bridged tool | `python-reference` |
 | `job_status`, `get_results`, `cancel_job`, `list_models` | — | — |
 
-Parity of the native tools with `hyphaeon <cmd>`, measured in `test/` against the reference's
-fixtures (regenerated under the canonical MDS sign convention, HyphAeon/MDS_SIGN.md, which both
-sides now apply — PHASE1.md's gap 1 is closed and `test/engine.test.js` compares the MDS
-coordinates exactly per column with no sign allowance):
+Parity with `hyphaeon <cmd>`, measured in `test/` against the reference's own fixtures
+(regenerated under the canonical MDS sign convention, HyphAeon/MDS_SIGN.md, which both sides
+apply — `test/engine.test.js` compares the MDS coordinates exactly per column with no sign
+allowance):
 
 - `hyphaeon_meme` bat_oas1: site order and `is_invariable` exact; `hyphaeon_lrt` within
   1e-5 x max(1, |lrt|) (measured 2.4e-6); `p_value` / `q_value` the same float32 values
   `cmd_meme` writes.
+- **`hyphaeon_meme` camelid with NO TREE** vs `hyphaeon meme --use-tn93`: `hyphaeon_lrt` within
+  1e-5 (measured 2.3e-6), taxa and site order exact. This is the case the app could not reach
+  before D22, because camelid's tree has no branch lengths and the two sides fitted them with
+  different HyPhy builds; both now compute the same TN93 matrix (bit-identical, HyphAeon/PHASE3A.md)
+  and the gap is closed by construction (`test/tn93.test.js`).
 - `hyphaeon_busted` Smc6: the statistical fields at their classes (counts exact, 1e-6 derived,
   L x 1e-6 sums); the neural head fields are one seeded draw of a head the reference loads
   unseeded and are not compared.
@@ -102,86 +113,90 @@ coordinates exactly per column with no sign allowance):
   membership, ids, sizes and signatures exact; `spectral_coherence` within 1e-6; `p_perm` within
   3 sqrt(p(1-p)/B) and the null moments within the Monte Carlo error of B = 1,000; the sector-site
   DMS at the graph class.
-- `hyphaeon_dms` bat_oas1 (the fixture's target sites, default and `r_ferr` focal taxa) and Smc6
-  (the CLI's sector sites): every record at the graph class — a mutant delta is the difference of
-  two ORT LRTs, so its scale is the sum of theirs — with keys, key order, residues and the focal
-  taxon exact.
+- `hyphaeon_dms` bat_oas1 and Smc6: every record at the graph class — a mutant delta is the
+  difference of two ORT LRTs, so its scale is the sum of theirs — with keys, key order, residues
+  and the focal taxon exact.
+- **`hyphaeon_phenotype` RHO** (the README's marine foreground, `--n-permutations 0 --seed 42`)
+  vs `hyphaeon phenotype`: the 21 top-level keys in order, `phenotype_meta` (description string
+  included), the four counts, the site table's length / order / key order, every residue and both
+  frequency columns, and the trait sector's membership, signatures and whole null block, all
+  EXACT; the model-derived columns at the 1e-5 graph class (worst 4.7e-6); every p-value within
+  1e-6 absolute (worst 4.7e-7) — a p is exponential in an LRT, so the relative class is the wrong
+  ruler for a number whose scale is 1e-10 (`test/phenotype.test.js`).
 - `hyphaeon_evaluate`: 1e-9.
-
-### The bridged pillar needs the Python reference
-
-Install it and make sure `hyphaeon` is on `PATH` (or set `HYPHAEON_PY_BIN`):
-
-```
-pip install hyphaeon            # or: pip install -e /path/to/HyphAeon
-export HYPHAEON_WEIGHTS=/path/to/model.safetensors   # optional; otherwise Hugging Face
-```
-
-Everything else works without Python.
 
 ## Environment
 
 | Variable | Meaning |
 |---|---|
 | `HYPHAEON_MODELS_DIR` | Directory holding `manifest.json` and the `.onnx` graphs (default: `web/static/models` of the checkout, then the sibling `HyphAeon/models`, then `@veg/hyphaeon-js/models`) |
-| `HYPHAEON_VARIANT` | Default model variant (`general` or `viral`) for the native tools and the CLI; `hyphaeon_analyze` otherwise chooses from tree depth |
-| `HYPHAEON_MCP_THREADS` | ONNX Runtime intra-op threads for the native tools (default 1) |
-| `HYPHAEON_PY_BIN` | Path to the `hyphaeon` executable for `hyphaeon_phenotype` (default: `hyphaeon` on PATH) |
-| `HYPHAEON_WEIGHTS` | Local weights file passed through to the CLI (else Hugging Face / package default) |
-| `HF_HUB_OFFLINE` | Set to `1` to forbid Hugging Face downloads (passed through) |
+| `HYPHAEON_VARIANT` | Default model variant (`general` or `viral`); `hyphaeon_analyze` otherwise chooses from tree depth |
+| `HYPHAEON_MCP_THREADS` | ONNX Runtime intra-op threads (default 1) |
 | `HYPHAEON_EXAMPLES_DIR` | Directory of example inputs (default: sibling `HyphAeon/examples`) |
 | `HYPHAEON_GALLERY_DIR` | Directory holding the prebaked gallery (default: `web/static/gallery` of the checkout) |
 | `HYPHAEON_MCP_LOG` | `debug` / `info` / `warn` / `error` / `silent` (stderr only) |
-| `HYPHAEON_MCP_SKIP_BRIDGE` | `1` skips the Python end-to-end tests in `npm test` |
 
 ## Tools
 
 | Tool | What it does | Runs the model |
 |---|---|---|
-| `hyphaeon_validate` | The library's "Before you run" diagnostics (format, alphabet, frame, stops, unknown codons, duplicates, three-tier tree/alignment name matching, branch-length regime, the `> 10` patristic rescale, depth regime, cost) plus this server's caps and run mode; `analysis: "analyze"` sizes the whole report. Returns `{ok, warnings:[{code, severity, message, data}], summary}` | no |
-| `hyphaeon_analyze` | The whole report (above): `variant`, `max_species`, `reference_sequence`, `call_mode`, `seed`, `permutations`, `dms`, `dms_work_budget`, `wait_seconds`, `section` | yes, in-process |
-| `hyphaeon_meme` | Per-site LRT, MEME mixture p, BH q, invariable flag, the app's rank columns (`zScore`, `percentile`, `call`); `filter`, `attribute`, `model_variant`, `max_species` | yes, in-process |
-| `hyphaeon_busted` | ACAT / Simes combination, omnibus LRT, total selection energy, neural BUSTED head (selection probability, gene LRT, omega classes, SRV) | yes, in-process |
-| `hyphaeon_epistasis` | Co-selection network (cosine, Student-t p, BH q, CESI), sectors with spectral coherence and the seeded permutation null, the sector-site DMS unless `no_dms`; `seed`, `n_permutations`, the CLI's thresholds | yes, in-process |
-| `hyphaeon_dms` | 19-substitution digital DMS per site with intrinsic plasticity; `focal_taxon`; app-side `sites` sweeps a subset | yes, in-process |
-| `hyphaeon_phenotype` | Directional trait association per site, PARS signature, trait sectors, optional permulations; `seed`, `mds_sign` | yes, via Python |
+| `hyphaeon_validate` | The library's "Before you run" diagnostics (format, alphabet, frame, stops, unknown codons, duplicates, three-tier tree/alignment name matching, the tree decision, negative lengths, the `> 10` patristic rescale, TN93 saturation, depth regime, cost) plus this server's caps and run mode; `analysis: "analyze"` sizes the whole report. Returns `{ok, warnings:[{code, severity, message, data}], summary}` | no |
+| `hyphaeon_analyze` | The whole report (above): `variant`, `max_species`, `reference_sequence`, `call_mode`, `seed`, `permutations`, `dms`, `dms_work_budget`, `use_tn93`, `phenotype`, `phenotype_file`, `wait_seconds`, `section` | yes |
+| `hyphaeon_meme` | Per-site LRT, MEME mixture p, BH q, invariable flag, the app's rank columns (`zScore`, `percentile`, `call`); `filter`, `attribute`, `model_variant`, `max_species` | yes |
+| `hyphaeon_busted` | ACAT / Simes combination, omnibus LRT, total selection energy, neural BUSTED head (selection probability, gene LRT, omega classes, SRV) | yes |
+| `hyphaeon_epistasis` | Co-selection network (cosine, Student-t p, BH q, CESI), sectors with spectral coherence and the seeded permutation null, the sector-site DMS unless `no_dms`; `seed`, `n_permutations`, the CLI's thresholds | yes |
+| `hyphaeon_dms` | 19-substitution digital DMS per site with intrinsic plasticity; `focal_taxon`; app-side `sites` sweeps a subset | yes |
+| `hyphaeon_phenotype` | Directional trait association per site (foreground vs background attention, rho, t-test p, ACAT with the site LRT, BH q), a PARS signature, trait co-selection pairs, trait sectors, and — with `permulations` > 0 and a tree — a gene-level Brownian-motion permulation p. Trait: `preset`, `foreground`, or `phenotype_file` (the CSV/TSV **text**) | yes |
 | `hyphaeon_evaluate` | Concordance of a `hyphaeon meme` CSV with a HyPhy MEME JSON | no |
 | `job_status` | Status of a queued job, with the latest progress phase and, for a running report, `sections_ready` | — |
 | `get_results` | Result of a completed job, with `fields`, `top`, `summary_only`, and `section` for reports (also while running, for final sections) | — |
 | `cancel_job` | Cancel a queued or running job | — |
-| `list_models` | The manifest read through the runtime (variants, hashes, graph paths), the native engine's status (models directory, onnxruntime-node, branch-length estimator, which runtime entry points are present) and the bridge's reachability | — |
+| `list_models` | The manifest read through the runtime (variants, hashes, graph paths), and the engine's status: models directory, onnxruntime-node, MDS convention, and which runtime entry points are present | — |
 
 Per-pillar analysis inputs mirror the CLI options one-to-one (`--filter` -> `filter`,
-`--n-permutations` -> `n_permutations`, `--seed` -> `seed`, `--mds-sign` -> `mds_sign`, and so
-on). Over stdio, `alignment`, `tree`, `phenotype_file`, `prediction` and `meme_result` also accept
-a `file://` URL (the file's basename becomes the document's label). Every analysis tool and
-`get_results` accept `fields` (top-level keys to keep), `top` (keep the N best records of each
-ranked collection) and `summary_only` (counts plus a per-pillar summary).
+`--n-permutations` -> `n_permutations`, `--permulations` -> `permulations`, `--seed` -> `seed`,
+`--use-tn93` -> `use_tn93`, `--mds-sign` -> `mds_sign`, and so on). Over stdio, `alignment`,
+`tree`, `phenotype_file`, `prediction` and `meme_result` also accept a `file://` URL (the file's
+basename becomes the document's label). Every analysis tool and `get_results` accept `fields`
+(top-level keys to keep), `top` (keep the N best records of each ranked collection) and
+`summary_only` (counts plus a per-pillar summary).
 
 Seams between the CLI and the in-process tools, each recorded in `provenance`:
 
-- `max_species` unset means no taxon cap for `hyphaeon_meme`, `hyphaeon_epistasis` and
-  `hyphaeon_dms` (the CLI's behaviour) and 512 for `hyphaeon_busted`, as in `cli.py`. The report
-  (`hyphaeon_analyze`) defaults to the manifest's 256, a product decision.
+- `max_species` unset means no taxon cap for `hyphaeon_meme`, `hyphaeon_epistasis`,
+  `hyphaeon_dms` and `hyphaeon_phenotype` (the CLI's behaviour) and 512 for `hyphaeon_busted`, as
+  in `cli.py`. The report (`hyphaeon_analyze`) defaults to the manifest's 256, a product decision.
 - MDS eigenvector signs are `canonical` on both sides (HyphAeon/MDS_SIGN.md). The library
   computes only that convention, so `mds_sign: "lapack"` (the pre-convention numbers) is refused
-  in-process with an input-class error; `provenance.mds_sign` records `canonical` and the
+  with an input-class error; `provenance.mds_sign` records `canonical` and the
   `reference_command` spells `--mds-sign canonical`.
-- `seed` feeds the sector permutation null. The reference draws with PCG64, the library with
-  xoshiro256**: the same seed gives a different sequence of K-subsets, so `p_perm` agrees
-  statistically (within 3 sqrt(p(1-p)/B)), never bit for bit. At B = 1,000 each side carries about
-  +/-0.03 absolute; every epistasis result carries `permutations: {n, seed, rng, note}` saying so.
-- A tree without branch lengths gets HKY85 lengths from HyPhy (the reference's own behaviour)
-  through the runtime's HyPhy WebAssembly driver; `provenance.preprocessing.tree_source` is then
-  `hyphy-hky85` and `branch_lengths_estimated` true. The reference prunes tree tips that have no
-  sequence before the fit; this server does not, so such a tree is refused with HyPhy's message.
-  An alignment with no tree at all is refused by the per-pillar tools (as the CLI would) and
-  accepted by `hyphaeon_analyze`, which builds a neighbour-joining tree first (`tree_source: "nj"`).
-- `use_tn93` / `no_tree` (TN93 distances in place of a tree) is not implemented in-process and is
-  refused for the native tools with an input-class error; `hyphaeon_phenotype` passes it to the CLI.
+- **The tree (D22).** No tool requires one. A tree with branch lengths is used as it is; no tree,
+  a tree without usable branch lengths, or `use_tn93` / `no_tree` all take the library's tree-free
+  path, and `provenance.preprocessing` records `tree_source: "tn93"` with
+  `tree_free.reason` (`requested` | `no_tree` | `no_branch_lengths`) and `tn93_saturated_pairs`.
+  A tree TEXT that will not parse is still an error — a bad tree is not a missing one. The
+  Python reference REFUSES a missing tree and silently substitutes 1e-3 defaults for a tree with
+  no lengths, so `reference_command` spells `--use-tn93` whenever the run was tree-free: it is the
+  only invocation that reproduces it.
+- `seed` feeds the sector permutation null and the phenotype permulations. The reference draws
+  with PCG64, the library with xoshiro256**: the same seed gives a different sequence, so
+  `p_perm`, `p_assoc_perm` and `gene_p_value_perm` agree statistically (within
+  3 sqrt(p(1-p)/B)), never bit for bit. At B = 1,000 each side carries about +/-0.03 absolute;
+  every epistasis result carries `permutations: {n, seed, rng, note}` saying so, and every
+  phenotype result carries `sector_permutations` and `permulations`.
+- **Permulations need a phylogeny.** `hyphaeon phenotype --permulations N` draws Brownian-motion
+  permutations of the trait over the tree's covariance; a tree-free run has no tree to draw from,
+  so they are skipped and `permulations: {requested, ran: 0, reason: "tree-free", detail}` says
+  so — the association p-values are then the parametric t-test ones, which is what
+  `hyphaeon phenotype --use-tn93` reports too. The display-only neighbour-joining tree is
+  deliberately not substituted: a null built from the same distances as the alternative shares
+  its error.
+- `phenotype_file` is the table's TEXT, not a path. The library does no I/O and a remote server
+  must never read its own disk on a caller's behalf; over stdio a `file://` URL is read for you
+  and its basename becomes the `--phenotype-file` name in `reference_command`.
 - `min_patch_consec` is recorded but only its default (3) is applied; a different value adds an
   `OPTION_NOT_APPLIED` warning.
-- `cpu` is accepted and recorded; the native engine is CPU-only.
+- `cpu` is accepted and recorded; the engine is CPU-only.
 - The busted head's fields (`selection_probability`, `predicted_gene_lrt`,
   `synonymous_rate_variation`, `omega_3`, `proportion_*`) come from one seeded draw of a head the
   reference loads unseeded; `provenance.neural_head.deterministic_upstream` is false. The
@@ -208,32 +223,31 @@ work 2.5e9, 10,000 permutations, 2,000 permulations, a 10-minute timeout per run
 
 Every error is `{error, kind, hint?}` with `isError: true`. `kind` is `"input"` (your alignment,
 tree or options; the hint says what to change) or `"server"` (the model files, onnxruntime-node,
-the Python environment, or the hardware; nothing in your data will change it). This is the split
+or the hardware; nothing in your data will change it). This is the split
 datamonkey-js-server's `axomeme_scan` uses.
 
 ### Provenance
 
-Every result carries a `provenance` block (PLAN.md 3.5). Native results: `surface`
-(`mcp-stdio` / `mcp-http`), `engine: "in-process"`, `hyphaeon_js_version`, `reference_version`,
-`model_version`, `model_variant`, `artifact_sha256` and `artifact_verified`, `is_surrogate`,
-`surrogate_for`, `seed`, `mds_sign`, `elapsed_sec`, the `options` as submitted, `preprocessing`
-(taxa in and used, duplicates collapsed, PD subsampling, `tree_source`, `branch_lengths_estimated`,
+Every result carries a `provenance` block (PLAN.md 3.5): `surface` (`mcp-stdio` / `mcp-http`),
+`engine: "in-process"`, `hyphaeon_js_version`, `reference_version`, `model_version`,
+`model_variant`, `artifact_sha256` and `artifact_verified`, `is_surrogate`, `surrogate_for`,
+`seed`, `mds_sign`, `elapsed_sec`, the `options` as submitted, `preprocessing` (taxa in and used,
+duplicates collapsed, PD subsampling, `tree_source`, `tree_free`, `tn93_saturated_pairs`,
 `distance_rescaled`, unknown-codon fraction, in-frame stops), the library's diagnostics as
 `warnings`, and `reference_command`, the `hyphaeon <cmd>` line that reproduces the run (a report
-carries `reference_commands`, one per section, and `variant_source`). Bridged results keep
-`surface: "python-reference"`, `reference_version`, `elapsed_sec` and the `command` that ran (temp
-paths redacted).
+carries `reference_commands`, one per section, plus `variant_source` and, when a trait was given,
+`phenotype_source`).
 
 ## Resources and prompts
 
 | Resource | Content |
 |---|---|
 | `hyphaeon://models` | The manifest as the runtime validates it (variants, hashes, graph paths, caps), or the reference's known variants when absent |
-| `hyphaeon://methods/requirements` | Per-pillar inputs, options with CLI defaults, result keys, caps, the report's sections, which pillars run in-process, and every validation code |
+| `hyphaeon://methods/requirements` | Per-pillar inputs (`requires_tree: false` everywhere, with the tree-free rule spelled out), options with CLI defaults, result keys, caps, the report's sections, and every validation code |
 | `hyphaeon://caveats` | `caveats.json`: model card facts and the `model_eval` calibration, concordance and invariance tables, keyed by `model_version` |
 | `hyphaeon://examples/{name}` | Bundled examples (`Smc6.fasta`, `Smc6.nwk`, `bat_oas1.fasta`, ...) |
 | `hyphaeon://gallery` | The prebaked gallery index (`web/static/gallery/index.json`, written by `web/scripts/prebake-gallery.mjs` at build) |
-| `hyphaeon://gallery/{name}` | The prebaked site-selection record for a bundled example, by id (`bat_oas1`, `Smc6`, ...), when present |
+| `hyphaeon://gallery/{name}` | The prebaked report for a bundled example, by id (`bat_oas1`, `Smc6`, ...), when present |
 | `hyphaeon://report/{id}` | A finished `hyphaeon_analyze` report by its job id; lists the completed reports; a running id reads as an error naming the sections that are ready |
 
 Prompts: `choose-analysis`, `interpret-report` (the whole report: the order of its sections,
@@ -246,24 +260,25 @@ per pillar — `interpret-meme`, `interpret-busted`, `interpret-epistasis`, `int
 The library's (js/src/diagnostics.js, thresholds and sources in its header): `FORMAT_UNKNOWN`,
 `ALPHABET_U_TO_T`, `NON_ACGT_FRACTION`, `LENGTH_NOT_MULTIPLE_OF_3`, `IN_FRAME_STOPS`,
 `FRAMESHIFT_SUSPECTED`, `UNKNOWN_CODON_FRACTION`, `UNEQUAL_LENGTHS`, `DUPLICATE_SEQUENCES`,
-`TOO_FEW_TAXA`, `TAXA_OVER_CAP`, `TAXA_OVER_LIMIT`, `TREE_MISSING`, `TREE_UNPARSEABLE`,
-`TAXA_NOT_IN_TREE`, `TIPS_NOT_IN_ALIGNMENT`, `BRANCH_LENGTHS_MISSING`, `NEGATIVE_BRANCH_LENGTHS`,
-`DISTANCE_RESCALED`, `SHALLOW_TREE`, `DEEP_LARGE_TREE`, `STAR_LIKE`, `COST_ESTIMATE`. This
-server's: `CAPS_EXCEEDED` (refuse), `RUN_MODE` (info), `TN93_UNAVAILABLE` (refuse). Severity is
-`info`, `warn` or `refuse`; `ok` is false when anything refuses. The same library codes are the
-contract for the web app's diagnostics panel and the Node server's `/validate`.
+`TOO_FEW_TAXA`, `TAXA_OVER_CAP`, `TAXA_OVER_LIMIT`, `TREE_UNPARSEABLE`, `TREE_FREE_TN93`,
+`TAXA_NOT_IN_TREE`, `TIPS_NOT_IN_ALIGNMENT`, `NEGATIVE_BRANCH_LENGTHS`, `DISTANCE_RESCALED`,
+`TN93_SATURATED_PAIRS`, `SHALLOW_TREE`, `DEEP_LARGE_TREE`, `STAR_LIKE`, `COST_ESTIMATE`. This
+server's: `CAPS_EXCEEDED` (refuse) and `RUN_MODE` (info). Severity is `info`, `warn` or `refuse`;
+`ok` is false when anything refuses. **D22 retired three codes**: `TREE_MISSING` and
+`BRANCH_LENGTHS_MISSING` became `TREE_FREE_TN93` at *info* level with the reason, and
+`TN93_UNAVAILABLE` is gone because the library computes the distances. The same library codes are
+the contract for the web app's diagnostics panel and the Node server's `/validate`.
 
 ## Known gaps
 
-- Phenotype association runs through the Python reference until its port lands (Phase 3); the
-  report offers it and does not run it.
-- The reference prunes tree tips without a sequence before HyPhy fits branch lengths; the
-  library has no Newick writer, so this server refuses such a tree instead.
-- TN93 tree-free mode is not available in-process.
-- `--mds-sign lapack` cannot run in-process (the library has no `mdsSign` option on its loader,
-  HyphAeon/PHASE2A.md gap 9); use the Python CLI for pre-convention numbers.
+- The neural BUSTED head is one seeded draw of a head the reference loads unseeded; only the
+  statistical fields of `hyphaeon_busted` are reproducible upstream.
+- `--mds-sign lapack` cannot run in-process (the library computes the canonical convention only);
+  use the Python reference for pre-convention numbers.
 - `p_perm` at the report's default B = 1,000 is a noisy estimate on every surface; the parity
   class was written for B = 10,000.
+- Permulations are skipped in tree-free mode, by design (see the seam above). A dataset with no
+  tree therefore has no `gene_p_value_perm` and no `p_assoc_perm` column.
 
 ## Programmatic use
 
@@ -282,26 +297,29 @@ mountHttp(app, { path: "/mcp", authenticate });
 `mountHttp(app, {path, authenticate, engine, serverOptions, allowedHosts, allowedOrigins,
 enableJsonResponse, logger})` returns `{sessions, engine, authenticated, path, close}`. One
 shared in-process engine serves every session; `file://` inputs are disabled over HTTP.
+`@veg/hyphaeon-mcp/engine` also exports `runPhenotypeSection`, which fills a finished report's
+phenotype section out of the pass it already ran — the Node server uses it so a REST `analyze`
+job and `hyphaeon_analyze` cannot disagree.
 
 ## Development
 
 ```
 npm install                              # at the repository root
 cd mcp
-HYPHAEON_PY_BIN=/path/to/venv/bin/hyphaeon HYPHAEON_WEIGHTS=/path/to/model.safetensors HF_HUB_OFFLINE=1 npm test
-HYPHAEON_MCP_SKIP_BRIDGE=1 npm test      # without Python
+HYPHAEON_MODELS_DIR=/path/to/HyphAeon/models npm test
 ```
 
 The tests use the SDK's `InMemoryTransport`: the tool registry, validation on the bundled
-examples through the library's `diagnose` (camelid's `BRANCH_LENGTHS_MISSING`, bat_oas1's
-`DISTANCE_RESCALED`), job paging with a stubbed engine and a stubbed bridge (including a stubbed
-report, streamed section by section), the resources including the gallery and the report
-template, `hyphaeon_meme` on bat_oas1 and `hyphaeon_busted` on Smc6 in-process against the
-reference's e2e fixtures with the MDS coordinates compared exactly, `hyphaeon_epistasis` on Smc6
-against `hyphaeon epistasis` (B = 1,000, seed 42), `hyphaeon_dms` against `fixtures/dms` and the
-Smc6 sector-site table, `hyphaeon_analyze` on bat_oas1 (every non-phenotype section, the sites
-section equal to `hyphaeon meme`, paging by section, the report resource, streaming while
-running, the NJ path), `hyphaeon_evaluate` against the evaluation fixtures, `mountHttp` with and
-without `authenticate` over a real HTTP round trip, and, when the reference is installed,
-`hyphaeon_phenotype` on bat_oas1 through the bridge and the p/q float32 check against
-`hyphaeon.stats`. Model-running tests use `HYPHAEON_MCP_THREADS` (default 4 in the tests).
+examples through the library's `diagnose` (camelid's `TREE_FREE_TN93`, bat_oas1's
+`DISTANCE_RESCALED`), job paging with a stubbed engine (including a stubbed report, streamed
+section by section), the resources including the gallery and the report template,
+`hyphaeon_meme` on bat_oas1 and `hyphaeon_busted` on Smc6 against the reference's e2e fixtures
+with the MDS coordinates compared exactly, **`hyphaeon_meme` on camelid with no tree against
+`hyphaeon meme --use-tn93`**, `hyphaeon_epistasis` on Smc6 against `hyphaeon epistasis`
+(B = 1,000, seed 42), `hyphaeon_dms` against `fixtures/dms` and the Smc6 sector-site table,
+**`hyphaeon_phenotype` on RHO against `hyphaeon phenotype`** with the permulation gate checked
+both ways, `hyphaeon_analyze` on bat_oas1 (every section, the sites section equal to
+`hyphaeon meme`, paging by section, the report resource, streaming while running, the tree-free
+path and the phenotype trait block), `hyphaeon_evaluate` against the evaluation fixtures, and
+`mountHttp` with and without `authenticate` over a real HTTP round trip. Model-running tests use
+`HYPHAEON_MCP_THREADS` (default 4 in the tests). Nothing in the suite starts a subprocess.

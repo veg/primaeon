@@ -37,8 +37,59 @@ export type Variant = 'general' | 'viral';
 /** Tier-calling modes (runtime/src/callModes.js; PLAN.md D11). `pvalue` is the CLI's q-based call. */
 export type CallMode = 'percentile' | 'zscore' | 'pvalue';
 
-/** Where the tree the model used came from (PLAN.md §3.5 `tree_source`). */
-export type TreeSource = 'user' | 'embedded' | 'hyphy-hky85' | 'nj' | 'tn93';
+/**
+ * Where the DISTANCES the model used came from (PLAN.md §3.5 `tree_source`, D22).
+ *
+ *   user      a tree file with branch lengths, used as is
+ *   embedded  a tree with branch lengths carried in the alignment, used as is
+ *   tn93      tree-free: no tree, or a tree without usable branch lengths, so pairwise
+ *             Tamura-Nei 93 distances feed the MDS directly (the reference's `--use-tn93`)
+ *
+ * A neighbour-joining tree built on those same TN93 distances is DISPLAY ONLY (`displayTreeSource`
+ * below); the model never sees it, so it is not a `TreeSource`.
+ *
+ * Records written before D22 carry two further values — a neighbour-joining source and one naming
+ * the WebAssembly branch-length fit that Phase 3 removed. They are not in this union: nothing
+ * produces them any more, and `treeSourceLabel()` renders any unknown string as a legacy
+ * estimated-tree source rather than pretending the value is current.
+ */
+export type TreeSource = 'user' | 'embedded' | 'tn93';
+
+/** Where the tree DRAWN in the report came from: the user's, or the app's NJ tree on TN93 distances. */
+export type DisplayTreeSource = 'user' | 'embedded' | 'nj';
+
+/** One line naming a run's distance source, for the strip, the provenance block and the tree modal. */
+export function treeSourceLabel(source: string | null | undefined): string {
+	switch (source) {
+		case 'user':
+			return 'uploaded tree, used as given';
+		case 'embedded':
+			return 'tree embedded in the alignment, used as given';
+		case 'tn93':
+			return 'tree-free (TN93 distances)';
+		case null:
+		case undefined:
+		case '':
+			return 'not recorded';
+		default:
+			return `estimated tree (${source}; a pre-Phase-3 record)`;
+	}
+}
+
+/** Why a run went tree-free, as the library reports it in `TREE_FREE_TN93.data.reason`. */
+export type TreeFreeReason = 'no_tree' | 'no_branch_lengths' | 'requested';
+
+export const TREE_FREE_REASON_TEXT: Record<TreeFreeReason, string> = {
+	no_tree: 'no tree',
+	no_branch_lengths: 'no branch lengths',
+	requested: 'tree-free requested'
+};
+
+/** "tree-free (TN93) — no branch lengths", the one string the strip and the provenance both print. */
+export function treeFreeLabel(reason: string | null | undefined): string {
+	const text = TREE_FREE_REASON_TEXT[reason as TreeFreeReason];
+	return text ? `tree-free (TN93) — ${text}` : 'tree-free (TN93)';
+}
 
 /** The options a run is submitted with; stored verbatim so the run can be reproduced. */
 export interface RunOptions {
@@ -73,8 +124,12 @@ export interface RunInputs {
 	demo?: string;
 }
 
-/** The six steps of the progress checklist (PLAN.md §4.2: "like axomeme3's, with measured time"). */
-export type StepId = 'parse' | 'tree' | 'branch-lengths' | 'prepare' | 'infer' | 'postprocess';
+/**
+ * The six steps of the Phase 1 progress checklist (PLAN.md §4.2: "like axomeme3's, with measured
+ * time"). `distances` was the branch-length fit until D22 removed it: what is timed there now is
+ * the choice between the tree's patristic distances and tree-free TN93 ones.
+ */
+export type StepId = 'parse' | 'tree' | 'distances' | 'prepare' | 'infer' | 'postprocess';
 
 export type StepStatus = 'pending' | 'active' | 'done' | 'skipped' | 'failed';
 
@@ -294,4 +349,83 @@ export type ReportListing = Omit<ReportRecord, 'sections' | 'inputs'> & {
 export function reportPath(id: string): string {
 	if (id.startsWith('gallery/')) return `/report/${id.replace(/\/+$/, '')}/`;
 	return `/report/local/?id=${encodeURIComponent(id)}`;
+}
+
+// ---- Phase 3: the phenotype request (PLAN.md §4.0 row 8, §4.5 "phenotype") ----------------------
+
+/**
+ * How the reader described the trait. The four cases are the library's three sources
+ * (`resolvePhenotypeVector`: a preset, an inline foreground list or pattern, or a table) with the
+ * app's tree-picking folded into the inline case — clicking tips builds a comma-separated list of
+ * exact names, which is what the reference would have been given on the command line.
+ *
+ * `preset` and `list` are what the panel offers first because they are the two the reference's own
+ * README uses; `csv` carries the CONTENT of the file, because the library does no I/O, plus the
+ * file NAME, because the reference derives the separator and the description from it.
+ */
+export type TraitKind = 'preset' | 'list' | 'csv';
+
+export interface TraitSpec {
+	kind: TraitKind;
+	/** `kind: 'preset'` — a key of the library's PRESETS. */
+	preset?: string;
+	/**
+	 * `kind: 'list'` — the foreground as the CLI takes it: names or patterns separated by commas,
+	 * or by `|` when the string contains no comma. Each pattern is tried as a REGULAR EXPRESSION
+	 * first (phenotype.py:249-256), so `pan*` matches `papAnu`; the panel warns about it.
+	 */
+	foreground?: string;
+	/** `kind: 'csv'` — the table's text and its file name (the name decides TAB vs comma). */
+	phenotypeCsv?: string;
+	phenotypeFile?: string;
+	/** Column names, when the reader overrode the reference's own column guessing. */
+	speciesCol?: string | null;
+	traitCol?: string | null;
+	/** Continuous trait: z-scored by the library rather than split into foreground/background. */
+	continuous?: boolean;
+}
+
+/** The knobs the phenotype run takes beyond the trait itself; every default is the reference's. */
+export interface PhenotypeRunOptions {
+	/** Brownian-motion permulations B for the gene-level empirical p; 0 (and forced 0 tree-free). */
+	permulations: number;
+	/** `hyphaeon phenotype --seed`, default 42. */
+	seed: number;
+	/** BH level for the called sites and the trait-sector input, default 0.05. */
+	alpha: number;
+	/** Sites need this many sequenced taxa to be scored, default 4. */
+	minTaxaPerSite: number;
+}
+
+export const PHENOTYPE_DEFAULTS: PhenotypeRunOptions = {
+	permulations: 0,
+	seed: 42,
+	alpha: 0.05,
+	minTaxaPerSite: 4
+};
+
+/**
+ * The panel's `TraitSpec` as `resolvePhenotypeVector` / `runPhenotype` take it. One function, used
+ * by the panel's live preview on the main thread and by the worker that runs the pillar, so the
+ * trait the reader previewed is character for character the trait the run resolves.
+ *
+ * The three cases ARE the reference's three sources, tried in its own priority order (a table wins
+ * over a preset, which wins over an inline list): only one key group is ever set, so the priority
+ * never comes into play here.
+ */
+export function traitToPhenotypeOptions(trait: TraitSpec): Record<string, unknown> {
+	switch (trait.kind) {
+		case 'preset':
+			return { preset: trait.preset ?? '', continuous: false };
+		case 'list':
+			return { foreground: trait.foreground ?? '', continuous: Boolean(trait.continuous) };
+		case 'csv':
+			return {
+				phenotypeCsv: trait.phenotypeCsv ?? '',
+				phenotypeFile: trait.phenotypeFile ?? 'phenotype.csv',
+				speciesCol: trait.speciesCol ?? null,
+				traitCol: trait.traitCol ?? null,
+				continuous: Boolean(trait.continuous)
+			};
+	}
 }

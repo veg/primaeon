@@ -11,10 +11,18 @@
 	implementation of the table, two places it appears. The strip itself is derived here: counts
 	by severity (handled codes counted as repairs), plus the preprocessing facts the provenance
 	block records (duplicates collapsed, PD cap, tree source, rescaling), which are the "did".
+
+	THE TREE SOURCE IS ALWAYS ON THE STRIP (D22), not only when something was done to it. Whether the
+	model was given a tree's branch lengths or pairwise TN93 distances is the single fact that most
+	changes how the rest of the report should be read, and under D22 it is decided silently by
+	whether the input had usable lengths — so it is stated in the line the reader sees first, with
+	the library's own reason and, when the distances were computed, how many taxon pairs came back
+	at the saturation sentinel.
 -->
 <script lang="ts">
 	import type { DiagnosisSnapshot, ReportRecord } from '$lib/api';
-	import { panelModel } from '$lib/diagnostics/panel';
+	import { treeFreeLabel, treeSourceLabel } from '$lib/api';
+	import { panelModel, saturatedPairs } from '$lib/diagnostics/panel';
 	import BeforeYouRun from '../../routes/analyze/BeforeYouRun.svelte';
 
 	interface Props {
@@ -48,7 +56,7 @@
 		};
 	}
 	const snapshot = $derived(toSnapshot(record.diagnostics));
-	const model = $derived(panelModel(snapshot, true));
+	const model = $derived(panelModel(snapshot));
 	const rows = $derived(model?.rows ?? []);
 	const counts = $derived.by(() => {
 		const c = { refuse: 0, warn: 0, info: 0, handled: 0 };
@@ -59,13 +67,23 @@
 		return c;
 	});
 	const pre = $derived(record.provenance?.preprocessing ?? record.sections.sites?.provenance?.preprocessing ?? null);
+	/** The run's own tree source when it recorded one, else the source the inputs were planned with. */
+	const treeSource = $derived((pre?.tree_source as string | undefined) ?? record.inputs.treeSource);
+	// runtime/src/pipeline.js writes `tree_free: {reason, taxa_order}` (null when a tree was used);
+	// the pre-run diagnosis is the fallback for a record that predates it.
+	const treeFreeReason = $derived(
+		((pre?.tree_free as { reason?: string } | null | undefined)?.reason ?? null) ??
+			(model?.treePlan.kind === 'tree-free' ? model.treePlan.reason : null)
+	);
+	const treeLine = $derived(treeSource === 'tn93' ? treeFreeLabel(treeFreeReason) : treeSourceLabel(treeSource));
+	const saturated = $derived(
+		(typeof pre?.tn93_saturated_pairs === 'number' ? (pre.tn93_saturated_pairs as number) : null) ?? saturatedPairs(snapshot)
+	);
 	const repairs = $derived.by(() => {
 		const out: string[] = [];
 		if (!pre) return out;
 		if (pre.duplicates_collapsed > 0) out.push(`${pre.duplicates_collapsed} duplicate sequence${pre.duplicates_collapsed === 1 ? '' : 's'} collapsed`);
 		if (pre.pd_subsampled) out.push(`Faith's-PD cap to ${pre.taxa_used} taxa`);
-		if (pre.tree_source === 'nj' || pre.tree_source === 'tn93') out.push('neighbour-joining tree built (no tree supplied)');
-		else if (pre.branch_lengths_estimated) out.push('HKY85 branch lengths fitted in HyPhy');
 		if (pre.distance_rescaled) out.push('patristic distances rescaled (max > 10)');
 		if (pre.codons_trimmed > 0) out.push(`${pre.codons_trimmed} trailing nucleotide${pre.codons_trimmed === 1 ? '' : 's'} trimmed`);
 		if (pre.dropped_taxa?.length) out.push(`${pre.dropped_taxa.length} taxa without a tree tip dropped`);
@@ -87,6 +105,10 @@
 			</span>
 		{:else}
 			<span class="muted">No diagnostics stored with this record.</span>
+		{/if}
+		<span class="tree" title="How the model got its distances (PLAN.md D22)">{treeLine}</span>
+		{#if saturated}
+			<span class="badge badge--warn">{saturated.toLocaleString()} saturated pair{saturated === 1 ? '' : 's'}</span>
 		{/if}
 		{#if repairs.length}
 			<span class="repairs">{repairs.join(' · ')}</span>
@@ -158,6 +180,10 @@
 	}
 	.repairs {
 		color: var(--text);
+	}
+	.tree {
+		color: var(--text);
+		font-weight: 600;
 	}
 	.muted {
 		color: var(--text-faint);

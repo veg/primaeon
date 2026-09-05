@@ -14,6 +14,7 @@
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { base } from '$app/paths';
 	import type { ReportRecord } from '$lib/api';
 	import type { LiveJob, LoadedState, ReportSource } from './load';
 	import { SECTION_TITLE, allSectionStatuses, PHASE_LABEL } from './status';
@@ -25,12 +26,13 @@
 	import AttributionPanel from '$lib/viz/AttributionPanel.svelte';
 	import FilterPanel from '$lib/viz/FilterPanel.svelte';
 	import SiteTreeModal from '$lib/viz/SiteTreeModal.svelte';
+	import { displayTree } from './displayTree';
 	import Section from './Section.svelte';
 	import DataStrip from './DataStrip.svelte';
 	import SitesSection from './SitesSection.svelte';
 	import EpistasisSection from './EpistasisSection.svelte';
 	import DmsSection from './DmsSection.svelte';
-	import PhenotypeOffer from './PhenotypeOffer.svelte';
+	import PhenotypeSection from './PhenotypeSection.svelte';
 	import ProvenanceSection from './ProvenanceSection.svelte';
 	import RerunDisclosure from './RerunDisclosure.svelte';
 
@@ -185,8 +187,8 @@
 		{/if}
 	</Section>
 
-	<Section id="phenotype" title={SECTION_TITLE.phenotype} eyebrow="PhyloWAS · hyphaeon phenotype · on demand" status={{ name: 'phenotype', state: 'done', phase: null, reason: null }}>
-		<PhenotypeOffer {record} />
+	<Section id="phenotype" title={SECTION_TITLE.phenotype} eyebrow="PhyloWAS · hyphaeon phenotype · on demand" status={status('phenotype')}>
+		<PhenotypeSection {record} {base} owned={source === 'live' || source === 'local'} onSelect={select} />
 	</Section>
 
 	<Section id="provenance" title="Data and provenance" eyebrow="What produced these numbers, and how to get them again" status={{ name: 'phenotype', state: 'done', phase: null, reason: null }}>
@@ -197,7 +199,13 @@
 </div>
 
 {#if openRow && sitesForView}
-	<SiteTreeModal record={sitesForView} row={openRow} composition={compositionMap?.get(openRow.site) ?? null} onClose={() => (openSite = null)} />
+	<SiteTreeModal
+		record={sitesForView}
+		row={openRow}
+		composition={compositionMap?.get(openRow.site) ?? null}
+		tree={displayTree(record)}
+		onClose={() => (openSite = null)}
+	/>
 {/if}
 
 <style>

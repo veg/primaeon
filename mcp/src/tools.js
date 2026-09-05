@@ -10,8 +10,7 @@
  * datamonkey-js-server lib/mcp/tools.js (register-on-a-McpServer, JSON text results, {error, hint}
  * envelopes with isError, a two-class error taxonomy), rewritten as ESM for Node 22 and with the
  * per-pillar analysis inputs mirroring the Python CLI's options one-to-one (hyphaeon/cli.py at
- * veg/HyphAeon phase-2a; the flag table for the bridged pillar is in src/bridge.js and the
- * runtime mapping in src/engine.js).
+ * veg/HyphAeon phase-3a; the runtime mapping is in src/engine.js).
  *
  * Every per-pillar analysis tool follows the same path:
  *   1. resolve `file://` inputs (stdio only — a remote server must never read its own disk on a
@@ -21,28 +20,34 @@
  *      the model, exactly as in tools.js:590-629, so it must parse the same text;
  *   3. refuse over the hard caps, answer inside the call under the synchronous caps, otherwise
  *      create a job and return its id;
- *   4. run the pillar: hyphaeon_meme, hyphaeon_busted, hyphaeon_epistasis, hyphaeon_dms and
- *      hyphaeon_evaluate IN THIS PROCESS through src/engine.js (runtime/ over onnxruntime-node;
- *      `provenance.surface` is "mcp-stdio" or "mcp-http"); hyphaeon_phenotype — and ONLY
- *      hyphaeon_phenotype — through the Python bridge (src/bridge.js; `provenance.surface` is
- *      "python-reference") until its port lands (PLAN.md 8, phase 3).
+ *   4. run the pillar IN THIS PROCESS through src/engine.js (runtime/ over onnxruntime-node;
+ *      `provenance.surface` is "mcp-stdio" or "mcp-http"). EVERY pillar, phenotype included since
+ *      Phase 3: nothing is shelled out and no Python is involved (PLAN.md 8 phase 3, D16).
+ *
+ * A TREE IS OPTIONAL EVERYWHERE (PLAN.md D22). No tool refuses an alignment for want of a tree
+ * any more. A tree with branch lengths is used as it is; no tree, a tree without usable branch
+ * lengths, or `use_tn93` / `no_tree` takes the library's tree-free path (pairwise TN93 distances
+ * into the MDS, the reference's own `--use-tn93`). Every result records which happened in
+ * `provenance.preprocessing.tree_source` ('user' | 'embedded' | 'tn93') with the reason beside it,
+ * and hyphaeon_validate says so in advance as `TREE_FREE_TN93` (info, not refuse).
  *
  * hyphaeon_analyze is the product (PLAN.md 4.0, D21): the only input is the dataset, and one
  * report fills in — diagnostics, sites, gene, epistasis + sectors, attribution, filter, DMS
- * last (progressive, cancellable, capped), phenotype offered not run. It ALWAYS runs as a job so
- * the report has an id (`hyphaeon://report/{id}`, `get_results section=`), waits inside the call
- * for up to `wait_seconds` (app-side semantics: the report streams, DMS may be minutes), and
- * answers with the whole ReportRecord when it is small enough to inline, else with its summary
- * plus the id; while the job runs, `get_results section=<name>` serves the sections already
- * final and `job_status` lists them.
+ * last (progressive, cancellable, capped), and phenotype when — and only when — the call carries
+ * a `phenotype` trait block, because a trait cannot be guessed. It ALWAYS runs as a job so the
+ * report has an id (`hyphaeon://report/{id}`, `get_results section=`), waits inside the call for
+ * up to `wait_seconds` (app-side semantics: the report streams, DMS may be minutes), and answers
+ * with the whole ReportRecord when it is small enough to inline, else with its summary plus the
+ * id; while the job runs, `get_results section=<name>` serves the sections already final and
+ * `job_status` lists them.
  *
  * Output shaping (`fields`, `top`, `summary_only`, and `section` for reports) is accepted by every
  * analysis tool and by get_results, because an epistasis result for HIV1_RT is 4 MB of JSON and
  * no client wants that in a tool result by default. The ranking keys per collection are in
  * RANKED below and follow Appendix B of PLAN.md.
  *
- * The tool schemas did not change between the bridge and the engine; that was the point of
- * keeping them identical in Phase 0. What changed is who runs, and the provenance says which.
+ * The tool schemas did not change as the pillars moved in-process; that was the point of keeping
+ * them identical from Phase 0. What changed is who runs, and the provenance says so.
  */
 
 import { z } from "zod";
@@ -62,8 +67,7 @@ import {
   classifyRun,
   probeSequences
 } from "./caps.js";
-import { diagnose, hasEmbeddedTree, parseAlignment, NATIVE_ANALYSES, BRIDGED_ANALYSES } from "./validate.js";
-import { BridgeError, pythonBin, referenceVersion, runBridge } from "./bridge.js";
+import { diagnose, parseAlignment, treeSourceFrom, hasEmbeddedTree, NATIVE_ANALYSES } from "./validate.js";
 import { EngineError, createEngine } from "./engine.js";
 import { readManifest } from "./models.js";
 import { REPORT_SECTIONS } from "./resources.js";
@@ -83,7 +87,7 @@ export const TOOL_NAMES = Object.freeze([
   "list_models"
 ]);
 
-export { NATIVE_ANALYSES, BRIDGED_ANALYSES };
+export { NATIVE_ANALYSES };
 
 /** The report's analysis sections (what runEverything fires through onSection). */
 const REPORT_ANALYSIS_SECTIONS = Object.freeze(["sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype"]);
@@ -107,13 +111,6 @@ function fail(kind, error, hint, extra) {
 }
 
 function runFailure(err) {
-  if (err instanceof BridgeError) {
-    const extra = {};
-    if (err.stderr) extra.stderr_tail = err.stderr;
-    if (err.exitCode !== undefined && err.exitCode !== null) extra.exit_code = err.exitCode;
-    if (err.command) extra.command = err.command;
-    return fail(err.kind, err.message, err.hint, extra);
-  }
   if (err instanceof EngineError) {
     return fail(err.kind, err.message, err.hint, err.code ? { code: err.code } : undefined);
   }
@@ -144,16 +141,18 @@ const treeSchema = z
   .max(MAX_ALIGNMENT_CHARS)
   .optional()
   .describe(
-    "Newick or NEXUS tree text (or a `file://` URL over stdio). Optional when the alignment " +
-      "embeds a tree. Tips must match sequence names exactly. A tree without branch lengths gets " +
-      "HKY85 lengths from HyPhy when this server has an estimator (see list_models), else 1e-3 everywhere."
+    "OPTIONAL Newick or NEXUS tree text (or a `file://` URL over stdio); a tree embedded in the " +
+      "alignment is found automatically. Tips must match sequence names exactly. A tree WITH branch " +
+      "lengths is used as it is. With no tree, or a tree without usable branch lengths, HyphAeon " +
+      "uses pairwise TN93 distances instead (the reference's own --use-tn93 path, PLAN.md D22); " +
+      "provenance.preprocessing.tree_source then reads \"tn93\" with the reason."
   );
 
 const tn93Schema = {
   use_tn93: z
     .boolean()
     .optional()
-    .describe("--use-tn93: skip the tree and estimate pairwise distances from the sequences with TN93 (the bridged phenotype tool only; refused in-process)."),
+    .describe("--use-tn93: ignore the tree and take pairwise TN93 distances from the sequences, even when a usable tree was supplied."),
   no_tree: z.boolean().optional().describe("--no-tree: same as use_tn93 (the CLI offers both spellings).")
 };
 
@@ -185,6 +184,41 @@ const mdsSignSchema = z
   );
 
 const seedSchema = z.number().int().min(0).max(2 ** 53 - 1).optional().describe("--seed: seed of the Monte Carlo permutation null (default 42).");
+
+/** The trait, as `hyphaeon phenotype` defines it and as hyphaeon_analyze's `phenotype` block takes it. */
+const phenotypeTraitSchema = {
+  preset: z
+    .enum(["echolocation", "marine", "fossorial", "hibernation", "longevity", "high_altitude", "cardenolide", "dim_light"])
+    .optional()
+    .describe("--preset: a curated foreground set keyed to TOGA-style species codes."),
+  foreground: z
+    .string()
+    .max(65536)
+    .optional()
+    .describe(
+      "--foreground: comma-separated taxon names, or a regex. Note the reference's own quirk: each " +
+        "pattern is tried as a REGEX first and only then as a glob, so `pan*` matches `papAnu`."
+    ),
+  background: z.string().max(65536).optional().describe("--background: accepted for CLI parity and never read (phenotype.py:125); everything unmatched is background."),
+  trait_col: z.string().max(256).optional().describe("--trait-col: trait column name in phenotype_file (default: the first column that is not the species column)."),
+  species_col: z.string().max(256).optional().describe("--species-col: species column name in phenotype_file (default: the first species-like column, else column 0)."),
+  continuous: z.boolean().optional().describe("--continuous: treat trait values as continuous (z-scored over all taxa)."),
+  permulations: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_PERMULATIONS)
+    .optional()
+    .describe(
+      "--permulations: Brownian-motion permulations of the TRAIT for the gene-level empirical p " +
+        "(default 0, cap " + MAX_PERMULATIONS + "). They need a phylogeny: a tree-free run skips them and says so in `permulations.reason`."
+    ),
+  n_permutations: z.number().int().min(0).max(MAX_PERMUTATIONS).optional().describe("--n-permutations: random K-site subset permutations for TRAIT SECTOR significance (default 10000)."),
+  alpha: z.number().min(0).max(1).optional().describe("--alpha: FDR threshold for significant sites (default 0.05)."),
+  min_taxa: z.number().int().min(1).optional().describe("--min-taxa: minimum sequenced taxa per site (default 4)."),
+  max_perm_p: z.number().min(0).max(1).optional().describe("--max-perm-p: keep only trait sectors with p_perm at or below this."),
+  seed: seedSchema
+};
 
 const shapingSchema = {
   fields: z
@@ -241,7 +275,7 @@ const RANKED_SECTIONS = {
   attribution: {},
   filter: { artifacts_masked: null },
   dms: { plasticity: "intrinsic_plasticity" },
-  phenotype: {},
+  phenotype: { sites: "score", trait_sectors: "spectral_coherence", coselection_pairs: "cesi" },
   diagnostics: { warnings: null },
   provenance: {},
   timings: {}
@@ -402,7 +436,10 @@ export function summariseReport(report) {
   if (s.attribution) out.attribution = { attribution_enabled: s.attribution.attribution_enabled, attributed_sites: count(s.attribution.attributions) };
   if (s.filter) out.filter = { filter_enabled: s.filter.filter_enabled, artifacts_masked: count(s.filter.artifacts_masked), cleaned: s.filter.cleaned != null };
   if (s.dms) out.dms = summarise("dms", s.dms);
-  out.phenotype = s.phenotype == null ? "on demand: run hyphaeon_phenotype with a trait (preset, foreground or phenotype_file)" : "present";
+  out.phenotype =
+    s.phenotype == null
+      ? "on demand: re-run hyphaeon_analyze with a `phenotype` trait block, or call hyphaeon_phenotype (preset, foreground or phenotype_file)"
+      : summarise("phenotype", s.phenotype);
   return out;
 }
 
@@ -470,6 +507,8 @@ function sectionSummary(name, payload) {
       return summarise("epistasis", payload);
     case "dms":
       return summarise("dms", payload);
+    case "phenotype":
+      return summarise("phenotype", payload);
     case "attribution":
       return { attribution_enabled: payload && payload.attribution_enabled, attributed_sites: count(payload && payload.attributions) };
     case "filter":
@@ -504,7 +543,7 @@ export function shapeReport(report, { section, fields, top, summary_only } = {},
         available: false,
         note:
           section === "phenotype"
-            ? "Phenotype association needs a trait and is not run by hyphaeon_analyze; run hyphaeon_phenotype with preset, foreground or phenotype_file."
+            ? "Phenotype association needs a trait, so this report did not run it. Re-run hyphaeon_analyze with a `phenotype` block, or call hyphaeon_phenotype with preset, foreground or phenotype_file."
             : "This section is not in the report" + (meta.status === "running" ? " yet" : "") + ".",
         provenance
       });
@@ -586,7 +625,7 @@ export function shapeReport(report, { section, fields, top, summary_only } = {},
 
 /**
  * Inline text as given, or the contents of a `file://` URL over stdio, with the file's basename
- * (the document's `alignment` / `tree` label; the bridge scrubbed temp paths to the same).
+ * (the document's `alignment` / `tree` label).
  *
  * @returns {Promise<{text: string|undefined, name: string|null}>}
  */
@@ -656,8 +695,7 @@ function sizeRun(analysis, inputs, args) {
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
  * @param {object} deps
  * @param {ReturnType<import("./jobs.js").createJobStore>} deps.jobs
- * @param {(req: object) => Promise<{result: object, provenance: object}>} [deps.bridge]  defaults to runBridge (phenotype)
- * @param {ReturnType<typeof createEngine>} [deps.engine]  defaults to createEngine({env, logger}) (native pillars + analyze)
+ * @param {ReturnType<typeof createEngine>} [deps.engine]  defaults to createEngine({env, logger}) (every pillar + analyze)
  * @param {"mcp-stdio"|"mcp-http"} [deps.surface]  what native results claim; default "mcp-stdio"
  * @param {boolean} [deps.allowFilePaths]  accept file:// inputs (stdio only)
  * @param {object} [deps.env]
@@ -669,7 +707,6 @@ export function registerTools(server, deps) {
   const allowFilePaths = !!deps.allowFilePaths;
   const surface = deps.surface || "mcp-stdio";
   const logger = deps.logger || { info() {}, warn() {}, error() {}, debug() {} };
-  const bridge = deps.bridge || ((req) => runBridge(Object.assign({ env }, req)));
   const engine = deps.engine || createEngine({ env, logger });
 
   // ── hyphaeon_validate ───────────────────────────────────────────────────
@@ -681,8 +718,10 @@ export function registerTools(server, deps) {
         "Pre-flight diagnostics without running the model, from the same library the analyses " +
         "use: format sniff (FASTA/NEXUS/PHYLIP), alphabet, reading frame, internal stops, " +
         "unknown-codon fraction, duplicate haplotypes, tree/alignment name matching (three tiers), " +
-        "branch-length regime (missing, negative, max patristic > 10 rescaled), depth regime " +
-        "(shallow, deep+large, star-like), a cost estimate, and this server's caps and run mode. " +
+        "the tree decision (a tree with branch lengths is used as it is; otherwise TREE_FREE_TN93 " +
+        "at INFO level with the reason — a missing tree is NOT a refusal), negative lengths, the " +
+        "max patristic > 10 rescale, TN93 saturation, depth regime (shallow, deep+large, " +
+        "star-like), a cost estimate, and this server's caps and run mode. " +
         "Returns {ok, warnings:[{code, severity, message, data}], summary}; severity is info | " +
         "warn | refuse, and ok is false when anything refuses. Codes are stable across surfaces. " +
         "hyphaeon_analyze runs these same checks itself and records them in the report.",
@@ -704,14 +743,12 @@ export function registerTools(server, deps) {
       try {
         const alignment = (await resolveText(args.alignment, "alignment", allowFilePaths)).text;
         const tree = (await resolveText(args.tree, "tree", allowFilePaths)).text;
-        const capabilities = await engine.capabilities();
         const out = diagnose({
           alignment,
           tree,
           analysis: args.analysis || "meme",
           use_tn93: !!args.use_tn93,
-          max_species: args.max_species,
-          capabilities
+          max_species: args.max_species
         });
         logger.info("hyphaeon_validate ok=" + out.ok + " sequences=" + out.summary.sequence_count + " codons=" + out.summary.codons);
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], isError: !out.ok };
@@ -731,10 +768,12 @@ export function registerTools(server, deps) {
         "tree, and everything that needs no further input runs IN THIS PROCESS over one loaded alignment " +
         "and one forward pass, into one report whose sections arrive in order: diagnostics with automatic " +
         "repairs (U->T, trailing-codon trim, duplicate collapse, Faith's-PD taxon cap, variant from tree " +
-        "depth, HKY85 branch lengths from HyPhy when missing, an NJ tree when there is none) -> sites " +
-        "(MEME surrogate) -> gene (BUSTED surrogate) -> epistasis network + sectors -> attribution on " +
-        "called sites -> alignment-artifact filter -> digital DMS last (progressive, cancellable, capped by " +
-        "work; when partial the report says so) -> phenotype: null (needs a trait; run hyphaeon_phenotype). " +
+        "depth, and the D22 tree decision: a tree with branch lengths is used as it is, otherwise pairwise " +
+        "TN93 distances) -> sites (MEME surrogate) -> gene (BUSTED surrogate) -> epistasis network + " +
+        "sectors -> attribution on called sites -> alignment-artifact filter -> digital DMS last " +
+        "(progressive, cancellable, capped by work; when partial the report says so) -> phenotype, which " +
+        "runs ONLY when you pass a `phenotype` trait block (preset, foreground or phenotype_file) and is " +
+        "otherwise null, because a trait cannot be guessed; with one it costs no extra forward pass. " +
         "Returns a ReportRecord {schema_version: 2, kind: \"report\", id, inputs, options, diagnostics, " +
         "sections{sites, gene, epistasis, attribution, filter, dms, phenotype}, provenance, timings}. The run " +
         "is always a job: the call waits up to wait_seconds (default " + ANALYZE_WAIT_DEFAULT_SEC + ") and " +
@@ -768,6 +807,21 @@ export function registerTools(server, deps) {
             .optional()
             .describe("Forward-pass budget for the DMS section as 19 x sites x taxa^2 (default the runtime's 2.5e9); above it the section is skipped and says so."),
           mds_sign: mdsSignSchema,
+          use_tn93: tn93Schema.use_tn93,
+          no_tree: tn93Schema.no_tree,
+          phenotype: z
+            .object(phenotypeTraitSchema)
+            .optional()
+            .describe(
+              "The trait, if you have one: give `preset`, `foreground` (a comma list or a regex) or a " +
+                "`phenotype_file` and the report's phenotype section runs from the SAME forward pass the " +
+                "other sections used. Omit it and the section stays null and the report offers it."
+            ),
+          phenotype_file: z
+            .string()
+            .max(MAX_ALIGNMENT_CHARS)
+            .optional()
+            .describe("--phenotype-file: CSV/TSV TEXT mapping taxa to trait values (a `file://` URL over stdio), for the phenotype section."),
           wait_seconds: z
             .number()
             .min(0)
@@ -785,7 +839,7 @@ export function registerTools(server, deps) {
       try {
         const inputs = {};
         const names = {};
-        for (const k of ["alignment", "tree"]) {
+        for (const k of ["alignment", "tree", "phenotype_file"]) {
           if (args[k] !== undefined) {
             const r = await resolveText(args[k], k, allowFilePaths);
             inputs[k] = r.text;
@@ -817,6 +871,7 @@ export function registerTools(server, deps) {
             return engine.analyze({
               alignment: inputs.alignment,
               tree: inputs.tree,
+              phenotype_file: inputs.phenotype_file,
               options,
               names,
               signal,
@@ -893,7 +948,6 @@ export function registerTools(server, deps) {
 
   // ── per-pillar analysis tools ───────────────────────────────────────────
   function registerAnalysis(name, analysis, config) {
-    const native = NATIVE_ANALYSES.includes(analysis);
     server.registerTool(
       name,
       {
@@ -917,32 +971,22 @@ export function registerTools(server, deps) {
           let mode = args.run_async ? "job" : "sync";
           let size = null;
 
+          let treeSource = null;
           if (analysis !== "evaluate") {
             const sized = sizeRun(analysis, inputs, args);
             if (sized.error) return sized.error;
             size = sized.size;
             mode = sized.mode;
 
-            const wantsTn93 = !!(options.use_tn93 || options.no_tree);
-            if (wantsTn93 && native) {
-              const caps = await engine.capabilities();
-              if (!caps.tn93) {
-                return fail(
-                  "input",
-                  "use_tn93 / no_tree asks for TN93 pairwise distances instead of a tree; " + name +
-                    " runs in-process here and has no TN93 implementation.",
-                  "Supply `tree` (Newick with branch lengths, or a topology for HyPhy to fit)."
-                );
-              }
-            }
-            if (!wantsTn93 && !(inputs.tree && inputs.tree.trim()) && !hasEmbeddedTree(inputs.alignment)) {
-              return fail(
-                "input",
-                "HyphAeon needs a phylogenetic tree and none was supplied or embedded in the alignment.",
-                "Pass `tree` (Newick with branch lengths)" +
-                  (native ? ", or use hyphaeon_analyze, which builds a neighbour-joining tree when there is none." : ", or set `use_tn93: true` to estimate distances from the sequences.")
-              );
-            }
+            // D22: no tool refuses for want of a tree. What is decided here is only what to SAY
+            // the run will do; the library makes the decision again on the real load.
+            const treeGiven = !!(inputs.tree && inputs.tree.trim());
+            treeSource = treeSourceFrom({
+              treeGiven,
+              embedded: !treeGiven && hasEmbeddedTree(inputs.alignment),
+              treeFree: !!(options.use_tn93 || options.no_tree)
+            });
+
             if (analysis === "phenotype") {
               const hasTrait = !!(options.preset || options.foreground || inputs.phenotype_file);
               if (!hasTrait) {
@@ -956,15 +1000,12 @@ export function registerTools(server, deps) {
           }
 
           logger.info(
-            name + " engine=" + (native ? "in-process" : "python-reference") + " mode=" + mode +
+            name + " engine=in-process mode=" + mode + (treeSource ? " tree=" + treeSource : "") +
               (size ? " sequences=" + size.sequences + " codons=" + size.codons + " work=" + size.work.toExponential(2) : "")
           );
 
           const request = Object.assign({ analysis, options, names }, inputs);
-          const execute = (signal, report) =>
-            native
-              ? engine.run(Object.assign({ signal, surface, progress: report }, request))
-              : bridge(Object.assign({ signal }, request));
+          const execute = (signal, report) => engine.run(Object.assign({ signal, surface, progress: report }, request));
 
           if (mode === "job") {
             const job = jobs.create({
@@ -975,7 +1016,8 @@ export function registerTools(server, deps) {
             logger.info(name + " queued job_id=" + job.job_id);
             return ok(
               Object.assign(job, {
-                engine: native ? "in-process" : "python-reference",
+                engine: "in-process",
+                tree_source: treeSource,
                 reason: args.run_async
                   ? "run_async requested."
                   : "Above the synchronous caps (" + MAX_SYNC_CODONS + " codon sites, work " + MAX_SYNC_WORK.toExponential(1) + ").",
@@ -985,9 +1027,11 @@ export function registerTools(server, deps) {
           }
 
           const { result, provenance } = await execute(undefined, undefined);
-          if (!native) provenance.surface = "python-reference";
           const shaped = shapeResult(analysis, result, provenance, args);
-          logger.info(name + " done in " + provenance.elapsed_sec + "s (surface " + provenance.surface + ")");
+          logger.info(
+            name + " done in " + provenance.elapsed_sec + "s (surface " + provenance.surface +
+              ", tree_source " + ((provenance.preprocessing && provenance.preprocessing.tree_source) || "n/a") + ")"
+          );
           return ok(shaped);
         } catch (err) {
           if (err instanceof ToolInputError) return fail("input", err.message, err.hint);
@@ -1126,35 +1170,28 @@ export function registerTools(server, deps) {
     title: "HyphAeon phenotype association (PhyloWAS)",
     description:
       "Directional trait association per site from the model's root-to-leaf attention: " +
-      "foreground vs background attention, association rho, t-test p, BH q, a PARS signature, " +
-      "trait sectors with permutation p, and an optional gene-level Brownian-motion permulation " +
-      "p (permulations > 0). Define the trait with preset, a foreground list/regex, or a CSV. " +
-      "This is the ONE tool that still runs through the Python reference bridge " +
-      "(provenance.surface python-reference; needs `hyphaeon` on PATH or HYPHAEON_PY_BIN) until " +
-      "its port lands in Phase 3; the report (hyphaeon_analyze) offers it, not runs it. Options " +
-      "mirror `hyphaeon phenotype`.",
+      "foreground vs background attention, association rho, a t-test p, ACAT against the site LRT, " +
+      "BH q, a PARS signature, trait co-selection pairs, trait sectors with a permutation p, and — " +
+      "with `permulations` > 0 and a real tree — a gene-level Brownian-motion permulation p. Define " +
+      "the trait with `preset`, a `foreground` list/regex, or a `phenotype_file` CSV; check " +
+      "`phenotype_meta.foreground_count` before believing anything (a preset that matched two taxa " +
+      "is not a test). Runs IN THIS PROCESS since Phase 3 (the library's port of phenotype.py, " +
+      "HyphAeon/PHASE3A.md; provenance.surface mcp-stdio / mcp-http) — there is no Python anywhere " +
+      "any more. A tree is OPTIONAL: without one the run uses TN93 distances, and permulations are " +
+      "then skipped with a reason (`permulations.reason: \"tree-free\"`) because a Brownian null " +
+      "needs a phylogeny. This is a confounded, convergence-style test on a SURROGATE's attention: " +
+      "report the foreground/background frequencies beside rho, never q alone. Options mirror " +
+      "`hyphaeon phenotype`. hyphaeon_analyze takes the same trait as its `phenotype` block and " +
+      "computes the section from the report's own forward pass.",
     inputSchema: Object.assign(
       { alignment: alignmentSchema, tree: treeSchema },
       tn93Schema,
+      { model_variant: variantSchema },
+      phenotypeTraitSchema,
       {
-        model_variant: variantSchema,
-        preset: z
-          .enum(["echolocation", "marine", "fossorial", "hibernation", "longevity", "high_altitude", "cardenolide", "dim_light"])
-          .optional()
-          .describe("--preset: a curated foreground set keyed to TOGA-style species codes."),
-        foreground: z.string().max(65536).optional().describe("--foreground: comma-separated taxon names or a regex for the foreground."),
-        background: z.string().max(65536).optional().describe("--background: explicit background/control taxa (default: everything else)."),
-        phenotype_file: z.string().max(MAX_ALIGNMENT_CHARS).optional().describe("--phenotype-file: CSV/TSV text mapping taxa to trait values (file:// over stdio)."),
-        trait_col: z.string().max(256).optional().describe("--trait-col: trait column name in phenotype_file."),
-        species_col: z.string().max(256).optional().describe("--species-col: species column name in phenotype_file."),
-        continuous: z.boolean().optional().describe("--continuous: treat trait values as continuous."),
-        permulations: z.number().int().min(0).max(MAX_PERMULATIONS).optional().describe("--permulations: Brownian-motion permulations for the gene-level empirical p (default 0, cap " + MAX_PERMULATIONS + ")."),
-        n_permutations: z.number().int().min(0).max(MAX_PERMUTATIONS).optional().describe("--n-permutations: permutations for trait-sector significance (default 10000)."),
-        alpha: z.number().min(0).max(1).optional().describe("--alpha: FDR threshold for significant sites (default 0.05)."),
-        min_taxa: z.number().int().min(1).optional().describe("--min-taxa: minimum sequenced taxa per site (default 4)."),
-        max_perm_p: z.number().min(0).max(1).optional().describe("--max-perm-p: keep only trait sectors with p_perm at or below this."),
-        seed: z.number().int().min(0).optional().describe("--seed: seed for the permulations and the trait-sector null (default 42)."),
-        mds_sign: z.enum(["canonical", "lapack"]).optional().describe("--mds-sign: MDS eigenvector sign convention passed to the CLI (default canonical)."),
+        phenotype_file: z.string().max(MAX_ALIGNMENT_CHARS).optional().describe("--phenotype-file: CSV/TSV TEXT mapping taxa to trait values (a `file://` URL over stdio); the text, never a server-side path."),
+        max_species: maxSpeciesSchema,
+        mds_sign: mdsSignSchema,
         cpu: cpuSchema
       }
     )
@@ -1207,8 +1244,9 @@ export function registerTools(server, deps) {
         "analysis tools accept. For a hyphaeon_analyze report, `section` returns one section of the " +
         "ReportRecord (diagnostics, sites, gene, epistasis, attribution, filter, dms, phenotype, " +
         "provenance, timings) — also while the report is still running, once that section is final. " +
-        "Results carry a provenance block whose `surface` says whether the numbers came from this " +
-        "process (mcp-stdio / mcp-http) or the Python reference bridge (hyphaeon_phenotype).",
+        "Results carry a provenance block whose `surface` (mcp-stdio / mcp-http) names the process " +
+        "that computed them and whose `preprocessing.tree_source` says whether the distances came " +
+        "from the tree or from TN93.",
       inputSchema: Object.assign({ job_id: z.string().regex(/^[0-9a-f]{32}$/).describe("The job_id to fetch.") }, shapingSchema, { section: sectionSchema }),
       annotations: { readOnlyHint: true }
     },
@@ -1258,7 +1296,7 @@ export function registerTools(server, deps) {
       const stored = jobs.result(args.job_id);
       const storedSurface = stored.provenance && stored.provenance.surface;
       const provenance = Object.assign({}, stored.provenance, {
-        surface: NATIVE_ANALYSES.includes(job.analysis) ? storedSurface || surface : "python-reference",
+        surface: storedSurface || surface,
         job_id: job.job_id
       });
       const shaped = shapeResult(job.analysis, stored.result, provenance, args);
@@ -1292,29 +1330,20 @@ export function registerTools(server, deps) {
       title: "Available HyphAeon model variants and engines",
       description:
         "The weights manifest (model_version, variants with training regime and artifact hashes, " +
-        "taxon caps, ONNX contract, PRNG) read through the runtime's manifest reader, which " +
-        "pillars run in this process (`native`: models directory, onnxruntime-node, branch-length " +
-        "estimator, which runtime entry points are present) and which run through the Python " +
-        "reference bridge (`bridge`: phenotype; executable, version, reachability).",
+        "taxon caps, ONNX contract, PRNG) read through the runtime's manifest reader, and the " +
+        "engine's status: the models directory, onnxruntime-node, the MDS sign convention, how " +
+        "distances are obtained without a usable tree (TN93 in the library), and which runtime " +
+        "entry points this build provides. Every pillar runs in this process; nothing is shelled " +
+        "out and no Python is involved.",
       inputSchema: {},
       annotations: { readOnlyHint: true }
     },
     async () => {
       const manifest = await readManifest(env);
-      const bin = pythonBin(env);
-      const reference_version = await referenceVersion(env);
       const native = await engine.status();
       return ok(
         Object.assign(manifest, {
-          native: Object.assign({ surface, analyses: [...NATIVE_ANALYSES] }, native),
-          bridge: {
-            surface: "python-reference",
-            analyses: [...BRIDGED_ANALYSES],
-            executable: bin,
-            reference_version,
-            reachable: reference_version !== "unknown",
-            weights: env.HYPHAEON_WEIGHTS ? "HYPHAEON_WEIGHTS (local file)" : "package default or Hugging Face cache"
-          }
+          native: Object.assign({ surface, analyses: [...NATIVE_ANALYSES] }, native)
         })
       );
     }

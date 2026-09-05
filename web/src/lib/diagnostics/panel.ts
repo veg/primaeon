@@ -4,12 +4,21 @@
  *
  * WHY THIS FILE EXISTS. PLAN.md §4.3 has one implementation of the checks (`@veg/hyphaeon-js`
  * `diagnose`, run in `workers/prep.worker.ts`) and this file holds the APP semantics layered on
- * its codes: which severities block the Run button, which "refusals" the runtime can recover from
- * (a missing tree is a refusal to the library and an NJ step to the app, PLAN.md D5/D6), the
- * variant suggestion (§2 hard truth 6: "a visible choice with an automatic suggestion from tree
- * depth"), the regime line, and the browser cost estimate. The library's `diagnostics.js` header
- * says "reports and never decides"; deciding is done here, in one place, so the page and the
- * tests read the same rules.
+ * its codes: which severities block the Run button, the variant suggestion (§2 hard truth 6: "a
+ * visible choice with an automatic suggestion from tree depth"), the regime line, and the browser
+ * cost estimate. The library's `diagnostics.js` header says "reports and never decides"; deciding
+ * is done here, in one place, so the page and the tests read the same rules.
+ *
+ * D22 SIMPLIFIED THE TREE RULES TO ONE ROW. Until Phase 3 the app had to recover from two of the
+ * library's own findings — a missing tree (which the library refused) and a tree without branch
+ * lengths (which it warned about) — by running a second WebAssembly engine to build or fit one,
+ * so `RECOVERABLE_CODES` existed and `treePlan` had five outcomes. Both codes are gone from the
+ * library. A tree with branch lengths is used as given; anything else is `TREE_FREE_TN93`, an
+ * INFO row carrying `data.reason` (`no_tree` | `no_branch_lengths` | `requested`), and the
+ * pairwise TN93 distances go into the MDS in its place. Nothing about the tree blocks a run any
+ * more, and the only new refusal is `TN93_SATURATED_PAIRS` at refuse level, which the library
+ * emits when the distance matrix could not be computed at all (the point where the reference
+ * itself raises).
  *
  * COST ESTIMATE. `diagnose` reports `predictedSeconds = L·N²/4.7e6` calibrated on CPU torch
  * (its header). The browser path is ORT WASM, where three terms matter at the sizes people
@@ -39,7 +48,7 @@
  * ~7.8 MB of graph; the panel says so.
  */
 
-import type { DiagnosisSnapshot, DiagnosticWarning, Variant } from '$lib/api';
+import type { DiagnosisSnapshot, DiagnosticWarning, TreeFreeReason, Variant } from '$lib/api';
 
 /** Fixed per-run session cost in the browser; see the header. */
 export const WASM_SESSION_SECONDS = 0.15;
@@ -55,23 +64,28 @@ export type Severity = DiagnosticWarning['severity'];
 /** Display order: refusals first, then warnings, then information. */
 export const SEVERITY_RANK: Record<Severity, number> = { refuse: 0, warn: 1, info: 2 };
 
-/** Codes the library refuses on but the app recovers from by estimating a tree (PLAN.md D5/D6). */
-export const RECOVERABLE_CODES = new Set(['TREE_MISSING', 'BRANCH_LENGTHS_MISSING']);
-
 /** Codes that are bookkeeping rather than something to read as a warning. */
 export const QUIET_CODES = new Set(['COST_ESTIMATE']);
 
+/** The library's tree-free code and its saturation companion, named once (D22). */
+export const TREE_FREE_CODE = 'TREE_FREE_TN93';
+export const TN93_SATURATED_CODE = 'TN93_SATURATED_PAIRS';
+
+/**
+ * What the run will do about the tree. `tree-free` is not a failure state: it is the reference's
+ * own `--use-tn93` path, made the default whenever a usable tree is absent (D22), and the
+ * manuscript measures it against tree-based at rho = 0.9997.
+ */
 export type TreePlan =
 	| { kind: 'user' }
 	| { kind: 'embedded' }
-	| { kind: 'estimate-branch-lengths'; via: 'hyphy-hky85' }
-	| { kind: 'infer'; via: 'nj' }
+	| { kind: 'tree-free'; reason: TreeFreeReason; treeKeptForDisplay: boolean }
 	| { kind: 'none' };
 
 export interface PanelRow {
 	code: string;
 	severity: Severity;
-	/** True when the runtime will handle it (a recoverable refusal shown as a step, not a block). */
+	/** True when the finding is something the pipeline does rather than something to fix. */
 	handled: boolean;
 	message: string;
 	data: Record<string, unknown>;
@@ -91,10 +105,12 @@ export interface CostEstimate {
 
 export interface PanelModel {
 	rows: PanelRow[];
-	/** Refusals the runtime cannot recover from; non-empty blocks Run. */
+	/** Refusals; non-empty blocks Run. */
 	blocking: PanelRow[];
 	canRun: boolean;
 	treePlan: TreePlan;
+	/** Pairs that came back at the TN93 saturation sentinel, when the run is tree-free. */
+	saturatedPairs: number | null;
 	suggestedVariant: Variant;
 	suggestionReason: string | null;
 	regime: string | null;
@@ -102,25 +118,45 @@ export interface PanelModel {
 }
 
 /**
- * The tree the run will use, from the diagnosis: a user file, an embedded TREES block, a user
- * tree that needs branch lengths, or nothing (then NJ). `treeToolsAvailable` is whether the HyPhy
- * WASM worker can be reached; without it a missing tree stays a refusal.
+ * The tree the run will use, from the diagnosis alone: the file as given, the alignment's embedded
+ * tree as given, or tree-free TN93 distances with the library's own reason for it.
+ *
+ * `TREE_FREE_TN93.data.treeKeptForDisplay` says whether a topology was supplied at all (a tree
+ * without branch lengths). Either way the runtime draws a neighbour-joining tree built from the
+ * TN93 distances (runtime/src/pipeline.js displayTreeFor, nj.js) — a topology without lengths is
+ * not drawable as a phylogram — and the model sees distances, never any topology.
  */
-export function treePlan(diagnosis: DiagnosisSnapshot | null, treeToolsAvailable: boolean): TreePlan {
+export function treePlan(diagnosis: DiagnosisSnapshot | null): TreePlan {
 	if (!diagnosis) return { kind: 'none' };
-	const codes = new Set(diagnosis.warnings.map((w) => w.code));
+	const treeFree = diagnosis.warnings.find((w) => w.code === TREE_FREE_CODE);
+	if (treeFree) {
+		const reason = treeFree.data?.reason;
+		return {
+			kind: 'tree-free',
+			reason: (reason === 'no_tree' || reason === 'no_branch_lengths' || reason === 'requested' ? reason : 'no_tree') as TreeFreeReason,
+			treeKeptForDisplay: Boolean(treeFree.data?.treeKeptForDisplay)
+		};
+	}
 	const source = diagnosis.summary.treeSource as string | null | undefined;
-	if (codes.has('TREE_MISSING')) {
-		return treeToolsAvailable ? { kind: 'infer', via: 'nj' } : { kind: 'none' };
-	}
-	if (codes.has('BRANCH_LENGTHS_MISSING')) {
-		return treeToolsAvailable
-			? { kind: 'estimate-branch-lengths', via: 'hyphy-hky85' }
-			: { kind: source === 'embedded' ? 'embedded' : 'user' };
-	}
 	if (source === 'embedded') return { kind: 'embedded' };
 	if (source === 'user') return { kind: 'user' };
 	return { kind: 'none' };
+}
+
+/** The tree source a run with this diagnosis will record (api.ts `TreeSource`). */
+export function plannedTreeSource(diagnosis: DiagnosisSnapshot | null): 'user' | 'embedded' | 'tn93' | null {
+	const plan = treePlan(diagnosis);
+	if (plan.kind === 'tree-free') return 'tn93';
+	if (plan.kind === 'user' || plan.kind === 'embedded') return plan.kind;
+	return null;
+}
+
+/** How many pairs came back at the saturation sentinel, when the library counted them. */
+export function saturatedPairs(diagnosis: DiagnosisSnapshot | null): number | null {
+	const row = diagnosis?.warnings.find((w) => w.code === TN93_SATURATED_CODE);
+	if (!row) return null;
+	const n = row.data?.pairs;
+	return typeof n === 'number' ? n : null;
 }
 
 /** The variant the diagnostics suggest: `viral` on a shallow tree (SHALLOW_TREE), else `general`. */
@@ -170,8 +206,7 @@ export function regimeLine(diagnosis: DiagnosisSnapshot | null): string | null {
 	else if (codes.has('DEEP_LARGE_TREE')) label = 'deep tree with many taxa, elevated false-positive rate';
 	else if (codes.has('SHALLOW_TREE')) label = 'shallow tree, the viral variant’s regime';
 	else if (typeof s.medianPatristic === 'number') label = 'cross-species regime';
-	else if (codes.has('TREE_MISSING') || codes.has('BRANCH_LENGTHS_MISSING'))
-		label = 'depth unknown until the tree is estimated';
+	else if (codes.has(TREE_FREE_CODE)) label = 'depth judged on TN93 distances';
 	else label = 'regime not assessed';
 	return parts.length ? `${parts.join(' · ')} — ${label}` : label;
 }
@@ -216,18 +251,18 @@ export function formatSeconds(seconds: number): string {
  * Everything the panel renders. Rows are sorted refusals → warnings → info; recoverable
  * refusals are marked `handled` when the tree tools exist and do not block.
  */
-export function panelModel(diagnosis: DiagnosisSnapshot | null, treeToolsAvailable: boolean): PanelModel {
-	const plan = treePlan(diagnosis, treeToolsAvailable);
+export function panelModel(diagnosis: DiagnosisSnapshot | null): PanelModel {
+	const plan = treePlan(diagnosis);
 	const suggestion = suggestVariant(diagnosis);
 	const rows: PanelRow[] = [];
 	if (diagnosis) {
 		for (const w of diagnosis.warnings) {
 			if (QUIET_CODES.has(w.code)) continue;
-			const recoverable = RECOVERABLE_CODES.has(w.code) && Boolean(w.data?.recoverable);
 			rows.push({
 				code: w.code,
 				severity: w.severity,
-				handled: recoverable && treeToolsAvailable,
+				// Tree-free mode is a thing the pipeline DOES, not a finding to act on.
+				handled: w.code === TREE_FREE_CODE,
 				message: w.message,
 				data: w.data ?? {}
 			});
@@ -240,11 +275,30 @@ export function panelModel(diagnosis: DiagnosisSnapshot | null, treeToolsAvailab
 		blocking,
 		canRun: diagnosis !== null && blocking.length === 0,
 		treePlan: plan,
+		saturatedPairs: saturatedPairs(diagnosis),
 		suggestedVariant: suggestion.variant,
 		suggestionReason: suggestion.reason,
 		regime: regimeLine(diagnosis),
 		cost: costEstimate(diagnosis)
 	};
+}
+
+/** One sentence for the panel and the report strip, from a TreePlan. */
+export function treePlanText(plan: TreePlan): string {
+	switch (plan.kind) {
+		case 'user':
+			return 'Uploaded tree with branch lengths, used as given.';
+		case 'embedded':
+			return 'Tree embedded in the alignment, with branch lengths, used as given.';
+		case 'tree-free':
+			return plan.reason === 'no_branch_lengths'
+				? `Tree-free: the tree has no usable branch lengths, so pairwise TN93 distances feed the MDS instead${plan.treeKeptForDisplay ? '; the report draws a neighbour-joining tree built from those distances, and the model sees neither topology' : ''}.`
+				: plan.reason === 'requested'
+					? 'Tree-free: TN93 distances were requested, so they feed the MDS directly.'
+					: 'Tree-free: no tree was supplied, so pairwise TN93 distances feed the MDS and a neighbour-joining tree is built from them for display only.';
+		default:
+			return 'No usable tree yet.';
+	}
 }
 
 /** The prescreen's four statuses (runtime/src/prescreen/hitLikelihood.js). */

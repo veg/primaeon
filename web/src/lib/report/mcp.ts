@@ -20,9 +20,13 @@ export function analyzeToolArguments(record: ReportRecord): Record<string, unkno
 	const args: Record<string, unknown> = {
 		alignment: `file:///path/to/${record.inputs.alignmentName || 'alignment.fasta'}`
 	};
-	const src = record.inputs.treeSource;
-	if (src === 'user' || src === 'hyphy-hky85') args.tree = `file:///path/to/${record.inputs.treeName ?? 'tree.nwk'}`;
-	else if (src === 'nj' || src === 'tn93') args.use_tn93 = true;
+	// D22: a tree with branch lengths is named as a file; a tree-free run is `--use-tn93`, which is
+	// the reference's own flag for the path it took. A record from before Phase 3 may carry an
+	// estimated-tree source, whose tree was a download of that report and not an input here, so it
+	// reproduces as tree-free too.
+	const src = record.inputs.treeSource as string;
+	if (src === 'user') args.tree = `file:///path/to/${record.inputs.treeName ?? 'tree.nwk'}`;
+	else if (src !== 'embedded') args.use_tn93 = true;
 	args.model_variant = o.variant;
 	args.max_species = o.maxSpecies;
 	if (o.referenceSequence) args.reference_sequence = o.referenceSequence;

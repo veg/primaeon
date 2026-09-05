@@ -17,6 +17,11 @@
  * its DMS stage is what the report caps by work budget at run time (PLAN.md 4.0 row 7), not what
  * refuses the upload; a dataset above the DMS cap still gets a report without a DMS section.
  *
+ * A TREE IS OPTIONAL (PLAN.md D22). A missing tree, or a tree with no usable branch lengths, is
+ * `TREE_FREE_TN93` at INFO level, not a refusal: the run takes pairwise TN93 distances instead.
+ * Nothing here asks whether the server can estimate branch lengths, because nothing can and
+ * nothing needs to.
+ *
  * The response shape follows the MCP tool's: `{ok, warnings:[{code, severity, message, data}],
  * summary}` with the summary keys in snake_case as the CLI prints them.
  */
@@ -60,6 +65,13 @@ export function hasEmbeddedTree(text) {
   }
 }
 
+/** 'user' | 'embedded' | 'tn93': what the run will record as `preprocessing.tree_source`. */
+export function treeSourceFor({ treeGiven, embedded, treeFree }) {
+  if (treeFree) return "tn93";
+  if (treeGiven) return "user";
+  return embedded ? "embedded" : "tn93";
+}
+
 function snakeSummary(s) {
   const out = {};
   for (const [k, v] of Object.entries(s || {})) out[k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase())] = v;
@@ -96,42 +108,28 @@ export function sizeCheck(analysis, alignment) {
 /**
  * The validate endpoint's body.
  *
- * @param {{alignment: string, tree?: string, analysis?: string, max_species?: number, capabilities?: {hyphy?: boolean}}} input
+ * @param {{alignment: string, tree?: string, analysis?: string, use_tn93?: boolean, max_species?: number}} input
  */
-export function validate({ alignment, tree, analysis = "analyze", max_species, capabilities = {} }) {
+export function validate({ alignment, tree, analysis = "analyze", use_tn93 = false, max_species }) {
   const treeGiven = typeof tree === "string" && tree.trim().length > 0;
   const maxSpecies = Number.isInteger(max_species) && max_species >= 2 ? Math.min(max_species, TAXON_CAP) : TAXON_CAP;
   const lib = libraryDiagnose({
     alignmentText: typeof alignment === "string" ? alignment : "",
     treeText: treeGiven ? tree : null,
     maxSpecies,
-    taxaLimit: MAX_TAXA
+    taxaLimit: MAX_TAXA,
+    useTn93: !!use_tn93
   });
 
-  const warnings = [];
-  for (const w of lib.warnings) {
-    if (w.code === "BRANCH_LENGTHS_MISSING") {
-      const estimator = capabilities.hyphy ? "hyphy-hky85" : null;
-      warnings.push(
-        Object.assign({}, w, {
-          message:
-            w.message +
-            (estimator
-              ? " This server will estimate HKY85 branch lengths with HyPhy before scoring (tree_source \"hyphy-hky85\")."
-              : " This server has no HyPhy driver: supply a tree with branch lengths."),
-          data: Object.assign({}, w.data, { estimator })
-        })
-      );
-      continue;
-    }
-    warnings.push(w);
-  }
+  const warnings = [...lib.warnings];
+  const treeFree = warnings.find((w) => w.code === "TREE_FREE_TN93") || null;
 
   const summary = Object.assign(snakeSummary(lib.summary), {
     analysis,
     surface: "node-server",
     engine: "in-process",
-    branch_lengths_missing: lib.warnings.some((w) => w.code === "BRANCH_LENGTHS_MISSING"),
+    tree_source: treeSourceFor({ treeGiven, embedded: !treeGiven && hasEmbeddedTree(alignment), treeFree: treeFree !== null }),
+    tree_free: treeFree ? treeFree.data.reason : null,
     distance_rescaled: lib.warnings.some((w) => w.code === "DISTANCE_RESCALED"),
     work: 0,
     mode: null,

@@ -47,12 +47,12 @@ export const PILLARS: readonly Pillar[] = [
 		title: 'Diagnostics and repairs',
 		command: 'report step 1 · diagnose() from @veg/hyphaeon-js',
 		needs: 'none',
-		cost: 'milliseconds; a few seconds when HyPhy fits branch lengths or builds a tree',
+		cost: 'milliseconds; a second or two more when the pairwise TN93 distance matrix has to be computed',
 		computed:
-			'One set of checks runs before the model on every surface (browser, MCP, server) and produces the same warning codes: format sniff and embedded tree, U read as T, the non-ACGT fraction, length modulo 3 with in-frame stops and a frameshift heuristic, the unknown-codon fraction, unequal lengths, identical sequences, taxa below three or above the cap, tree-to-alignment name matching in three tiers, missing or negative or saturated branch lengths, a maximum patristic distance above 10, the depth regime, and a cost estimate. Repairs are automatic and recorded: trailing codons trimmed, duplicate haplotypes collapsed with their tips, Faith’s-PD subsampling above the taxon cap, the variant chosen from median patristic depth, HKY85 branch lengths fitted by HyPhy in WebAssembly when the tree has none, and a neighbour-joining tree built when there is no tree at all. The only blocking outcomes are refuse-level: fewer than three taxa, a pervasive frameshift, an unparseable file, or alignment taxa with no tip in the tree.',
+			'One set of checks runs before the model on every surface (browser, MCP, server) and produces the same warning codes: format sniff and embedded tree, U read as T, the non-ACGT fraction, length modulo 3 with in-frame stops and a frameshift heuristic, the unknown-codon fraction, unequal lengths, identical sequences, taxa below three or above the cap, tree-to-alignment name matching in three tiers, missing or negative or saturated branch lengths, a maximum patristic distance above 10, the depth regime, and a cost estimate. Repairs are automatic and recorded: trailing codons trimmed, duplicate haplotypes collapsed with their tips, Faith’s-PD subsampling above the taxon cap, and the variant chosen from median patristic depth. The tree is not repaired at all: one with branch lengths is used as given, and one without — or none — puts the run in tree-free mode, where pairwise TN93 distances feed the embedding directly (the TREE_FREE_TN93 note carries the reason, and TN93_SATURATED_PAIRS counts the pairs too divergent to estimate). The only blocking outcomes are refuse-level: fewer than three taxa, a pervasive frameshift, an unparseable file, alignment taxa with no tip in a tree that IS being used, or a distance matrix that cannot be computed at all.',
 		fields: ['warnings[].code', 'warnings[].severity', 'provenance.preprocessing', 'provenance.model_variant'],
 		validated:
-			'The library’s diagnose() is the same code in the browser worker, the MCP’s hyphaeon_validate and the server’s /validate, so the codes cannot drift between surfaces. HyPhy 2.5.98 in WebAssembly reproduces the native HKY85 fit of camelid’s tree to a maximum patristic difference of 3.7e-4 over 22,366 pairs. Everything applied to your data is shown in the strip at the top of the report and can be changed under “Re-run with”.',
+			'The library’s diagnose() is the same code in the browser worker, the MCP’s hyphaeon_validate and the server’s /validate, so the codes cannot drift between surfaces. The tree-free distances are the reference’s own: the ported TN93 matrix is bit-identical to the Python package’s on every bundled example, and the MDS coordinates that follow agree to 7.8e-8 without any sign allowance. Everything applied to your data is shown in the strip at the top of the report and can be changed under “Re-run with”.',
 		real: null
 	},
 	{
@@ -159,13 +159,24 @@ export const PILLARS: readonly Pillar[] = [
 		title: 'Phenotype association',
 		command: 'hyphaeon phenotype',
 		needs: 'lrt + mean_root_attns',
-		cost: 'seconds; on demand, because it needs a trait',
-		status: 'Offered on the report; runs when you mark foreground taxa or paste a trait list. The JavaScript port is Phase 2b; the MCP bridges this pillar to the Python reference today.',
+		cost: 'seconds; on demand, because it needs a trait, and it runs on the model the report already loaded',
+		status:
+			'Runs in the browser. Describe the trait on the report — a curated preset that matches these taxa, tips clicked on the tree, a pasted list or pattern, or a trait table — and the pillar runs beside the other sections. There is no Python behind it on any surface.',
 		computed:
-			'The trait vector comes from a preset (echolocation, marine, fossorial, hibernation, and others), an inline foreground list or pattern with optional background controls, or a CSV or TSV with a species and a trait column, binary or continuous. Attribution vectors are computed as for epistasis; each site’s directional association with the trait is scored on the unit hypersphere, given an exact p-value scaled by the number of sequenced taxa at the site (at least 4), Benjamini–Hochberg q at α = 0.05, and summarised as a PARS signature of reference and derived residues with foreground and background frequencies. Trait sectors reuse the sector miner and its K-subset null with the same seed. With permulations > 0, gene-level empirical p-values come from Brownian-motion permulations of the trait on the tree.',
-		fields: ['sites[].association_rho', 'sites[].score', 'sites[].p_value', 'sites[].q_value', 'compact_pars_signature', 'trait_sectors', 'gene_p_value_perm'],
+			'The trait vector comes from one of three sources, in the reference’s own priority order: a table (CSV or TSV, a species column and a trait column, binary or continuous), a curated preset (echolocation, marine, fossorial, hibernation, longevity, high altitude, cardenolide resistance, dim light), or an inline foreground list — where each entry is tried as a regular expression first and only then as a glob. Attribution vectors over taxa are computed exactly as for epistasis, from the same attention and the same non-consensus indicator, and each site’s attribution row is correlated with the trait vector: ρ on the unit hypersphere, a Student-t p on N−2 degrees of freedom, and a combined p that is the Cauchy combination of that and the site’s own LRT p, with Benjamini–Hochberg q over the combined column. score = √max(0, LRT) × max(0, ρ) orders the table, and the first fifteen sites clearing ρ ≥ 0.40 and score ≥ 0.50 become the PARS signature of reference and derived residues with their foreground and background frequencies. Gene-level: spectral energy ‖A·ŷ‖, its ratio to the Frobenius norm, and a length-adjusted extreme-value p for the largest association against a null of standard error 1/√max(10, N). The called sites (q ≤ α with ρ > 0) go through the same sector miner as the epistasis pillar, at its looser trait gates. With permulations > 0 and a tree with branch lengths, Brownian-motion permulations of the trait give a second, empirical gene p and replace the parametric association p; without such a tree they are skipped and said to be skipped.',
+		fields: [
+			'sites[].association_rho',
+			'sites[].score',
+			'sites[].p_value',
+			'sites[].q_value',
+			'compact_pars_signature',
+			'p_evd_length_adjusted',
+			'norm_spectral_ratio',
+			'trait_sectors',
+			'gene_p_value_perm'
+		],
 		validated:
-			'Fixtures for resolve_phenotype_vector (15 cases), compute_phylogenetic_covariance (3) and generate_permulations (3) exist from the reference and are the acceptance tests for the port when it lands.',
+			'Against run_phenotype_association on RHO with the README marine foreground, on the model’s own captured attention: the 21 record keys identical and in order, 145 site rows in the same score order, every string, count, frequency column and both attention means bit-identical, and the model-dependent columns (attribution norm, ρ, its p-values, score and q) within 1e-6 — the residuals all trace to one float32 BLAS reduction that no JavaScript summation reproduces. The one trait sector matches in membership, coherence, null moments and PARS string. resolve_phenotype_vector (15 cases), compute_phylogenetic_covariance (3) and generate_permulations (3) have their own fixtures; the permulation draws are checked statistically, as the plan’s classes require.',
 		real: {
 			label: 'Contrast-FEL on Datamonkey',
 			href: 'https://www.datamonkey.org/contrast-fel',

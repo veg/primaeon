@@ -20,12 +20,16 @@
  *
  * THE EXAMPLES come from web/src/lib/gallery/examples.json (the README table, shared with the
  * landing page). RHO is NEXUS with its tree embedded and is run with treeText null, as
- * `hyphaeon meme -a RHO.fasta` is. camelid.nwk and HIV1_RT.nwk carry no branch lengths, where
- * dataset.py:601-611 shells out to HyPhy's HKY85 fit; here that fit is HyPhy WASM 2.5.98 under
- * Node through runtime/src/hyphy (the same driver the browser's tree worker uses), run BEFORE
- * `runEverything` the way web/src/lib/analyze/run.ts runs it before inference, and the fitted tree
- * is what the orchestrator is given (`treeSource: 'hyphy-hky85'`). Which happened is written to
- * the index as `branch_length_method`, so nobody reads a default-length result as an estimated one.
+ * `hyphaeon meme -a RHO.fasta` is. camelid.nwk and HIV1_RT.nwk carry no branch lengths, and since
+ * D22 nothing is fitted for them here: the tree file is handed to `runEverything` exactly as a
+ * user's upload would be, and the runtime takes the library's tree-free path — pairwise TN93
+ * distances straight into the MDS (`dataset.py:493-571`, the reference's own `--use-tn93`), with a
+ * neighbour-joining tree on those distances kept for display only. HyPhy WASM, which used to fit
+ * HKY85 lengths at this point, is gone from the product. What the runtime decided is read back off
+ * its own provenance (`preprocessing.tree_source`, `preprocessing.tree_free`) and written to the
+ * index as `tree_free` and `branch_length_method: 'tn93'`, so nobody reads a tree-free result as a
+ * tree-based one. Those two examples are therefore comparable against the CLI's `--use-tn93`
+ * fixtures (fixtures/e2e/meme_camelid_tn93.json), not against its tree-based ones.
  *
  * OPTIONS ARE THE APP'S DEFAULTS, on purpose (the report's "Re-run with…" starts from them):
  * variant `general` (D10), taxon cap 256 (manifest `default_taxon_cap`), duplicate pruning on,
@@ -66,7 +70,7 @@
  * FRESHNESS. The full bake takes minutes (the DMS on the two 256-taxon examples dominates), and
  * `npm run build` must not pay that when nothing changed. Each entry records a `stamp`: sha256 over
  * the inputs, the graph hashes, the options, the library version, every source file under
- * runtime/src (the orchestrator, the pipelines, the HyPhy driver) and this script's version. A
+ * runtime/src (the orchestrator, the pipelines, the NJ display tree) and this script's version. A
  * matching stamp with the result file present is reused. HYPHAEON_PREBAKE=force (or --force)
  * rebakes everything; HYPHAEON_PREBAKE=skip writes nothing (a CI job without onnxruntime-node
  * bindings keeps the committed index); `--only <id>` restricts to one example. A machine where
@@ -94,7 +98,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // -----------------------------------------------------------------------------------------------
 
 /** Bump when the record or index shape written here changes; part of every entry's stamp. */
-const SCRIPT_VERSION = 5;
+const SCRIPT_VERSION = 6;
 /** Must equal `schema_version` in web/src/lib/gallery/types.ts `GalleryIndex`. */
 const INDEX_SCHEMA_VERSION = 3;
 /** The orchestrator contract's ReportRecord version. */
@@ -112,6 +116,8 @@ const examplesDir = join(engineDir, 'examples');
 
 const MODE = (process.env.HYPHAEON_PREBAKE ?? '').toLowerCase(); // '', 'skip', 'force'
 const SURFACE = 'node-server';
+/** D22, in the prebake stamp: what this script does with a tree, so a policy change forces a rebake. */
+const TREE_POLICY = 'D22: tree used as given; no usable branch lengths -> library tree-free TN93';
 const NOTE = 'prebaked at build';
 
 /**
@@ -247,7 +253,7 @@ function sourceFiles(dir) {
 
 /**
  * Hash of every runtime source the baked numbers depend on: the orchestrator, the pipelines, the
- * session loaders, the HyPhy driver and its HBL scripts. When any changes, a stamp mismatch
+ * session loaders, the display-only neighbour joining (nj.js). When any changes, a stamp mismatch
  * rebakes; when only a page changes, nothing is rerun.
  */
 function runtimeSourcesHash() {
@@ -561,7 +567,7 @@ function alignmentBlock(lib, report, alignmentText) {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Runtime glue: models, the orchestrator, the HyPhy fit
+// Runtime glue: models, the orchestrator
 // -----------------------------------------------------------------------------------------------
 
 /** Where the graphs are: what copy-assets vendored into static/, else the engine checkout. */
@@ -591,50 +597,6 @@ async function loadOrchestrator(runtime) {
 }
 
 /**
- * HyPhy WASM under Node (runtime/src/hyphy/index.js `createHyPhy`), created lazily on the first
- * tree without branch lengths so the three examples with lengths never pay the ~5 MB load.
- * `fit(alignmentText, treeText)` runs axomeme3's HKY85 script (the model dataset.py:224-287 runs
- * through native HyPhy) and returns the fitted Newick.
- */
-function lazyHyPhy() {
-	let modPromise = null;
-	let handle = null;
-	return {
-		async fit(alignmentText, treeText, label) {
-			modPromise ??= import('@veg/hyphaeon-runtime/hyphy');
-			const mod = await modPromise;
-			if (!handle) {
-				const t0 = performance.now();
-				handle = await mod.createHyPhy();
-				log('hyphy', `HyPhy WASM ${handle.version} loaded in ${secs(performance.now() - t0)}`);
-			}
-			const t0 = performance.now();
-			log(label, 'tree has no branch lengths; fitting HKY85 in HyPhy WASM');
-			const r = await handle.estimateBranchLengths(alignmentText, treeText);
-			const fitted = r.result.trim();
-			const elapsedSec = (performance.now() - t0) / 1000;
-			log(label, `branch lengths fitted in ${elapsedSec.toFixed(1)} s`);
-			return {
-				treeText: fitted.endsWith(';') ? fitted : `${fitted};`,
-				elapsedSec,
-				hyphy: mod.HYPHY_VERSION_STRING ?? `HyPhy WASM ${handle.version}`
-			};
-		},
-		spec: '@veg/hyphaeon-runtime/hyphy#createHyPhy'
-	};
-}
-
-/** Whether a Newick text needs branch lengths fitted (dataset.py's `needs_branch_lengths` rule). */
-function treeNeedsLengths(lib, treeText) {
-	if (!treeText) return false;
-	try {
-		return lib.needsBranchLengths(lib.readNewick(treeText));
-	} catch {
-		return false;
-	}
-}
-
-/**
  * The gallery record: the orchestrator's report, serialised, with the api.ts `ReportRecord`
  * envelope written beside it and the two page affordances filled in (see the header).
  */
@@ -654,18 +616,6 @@ function makeRecord(d, inputs, report, meta) {
 		provenance.note ??= NOTE;
 		provenance.preprocessing = { ...(provenance.preprocessing ?? {}) };
 		if (meta.branchLengthMethod) provenance.preprocessing.branch_length_method = meta.branchLengthMethod;
-		if (meta.estimation) {
-			// The fit ran here, before the orchestrator saw the tree, so the runtime could only
-			// record what it was given; the record says how the lengths were obtained.
-			provenance.preprocessing.tree_source = 'hyphy-hky85';
-			provenance.preprocessing.branch_lengths_estimated = true;
-			provenance.preprocessing.branch_length_estimation = {
-				by: 'prebake-gallery',
-				method: 'hyphy-hky85',
-				hyphy: meta.estimation.hyphy,
-				elapsed_sec: Number(meta.estimation.elapsedSec.toFixed(3))
-			};
-		}
 	}
 	return {
 		...report,
@@ -806,7 +756,6 @@ async function main() {
 	);
 
 	const lib = await import('@veg/hyphaeon-js');
-	const hyphy = lazyHyPhy();
 	const libVersion = sessions.libraryVersion ?? libraryVersion();
 	const sourcesHash = runtimeSourcesHash();
 	const options = resolveOptions(runtime);
@@ -843,7 +792,7 @@ async function main() {
 				options,
 				library: libVersion,
 				runtime: sourcesHash,
-				estimator: hyphy.spec
+				tree_policy: TREE_POLICY
 			})
 		);
 		const resultFile = `${d.id}.json`;
@@ -857,23 +806,13 @@ async function main() {
 		log(d.id, `running everything on ${d.paper.taxa} × ${d.paper.codons} (cap ${options.maxSpecies}, ${options.variant}, seed ${options.seed}, B ${options.permutations}, DMS budget ${options.dms.workBudget ?? 'runtime default'})…`);
 		const t0 = performance.now();
 
-		// The tree the orchestrator is given: the file's, or HyPhy's fit of it (see the header).
-		let treeGiven = treeText;
-		let treeSource = treeText === null ? 'embedded' : 'user';
-		let estimation = null;
-		try {
-			if (treeNeedsLengths(lib, treeText)) {
-				estimation = await hyphy.fit(alignmentText, treeText, d.id);
-				treeGiven = estimation.treeText;
-				treeSource = 'hyphy-hky85';
-			}
-		} catch (err) {
-			const elapsed = (performance.now() - t0) / 1000;
-			warn(d.id, `branch-length fit failed after ${elapsed.toFixed(1)} s: ${err?.stack ?? err}`);
-			entries.push({ ...missingEntry(d, inputs, `HKY85 fit failed: ${err?.message ?? err}`), status: 'failed' });
-			timings.push({ id: d.id, seconds: elapsed, status: 'failed' });
-			continue;
-		}
+		// D22: the tree file is handed over as it is. A tree without usable branch lengths (camelid,
+		// HIV1_RT) is not fitted here and not withheld either — the runtime reports it as tree-free
+		// and uses TN93 distances, which is what a reader dropping the same two files would get.
+		const treeGiven = treeText;
+		// What the reader supplied, which is all this script knows before the run; the runtime's own
+		// `preprocessing.tree_source` replaces it below with what actually happened.
+		const plannedTreeSource = treeText === null ? 'embedded' : 'user';
 
 		// Progress: log every phase change, and inside the long phases every 10 % or 20 s.
 		let lastPhase = null;
@@ -913,7 +852,7 @@ async function main() {
 					...options,
 					// Passed for the pipelines that read them (prepareRun: treeSource, pruneDuplicates,
 					// alignmentName / treeName for the CLI document's file names); harmless otherwise.
-					treeSource,
+					treeSource: plannedTreeSource,
 					alignmentName: d.alignment,
 					treeName: d.tree ?? undefined
 				},
@@ -932,10 +871,12 @@ async function main() {
 		}
 		const elapsed = (performance.now() - t0) / 1000;
 
-		// What happened to the tree, as recorded here and by the runtime.
+		// What happened to the tree, as the runtime recorded it (D22: nothing happened to it here).
 		const pre = report.provenance?.preprocessing ?? {};
-		const branchLengthsEstimated = estimation !== null || Boolean(pre.branch_lengths_estimated);
-		const branchLengthMethod = branchLengthsEstimated ? 'hyphy-hky85' : pre.branch_lengths_missing ? 'library-default' : null;
+		const treeFree = pre.tree_free ?? null;
+		const treeSource = pre.tree_source ?? plannedTreeSource;
+		const branchLengthsEstimated = false;
+		const branchLengthMethod = treeFree ? 'tn93' : pre.branch_lengths_missing ? 'library-default' : null;
 		const treeUsed = treeGiven === null ? embeddedNewick(alignmentText) : treeGiven.trim();
 
 		const summary = summarise(report, elapsed);
@@ -952,7 +893,7 @@ async function main() {
 			treeText,
 			treeUsed,
 			treeSource,
-			estimation,
+			treeFree,
 			alignment,
 			branchLengthsEstimated,
 			branchLengthMethod,
@@ -996,6 +937,8 @@ async function main() {
 			...catalogueFields(d, inputs, analyses),
 			branch_lengths_estimated: branchLengthsEstimated,
 			branch_length_method: branchLengthMethod,
+			/** D22: null for a tree-based run, else the library's reason and taxon order. */
+			tree_free: treeFree,
 			status: 'ok',
 			result: resultFile,
 			summary,

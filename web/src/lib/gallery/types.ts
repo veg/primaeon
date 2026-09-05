@@ -43,8 +43,17 @@ export interface GalleryExample {
 
 export type TreeSource = 'file' | 'embedded';
 
-/** How branch lengths were obtained when the bundled tree carried none (PLAN.md D6). */
-export type BranchLengthMethod = 'hyphy-hky85' | 'library-default' | null;
+/**
+ * How the distances were obtained when the bundled tree carried no usable branch lengths.
+ *
+ * D22 replaced D6's estimation step: `tn93` is the tree-free path the prebake takes whenever the
+ * example's tree carries no usable branch lengths (camelid, HIV1_RT); `library-default` names
+ * dataset.py's 1e-3/1e-4 fallback, which the runtime no longer reaches but the prebake still spells
+ * for a record whose preprocessing says `branch_lengths_missing` without `tree_free`. The Phase 2
+ * value naming the WebAssembly branch-length fit is gone with the fit; nothing in the app reads
+ * this field for behaviour.
+ */
+export type BranchLengthMethod = 'tn93' | 'library-default' | null;
 
 export type EntryStatus = 'ok' | 'failed' | 'missing';
 

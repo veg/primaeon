@@ -5,11 +5,11 @@
  *
  * The analysis tools answer INSIDE the tool call when the input is small enough, and hand back a
  * job id otherwise (PLAN.md 3.6). Something has to decide "small enough", and it has to be one
- * decision shared by every tool, measured on the file as submitted, before any model is loaded
- * or subprocess started. Since Phase 1b most pillars run in this process (src/engine.js), so the
- * caps also keep one tool call from monopolising the server's event loop; the reason they exist
- * is the same either way: a single MCP tool call has to come back in a time a human and a client
- * will wait for, and a laptop has to survive the run.
+ * decision shared by every tool, measured on the file as submitted, before any model is loaded.
+ * Since Phase 3 EVERY pillar runs in this process (src/engine.js), so the caps also keep one tool
+ * call from monopolising the server's event loop; the reason they exist is the same either way: a
+ * single MCP tool call has to come back in a time a human and a client will wait for, and a laptop
+ * has to survive the run.
  *
  * Where the numbers come from:
  *
@@ -42,12 +42,12 @@
  *                        taxon_cap), above which the CLI applies Faith's-PD subsampling.
  *   MAX_PERMUTATIONS     10,000; MAX_PERMULATIONS 2,000. PLAN.md 3.5. The CLI defaults to 10,000
  *                        permutations, so the cap is the default; permulations default to 0.
- *   JOB_TIMEOUT_MS       10 minutes. PLAN.md 3.5 "job timeout 10 min". The bridge kills the Python
- *                        process at this wallclock whether the run is sync or a job.
+ *   JOB_TIMEOUT_MS       10 minutes. PLAN.md 3.5 "job timeout 10 min". The engine aborts the run at
+ *                        this wallclock whether it is answering in the call or as a job.
  *   JOB_TTL_MS           7 days, PLAN.md 3.5 "TTL 7 days". MAX_JOBS bounds the in-process map; a
  *                        job store that lives in one Node process cannot rely on TTL alone.
  *
- * Measured reference (PLAN.md 1, Apple M4 Pro, CPU, Python path): meme on 476 x 335 (HIV1_RT,
+ * Measured reference (PLAN.md 1, Apple M4 Pro, CPU, the Python reference's path): meme on 476 x 335 (HIV1_RT,
  * work 7.6e7) takes 17 s; dms on the same file (work x19 = 1.4e9) takes 46 s. The 2.5e9 cap is
  * therefore roughly a minute and a half of dms on that machine, and well inside the timeout.
  *
@@ -104,16 +104,15 @@ export const ANALYZE_INLINE_MAX_BYTES = 256 * 1024;
 export const MODEL_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype", "analyze"]);
 
 /**
- * Which pillars run IN THIS PROCESS (runtime/ over onnxruntime-node; provenance.surface
- * "mcp-stdio" / "mcp-http") and which still shell to the Python reference (src/bridge.js;
- * "python-reference"). Phase 1b moved meme, busted and evaluate; Phase 2a's library port moved
- * epistasis and dms; phenotype is Phase 3 and the ONLY bridged pillar left. `analyze` is the
- * app's own tool (hyphaeon_analyze: the whole report) and is native by construction. Defined in
- * this leaf so src/validate.js, src/engine.js and src/tools.js share one list without importing
- * each other.
+ * The pillars, ALL of which run IN THIS PROCESS (runtime/ over onnxruntime-node;
+ * provenance.surface "mcp-stdio" / "mcp-http"). Phase 1b moved meme, busted and evaluate off the
+ * Python reference, Phase 2a's library port moved epistasis and dms, and Phase 3 moved the last
+ * one, phenotype (js/src/phenotype.js at veg/HyphAeon phase-3a), so no Python runs anywhere in the
+ * product (PLAN.md 8, phase 3's exit criterion; D16). `analyze` is the app's own tool
+ * (hyphaeon_analyze: the whole report). Defined in this leaf so src/validate.js, src/engine.js and
+ * src/tools.js share one list without importing each other.
  */
-export const NATIVE_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "evaluate", "analyze"]);
-export const BRIDGED_ANALYSES = Object.freeze(["phenotype"]);
+export const NATIVE_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
 
 /**
  * Work term for an analysis: sites x taxa^2, times 19 for the digital DMS sweep.

@@ -17,9 +17,9 @@
  *      Bearer check (lib/mcp/index.js) — the order is kept: origin, rate limit, bearer, transport;
  *   3. an `engine`. mountHttp would build its own in-process engine and run tool calls on the HTTP
  *      event loop; here the MCP gets a thin adapter over the server's worker pool (src/pool.js),
- *      exposing the four engine methods the tools use (`run`, `capabilities`, `status`, `close`),
- *      so an MCP tool call and a REST job are the same code on the same warm ONNX sessions and
- *      neither stalls the other's polling. Results claim `provenance.surface = "mcp-http"`.
+ *      exposing the three engine methods the tools use (`run`, `status`, `close`), so an MCP tool
+ *      call and a REST job are the same code on the same warm ONNX sessions and neither stalls the
+ *      other's polling. Results claim `provenance.surface = "mcp-http"`.
  *
  * JOB-COMPLETION NOTIFICATIONS ARE BEST-EFFORT, as datamonkey-js-server/lib/mcp/job-notifier.js
  * documents and mcp/src/server.js implements: when a tool hands back a job id (above the sync
@@ -31,9 +31,10 @@
  * This mount adds nothing to that path on purpose — no redis, no eventStore — and the README says
  * so where the connector is documented.
  *
- * The Python bridge is disabled: over HTTP the server never shells to `hyphaeon`; a pillar the
- * engine has not ported answers with a `server` error pointing at `hyphaeon_analyze` / the stdio
- * MCP, instead of spawning Python on the host.
+ * NOTHING IS SHELLED OUT. Since Phase 3 every pillar — phenotype included — is JavaScript in a
+ * worker thread over onnxruntime-node, so this mount has no subprocess path to disable and the
+ * host needs no Python (PLAN.md 8, phase 3's exit criterion; D16). `hyphaeon_analyze` with a
+ * `phenotype` block fills the report's phenotype section from the run's own forward pass.
  */
 
 import rateLimit from "express-rate-limit";
@@ -62,7 +63,7 @@ export function poolEngine(pool, opts = {}) {
   return {
     threads: opts.threads,
     /**
-     * @param {object} req  {analysis, alignment?, tree?, prediction?, meme_result?, options?, names?, signal?, surface?, progress?}
+     * @param {object} req  {analysis, alignment?, tree?, prediction?, meme_result?, phenotype_file?, options?, names?, signal?, surface?, progress?}
      * @returns {Promise<{result: object, provenance: object}>}
      */
     async run(req) {
@@ -72,6 +73,7 @@ export function poolEngine(pool, opts = {}) {
         tree: req.tree,
         prediction: req.prediction,
         meme_result: req.meme_result,
+        phenotype_file: req.phenotype_file,
         options: Object.assign({}, req.options || {}),
         names: Object.assign({}, req.names || {}),
         surface: req.surface || "mcp-http"
@@ -85,30 +87,10 @@ export function poolEngine(pool, opts = {}) {
       const { provenance, analysis: _analysis, ...result } = out;
       return { result, provenance };
     },
-    async capabilities() {
-      try {
-        const s = await status();
-        return { hyphy: !!s.branch_length_estimator, tn93: !!s.tn93 };
-      } catch {
-        return { hyphy: false, tn93: false };
-      }
-    },
     status,
     async close() {
       // The pool is the server's; src/app.js closes it.
     }
-  };
-}
-
-/** The bridge the HTTP MCP gets: none. */
-export function noBridge() {
-  return async (req) => {
-    const err = new Error(
-      "hyphaeon_" + req.analysis + " runs through the Python reference over stdio only; this HTTP server has no Python bridge."
-    );
-    err.kind = "server";
-    err.hint = "Use hyphaeon_analyze for the whole report, or run `npx @veg/hyphaeon-mcp` locally for the bridged pillars.";
-    throw err;
   };
 }
 
@@ -154,7 +136,7 @@ export function mountMcp(app, { config, oauth, pool, logger, path = "/mcp" }) {
     authenticate: oauth ? oauth.requireBearer : undefined,
     engine,
     logger: log,
-    serverOptions: { env: config.env, bridge: noBridge() }
+    serverOptions: { env: config.env }
   });
 
   return {

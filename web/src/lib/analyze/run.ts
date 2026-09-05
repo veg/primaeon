@@ -9,8 +9,8 @@
  *
  *   parse           Decompressing and parsing the alignment
  *   tree            Parsing and matching the tree
- *   branch-lengths  HyPhy WASM: HKY85 branch lengths, or an NJ tree when none was given
- *   prepare         Patristic distances and MDS
+ *   distances       The tree's patristic distances, or tree-free TN93 distances (D22)
+ *   prepare         MDS embedding
  *   infer           Neural network inference (model download on the first run)
  *   postprocess     p-values, q-values, tier calls (and --filter / --attribute when asked)
  *
@@ -19,13 +19,17 @@
  * `load` for the session; PHASE_STEP maps each onto a checklist step, so a runtime phase that
  * appears later (busted's `head`, say) lands on the last step instead of being lost.
  *
- * TREE ESTIMATION HAPPENS HERE, BEFORE INFERENCE, NOT THROUGH `runMeme`'s `estimateTree` HOOK.
- * The runtime offers a callback for the branch-length case (dataset.py:601-611's HyPhy call)
- * so a Node caller can plug HyPhy in; in the browser HyPhy lives in its own worker (protocol.ts
- * says why), which the inference worker cannot call. So the page decides from the diagnosis —
- * no tree → NJ; a tree without branch lengths → HKY85 — runs the tree worker, and hands the
- * inference worker a tree with lengths plus `requireBranchLengths` semantics: the runtime then
- * refuses rather than silently applying dataset.py's 1e-3 defaults if the plan missed a case.
+ * NO TREE IS ESTIMATED HERE ANY MORE (D22). Phase 1 fitted branch lengths, or built a tree, in a
+ * second WebAssembly engine in its own worker before inference, and the third checklist step was
+ * that wait. A tree with branch lengths is now used as given and anything else is handed over as
+ * nothing at all, so the library takes pairwise TN93 distances into the MDS inside
+ * `loadAlignmentAndTree` — the reference's own `--use-tn93` path — and reports which it did
+ * through `notices.treeFree`. The `distances` step is what that wait became: it is marked done as
+ * soon as the tree decision is made, and the work itself happens in the inference worker.
+ *
+ * THIS FILE IS PHASE 1's SINGLE-ANALYSIS PATH. The product runs everything through
+ * lib/report/run.svelte.ts (`startReport`) and the analyze worker; `runAnalysis` remains as the
+ * `runMeme`-only route and its stored v1 `ResultRecord`, which lib/storage/reports.ts still reads.
  *
  * THREADS. `navigator.hardwareConcurrency` is requested (PLAN.md D13); the runtime honours it
  * only under cross-origin isolation and reports what it used. The request is capped at
@@ -35,7 +39,7 @@
 
 import type { DiagnosisSnapshot, ResultRecord, RunInputs, RunOptions, StepId, StepRecord, TreeSource } from '$lib/api';
 import { digest } from './inputs';
-import { inferClient, treeClient } from '$lib/workers/clients';
+import { inferClient } from '$lib/workers/clients';
 import { newRunId, saveResult } from '$lib/storage/results';
 
 export const MAX_THREADS = 16;
@@ -43,13 +47,13 @@ export const MAX_THREADS = 16;
 export const STEP_LABELS: Record<StepId, string> = {
 	parse: 'Decompressing and parsing the alignment',
 	tree: 'Parsing and matching the tree',
-	'branch-lengths': 'Fitting branch lengths in HyPhy WASM',
+	distances: 'Tree distances, or tree-free TN93 distances',
 	prepare: 'Patristic distances and MDS embedding',
 	infer: 'Neural network inference',
 	postprocess: 'p-values, q-values and tier calls'
 };
 
-export const STEP_ORDER: readonly StepId[] = ['parse', 'tree', 'branch-lengths', 'prepare', 'infer', 'postprocess'];
+export const STEP_ORDER: readonly StepId[] = ['parse', 'tree', 'distances', 'prepare', 'infer', 'postprocess'];
 
 /** Runtime / worker phase -> checklist step. Unknown phases land on the last step. */
 const PHASE_STEP: Record<string, StepId> = {
@@ -74,8 +78,8 @@ export interface RunRequest {
 	treeName: string | null;
 	/** From the diagnosis: the tree is embedded in the alignment (no upload needed). */
 	embeddedTree: boolean;
-	/** From the diagnosis: the tree (uploaded or embedded) has no usable branch lengths. */
-	branchLengthsMissing: boolean;
+	/** From the diagnosis (`TREE_FREE_TN93`): no tree, or no usable branch lengths (D22). */
+	treeFree: boolean;
 	options: RunOptions;
 	diagnosis: DiagnosisSnapshot | null;
 	demo?: string;
@@ -185,50 +189,32 @@ export async function runAnalysis(req: RunRequest): Promise<ResultRecord> {
 		list.finish('parse', `${(alignmentDigest.size / 1024).toFixed(0)} KB, sha256 ${alignmentDigest.sha256?.slice(0, 12) ?? 'n/a'}…`);
 		throwIfAborted();
 
-		// --- tree: decide the source --------------------------------------------------------------
+		// --- tree: decide the source (D22: used as given, or tree-free) ----------------------------
 		list.start('tree');
 		let treeSource: TreeSource;
 		let treeForRun: string | null;
-		if (userTree) {
+		if (req.treeFree) {
+			treeSource = 'tn93';
+			treeForRun = null;
+			list.finish('tree', userTree || req.embeddedTree ? 'The tree has no usable branch lengths: running tree-free' : 'No tree supplied: running tree-free');
+		} else if (userTree) {
 			treeSource = 'user';
 			treeForRun = userTree;
-			list.finish('tree', `Using the uploaded tree${req.branchLengthsMissing ? ' (no branch lengths)' : ''}`);
-		} else if (req.embeddedTree) {
+			list.finish('tree', 'Using the uploaded tree');
+		} else {
 			treeSource = 'embedded';
 			treeForRun = null;
-			list.finish('tree', `Using the tree embedded in the alignment${req.branchLengthsMissing ? ' (no branch lengths)' : ''}`);
-		} else {
-			treeSource = 'nj';
-			treeForRun = null;
-			list.finish('tree', 'No tree supplied: a neighbour-joining tree will be inferred');
+			list.finish('tree', 'Using the tree embedded in the alignment');
 		}
 		throwIfAborted();
 
-		// --- branch lengths: HyPhy WASM when needed ------------------------------------------------
-		const needsTree = treeSource === 'nj';
-		const needsLengths = !needsTree && req.branchLengthsMissing;
-		if (needsTree || needsLengths) {
-			list.start('branch-lengths', needsTree ? 'Loading HyPhy WASM for an NJ tree...' : 'Loading HyPhy WASM for HKY85 branch lengths...');
-			const estimated = await treeClient().call(
-				{
-					alignmentText: req.alignmentText,
-					treeText: needsTree ? null : treeForRun,
-					hyphyBase: absolute(req.base, '/wasm/hyphy/')
-				},
-				{
-					signal: req.signal,
-					onProgress: (_phase, done, total, message) => list.progress('branch-lengths', message, done, total)
-				}
-			);
-			treeForRun = estimated.treeText;
-			treeSource = estimated.treeSource;
-			list.finish(
-				'branch-lengths',
-				treeSource === 'nj' ? 'Neighbour-joining tree inferred (TN93 distances)' : 'HKY85 branch lengths fitted'
-			);
-		} else {
-			list.skip('branch-lengths', 'Not needed: the tree has branch lengths');
-		}
+		list.start('distances');
+		list.finish(
+			'distances',
+			treeSource === 'tn93'
+				? 'Pairwise TN93 distances feed the MDS (the reference\u2019s --use-tn93 path)'
+				: 'Patristic distances from the tree\u2019s branch lengths'
+		);
 		throwIfAborted();
 
 		// --- prepare + infer + postprocess: the inference worker ---------------------------------

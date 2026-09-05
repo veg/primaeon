@@ -1,16 +1,22 @@
 <!--
-	+page.svelte (/analyze) — the hand-off between the drop zone and the report: diagnose, fit the
-	tree if needed, start `runEverything` in the analyze worker, navigate to /report/<id>/.
+	+page.svelte (/analyze) — the hand-off between the drop zone and the report: diagnose, decide
+	how the tree is handled, start `runEverything` in the analyze worker, navigate to /report/<id>/.
 
 	WHY THIS FILE EXISTS. PLAN.md §4.0 / D21: the only user action is uploading a dataset, so this
 	route has no analysis picker and no options form on the way to results. It receives the inputs
 	(the landing page's sessionStorage hand-off with `?autorun=1`, or `?demo=<id>&autorun=1`), runs
-	the library's `diagnose()` in the prep worker, follows the diagnostics' variant suggestion,
-	fits HKY85 branch lengths or builds an NJ tree in the tree worker when the diagnosis says so,
-	then calls `startReport()` (lib/report/run.svelte.ts), which creates the record in IndexedDB and
+	the library's `diagnose()` in the prep worker, follows the diagnostics' variant suggestion, then
+	calls `startReport()` (lib/report/run.svelte.ts), which creates the record in IndexedDB and
 	starts the ONE analyze worker that hosts the whole orchestrator, and navigates to the report
 	while it runs. The report page shows the sections streaming in; nothing waits here except the
-	few seconds of diagnostics and tree work, which are shown as a short status.
+	few seconds of diagnostics.
+
+	NOTHING IS DONE TO THE TREE HERE ANY MORE (D22). Phase 1 and 2 ran a second WebAssembly engine
+	between the diagnosis and the run to fit branch lengths or build a tree, and that was the one
+	step on this page that took real time. A tree with branch lengths is now used as given, and
+	anything else goes tree-free: the library takes pairwise TN93 distances into the MDS inside
+	`loadAlignmentAndTree`. `planTree()` is the whole of what is left — a pure decision, reported in
+	the status line so the reader sees which path their dataset took.
 
 	THE MANUAL FORM IS A FALLBACK. It appears only when autorun cannot proceed: the diagnosis
 	refuses the inputs (too few taxa, frameshift, unmatched tree), the hand-off is missing, or a
@@ -28,8 +34,8 @@
 	import { reportPath } from '$lib/api';
 	import { DEMOS, chooseReference, loadDemo, readText } from '$lib/analyze/inputs';
 	import { hasEmbeddedTree, sequenceNames, sniffFormat } from '$lib/analyze/sniff';
-	import { panelModel, type PanelModel, type PrescreenResult } from '$lib/diagnostics/panel';
-	import { prepareTree, startReport } from '$lib/report/run.svelte';
+	import { panelModel, treePlanText, type PanelModel, type PrescreenResult } from '$lib/diagnostics/panel';
+	import { planTree, startReport } from '$lib/report/run.svelte';
 	import { DEFAULT_DMS_WORK_BUDGET, DEFAULT_PERMUTATIONS, DEFAULT_SEED, isAvailable as storageAvailable } from '$lib/storage/reports';
 	import { prepClient, workersAvailable } from '$lib/workers/clients';
 	import BeforeYouRun from './BeforeYouRun.svelte';
@@ -80,9 +86,10 @@
 	const format = $derived(sniffFormat(alignmentText));
 	const embeddedSniffed = $derived(hasEmbeddedTree(alignmentText));
 	const hasAlignment = $derived(alignmentText.trim().length > 0);
-	const model = $derived<PanelModel | null>(panelModel(diagnosis, browserReady));
+	const model = $derived<PanelModel | null>(panelModel(diagnosis));
 	const embeddedTree = $derived(diagnosis?.summary.treeSource === 'embedded');
-	const branchLengthsMissing = $derived(Boolean(diagnosis?.warnings.some((w) => w.code === 'BRANCH_LENGTHS_MISSING')));
+	const treeFree = $derived(model?.treePlan.kind === 'tree-free');
+	const treeFreeReason = $derived(model?.treePlan.kind === 'tree-free' ? model.treePlan.reason : null);
 	const canRun = $derived(browserReady && !starting && !diagnosisPending && model !== null && model.canRun);
 	const refused = $derived(diagnosis !== null && !diagnosisPending && model !== null && !model.canRun);
 	const runDisabledReason = $derived(
@@ -271,15 +278,11 @@
 			permutations: DEFAULT_PERMUTATIONS
 		};
 		try {
-			startMessage = 'Checking the tree…';
-			const tree = await prepareTree({
-				alignmentText,
+			const tree = planTree({
 				treeText: treeText.trim() ? treeText : null,
 				embeddedTree,
-				branchLengthsMissing,
-				base,
-				signal: controller.signal,
-				onProgress: (m) => (startMessage = m)
+				treeFree,
+				treeFreeReason
 			});
 			startMessage = 'Starting the report…';
 			const id = await startReport({
@@ -321,6 +324,9 @@
 		<p class="intro" aria-live="polite">
 			{#if starting}{startMessage ?? 'Starting…'}{:else if diagnosisPending || !diagnosis}Checking the inputs…{:else}Starting…{/if}
 		</p>
+		{#if model && !diagnosisPending}
+			<p class="treeplan" aria-live="polite">{treePlanText(model.treePlan)}</p>
+		{/if}
 		<div class="live">
 			<span class="dot" aria-hidden="true"></span>
 			<span>Every analysis runs in this browser; the report opens as soon as the inputs are ready and fills in section by section.</span>
@@ -431,6 +437,11 @@
 	.intro {
 		color: var(--text-muted);
 		margin-bottom: var(--space-4);
+	}
+	.treeplan {
+		color: var(--text-muted);
+		font-size: var(--text-sm);
+		margin: calc(-1 * var(--space-3)) 0 var(--space-4);
 	}
 	.live {
 		display: flex;

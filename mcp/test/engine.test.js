@@ -21,12 +21,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { loadAlignmentAndTree, memeSitePq } from "@veg/hyphaeon-js";
 import { connect, parseText, example, examplesDir, HERE } from "./helpers.js";
-import { mapOptions, referenceCommand, classifyEngineError, EngineError } from "../src/engine.js";
+import { mapOptions, referenceCommand, cliOptionsFor, treeSourceFor, classifyEngineError, EngineError } from "../src/engine.js";
 import { readManifest } from "../src/models.js";
 
 const ENGINE_ROOT = path.resolve(examplesDir(), "..");
@@ -61,34 +60,6 @@ function mdsAgreement(name, alignment, tree) {
   return { flipped, taxaMatch, maxAbsDiff };
 }
 
-/** The Python interpreter behind HYPHAEON_PY_BIN (a console script's shebang), if any. */
-function pythonFor(env = process.env) {
-  const bin = env.HYPHAEON_PY_BIN;
-  if (!bin || !existsSync(bin)) return null;
-  const head = readFileSync(bin, "utf8").slice(0, 512);
-  const m = /^#!\s*(\S+)/.exec(head);
-  return m && /python/i.test(m[1]) && existsSync(m[1]) ? m[1] : null;
-}
-
-/** cmd_meme's p/q (float32 casts) from the reference's own stats.py on the given LRTs. */
-function pythonMemePq(python, lrts, env = process.env) {
-  const r = spawnSync(
-    python,
-    [
-      "-c",
-      "import sys, json, numpy as np\n" +
-        "from hyphaeon.stats import pvals_from_lrt_meme, benjamini_hochberg\n" +
-        "lrt = np.asarray(json.load(sys.stdin), dtype=np.float32)\n" +
-        "p = pvals_from_lrt_meme(lrt).astype(np.float32)\n" +
-        "q = benjamini_hochberg(p).astype(np.float32)\n" +
-        "print(json.dumps({'p': [float(x) for x in p], 'q': [float(x) for x in q]}))"
-    ],
-    { input: JSON.stringify(Array.from(lrts)), encoding: "utf8", env: Object.assign({}, env, { HF_HUB_OFFLINE: "1" }), timeout: 60000 }
-  );
-  if (r.status !== 0) throw new Error("python stats failed: " + r.stderr);
-  return JSON.parse(r.stdout);
-}
-
 function relDiff(got, ref) {
   return Math.abs(got - ref) / Math.max(1, Math.abs(ref));
 }
@@ -117,9 +88,61 @@ describe("engine option mapping (no model)", () => {
     ]);
   });
 
+  it("maps the phenotype pillar's trait and options onto the runtime's two arguments", () => {
+    const m = mapOptions("phenotype", {
+      preset: "marine",
+      background: "ignored",
+      continuous: true,
+      permulations: 100,
+      n_permutations: 500,
+      alpha: 0.1,
+      min_taxa: 6,
+      seed: 7,
+      phenotype_file: "species,trait\na,1\n",
+      phenotype_file_name: "traits.tsv"
+    });
+    // The trait is its own object, in resolvePhenotypeVector's naming; the table is TEXT.
+    expect(m.runtime.phenotype).toEqual({
+      preset: "marine",
+      background: "ignored",
+      phenotypeCsv: "species,trait\na,1\n",
+      phenotypeFile: "traits.tsv",
+      continuous: true
+    });
+    expect(m.runtime).toMatchObject({ maxSpecies: Infinity, permulations: 100, nPermutations: 500, alpha: 0.1, minTaxaPerSite: 6, seed: 7, continuous: true });
+    // `--use-tn93` reaches the library as `useTn93` on every pillar (D22).
+    expect(mapOptions("meme", { use_tn93: true }).runtime.useTn93).toBe(true);
+    expect(mapOptions("dms", { no_tree: true }).runtime.useTn93).toBe(true);
+    expect(mapOptions("meme", {}).runtime.useTn93).toBeUndefined();
+  });
+
+  it("writes the phenotype CLI line, and adds --use-tn93 whenever the run WAS tree-free", () => {
+    expect(
+      referenceCommand("phenotype", { preset: "marine", permulations: 100, seed: 42, continuous: true }, { alignment: "RHO.fasta" })
+    ).toEqual([
+      "hyphaeon", "phenotype", "-a", "RHO.fasta", "--cpu", "--preset", "marine", "--permulations", "100", "--seed", "42", "--continuous", "--mds-sign", "canonical", "-o", "<out.json>"
+    ]);
+    // The reference REFUSES a missing tree, so a tree-free run only reproduces with the flag.
+    const treeFree = { notices: { treeFree: { reason: "no_tree", taxaOrder: "alignment" } } };
+    expect(cliOptionsFor({ cpu: true }, treeFree)).toEqual({ cpu: true, use_tn93: true });
+    expect(cliOptionsFor({ cpu: true }, { notices: { treeFree: null } })).toEqual({ cpu: true });
+    expect(referenceCommand("meme", cliOptionsFor({}, treeFree), { alignment: "camelid.fasta" })).toContain("--use-tn93");
+  });
+
+  it("reads tree_source off the library's own notice", () => {
+    expect(treeSourceFor({ notices: { treeFree: { reason: "no_tree" } } }, { treeGiven: false })).toBe("tn93");
+    expect(treeSourceFor({ notices: { treeFree: { reason: "requested" } } }, { treeGiven: true })).toBe("tn93");
+    expect(treeSourceFor({ notices: { treeFree: null } }, { treeGiven: true })).toBe("user");
+    expect(treeSourceFor({ notices: { treeFree: null } }, { treeGiven: false })).toBe("embedded");
+    expect(treeSourceFor(null, { treeGiven: false, alignmentText: ">a\nATG\n" })).toBe("tn93");
+  });
+
   it("classifies failures into the two classes", () => {
     expect(classifyEngineError(new Error("HyphAeon needs at least 3 sequences; this alignment has 2.")).kind).toBe("input");
     expect(classifyEngineError(new Error("No matching taxa between tree and alignment")).kind).toBe("input");
+    expect(classifyEngineError(new Error("Insufficient foreground taxa (1) matching criteria among 18 taxa.")).kind).toBe("input");
+    // The runtime's wrap of the tn93 package's ValueError on a saturated pair (pipeline.js prepareRun).
+    expect(classifyEngineError(new Error("TN93 distances could not be computed for this alignment: tn93: ValueError: math domain error")).kind).toBe("input");
     const abort = new Error("HyphAeon run cancelled");
     abort.name = "AbortError";
     expect(classifyEngineError(abort).message).toMatch(/cancelled/);
@@ -191,27 +214,20 @@ describe("hyphaeon_meme in-process on bat_oas1 vs fixtures/e2e/meme_bat_oas1.jso
     expect(inv.p_value).toBe(refInv.p_value);
   });
 
-  it("p and q are cmd_meme's float32 casts of the reference functions on this surface's LRTs", () => {
+  it("p and q are cmd_meme's float32 casts of the library's stats on this surface's LRTs", () => {
+    // Phase 3 deleted the Python path from this package, so the cross-check is the library's own
+    // `memeSitePq` (the port of stats.py's pvals_from_lrt_meme + benjamini_hochberg, pinned
+    // against the reference by veg/HyphAeon's own fixtures) evaluated on THESE LRTs. Comparing to
+    // the fixture's p/q instead would fail on every site for a reason already reported under the
+    // LRT, which is why PARITY.md defines the clause this way.
     const lrt = Float32Array.from(body.sites, (s) => s.hyphaeon_lrt);
-    const python = pythonFor();
-    let p;
-    let q;
-    if (python) {
-      const py = pythonMemePq(python, lrt);
-      p = py.p;
-      q = py.q;
-    } else {
-      const js = memeSitePq(lrt);
-      p = Array.from(js.pvals);
-      q = Array.from(js.qvals);
-    }
+    const { pvals, qvals } = memeSitePq(lrt);
     for (let i = 0; i < lrt.length; i++) {
       expect(body.sites[i].p_value).toBe(Math.fround(body.sites[i].p_value));
       expect(body.sites[i].q_value).toBe(Math.fround(body.sites[i].q_value));
-      expect(body.sites[i].p_value).toBe(Math.fround(p[i]));
-      expect(body.sites[i].q_value).toBe(Math.fround(q[i]));
+      expect(body.sites[i].p_value).toBe(Math.fround(pvals[i]));
+      expect(body.sites[i].q_value).toBe(Math.fround(qvals[i]));
     }
-    expect(python ? "python" : "library").toBeTruthy();
   });
 
   it("graph class: hyphaeon_lrt within 1e-5 x max(1, |lrt|) of `hyphaeon meme` (MDS signs canonical on both sides)", () => {
@@ -248,30 +264,30 @@ describe("hyphaeon_meme in-process on bat_oas1 vs fixtures/e2e/meme_bat_oas1.jso
     expect(parseText(okRes).provenance.reference_command).toContain("--mds-sign");
   });
 
-  it("refuses TN93 mode in-process with an input-class error and no model load", async () => {
-    const res = await ctx.client.callTool({ name: "hyphaeon_meme", arguments: { alignment, use_tn93: true } });
-    expect(res.isError).toBe(true);
-    const err = parseText(res);
-    expect(err.kind).toBe("input");
-    expect(err.error).toMatch(/TN93/);
+  it("accepts TN93 mode in-process and records it, instead of refusing", async () => {
+    const res = await ctx.client.callTool({ name: "hyphaeon_meme", arguments: { alignment, use_tn93: true, top: 1 } });
+    if (res.isError) throw new Error(res.content[0].text);
+    const out = parseText(res);
+    expect(out.provenance.preprocessing.tree_source).toBe("tn93");
+    expect(out.provenance.preprocessing.tree_free.reason).toBe("requested");
+    expect(out.provenance.reference_command).toContain("--use-tn93");
   });
 
-  it("reports a topology-only tree as BRANCH_LENGTHS_MISSING in provenance when no estimator is available", async () => {
-    const status = parseText(await ctx.client.callTool({ name: "list_models", arguments: {} }));
+  it("a topology-only tree goes tree-free: tree_source tn93, nothing estimated", async () => {
     const res = await ctx.client.callTool({
       name: "hyphaeon_meme",
       arguments: { alignment, tree: tree.replace(/:[0-9.eE+-]+/g, ""), top: 1 }
     });
     if (res.isError) throw new Error(res.content[0].text);
     const out = parseText(res);
-    if (status.native.branch_length_estimator) {
-      expect(out.provenance.preprocessing.branch_lengths_estimated).toBe(true);
-      expect(out.provenance.preprocessing.tree_source).toBe("hyphy-hky85");
-    } else {
-      expect(out.provenance.preprocessing.branch_lengths_estimated).toBe(false);
-      expect(out.provenance.preprocessing.branch_lengths_missing).toBe(true);
-      expect(out.provenance.warnings.map((w) => w.code)).toContain("BRANCH_LENGTHS_MISSING");
-    }
+    expect(out.provenance.preprocessing.tree_source).toBe("tn93");
+    expect(out.provenance.preprocessing.tree_free.reason).toBe("no_branch_lengths");
+    expect(out.provenance.preprocessing.branch_lengths_estimated).toBe(false);
+    expect(out.provenance.warnings.map((w) => w.code)).not.toContain("BRANCH_LENGTHS_MISSING");
+    expect(out.provenance.warnings.map((w) => w.code)).toContain("TREE_FREE_TN93");
+    // No estimator is advertised anywhere any more.
+    const status = parseText(await ctx.client.callTool({ name: "list_models", arguments: {} }));
+    expect(status.native.branch_length_estimator).toBeNull();
   });
 });
 

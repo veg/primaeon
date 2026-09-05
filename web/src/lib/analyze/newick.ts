@@ -4,9 +4,10 @@
  * WHY THIS FILE EXISTS. The library's `extractTree` (js/src/preprocess/tree.js, mirroring
  * dataset.py:161-212 `extract_tree_from_string_or_file`) returns a parsed PhyloTree, which is
  * what the model pipeline needs. Two app-side consumers need the Newick text instead: the
- * prescreen (runtime/src/prescreen, DM3's XGBoost gate, which reads a Newick string) and HyPhy's
- * HKY85 script (which is handed the tree as text), plus the stored record's `tree` field for an
- * embedded tree. This is the same two-step search as the reference — the NEXUS/HyPhy `TREE x =
+ * prescreen (runtime/src/prescreen, DM3's XGBoost gate, which reads a Newick string) and the
+ * stored record's `tree` field for an embedded tree. (A third consumer, the branch-length fit that
+ * was handed the tree as text, went with D22 in Phase 3.) This is the same two-step search as the
+ * reference — the NEXUS `TREE x =
  * (...);` command first (HyPhy `{...}` tags and `[...]` comments stripped, dataset.py:171-173),
  * else the first line that starts with '(' and holds at least two '(' (dataset.py:178-190) —
  * returning the text rather than the parse.

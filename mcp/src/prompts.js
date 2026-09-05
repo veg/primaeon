@@ -28,12 +28,16 @@ const SURROGATE_PREAMBLE =
   "HyphAeon is a **neural surrogate for MEME**, evaluated against MEME, not against truth. Every " +
   "result carries `provenance.is_surrogate: true` and `surrogate_for: \"MEME\"`; carry that caveat " +
   "into anything you say about the numbers. `provenance.surface` says who computed them: " +
-  "`mcp-stdio` / `mcp-http` is the JavaScript port running in the MCP process (hyphaeon_analyze, " +
-  "hyphaeon_meme, hyphaeon_busted, hyphaeon_epistasis, hyphaeon_dms, hyphaeon_evaluate; LRTs match " +
-  "`hyphaeon meme` within 1e-5, p/q are the same float32 values, network edges and sector membership " +
-  "are exact, permutation p-values agree statistically); `python-reference` is the Python reference " +
-  "implementation through a bridge (hyphaeon_phenotype only, until its port lands). MDS eigenvector " +
-  "signs are canonical on both sides (`provenance.mds_sign`).\n\n";
+  "`mcp-stdio` / `mcp-http` is the JavaScript port running in the MCP process, which since Phase 3 " +
+  "is EVERY tool — phenotype included — with no Python anywhere (LRTs match `hyphaeon meme` within " +
+  "1e-5, p/q are the same float32 values, network edges and sector membership are exact, permutation " +
+  "p-values agree statistically). MDS eigenvector signs are canonical (`provenance.mds_sign`).\n" +
+  "`provenance.preprocessing.tree_source` says where the distances came from: `user` / `embedded` " +
+  "means the tree you supplied (or one inside the alignment) had branch lengths and was used as it " +
+  "is; `tn93` means there was no usable tree, so pairwise Tamura-Nei 93 distances were computed from " +
+  "the sequences instead (PLAN.md D22, the reference's own `--use-tn93`, rho = 0.9997 against the " +
+  "tree-based path). A tree is optional on every tool; `preprocessing.tree_free.reason` says which " +
+  "of `requested` / `no_tree` / `no_branch_lengths` applied.\n\n";
 
 const P_PERM_CAVEAT =
   "- **`p_perm` is a Monte Carlo estimate, and at small B it is noisy on every surface.** With " +
@@ -196,8 +200,17 @@ export const GUIDES = {
       "and are worth their cost when a claim will be made\n" +
       "- `p_assoc_perm` and `gene_p_value_perm` are statistical across surfaces (own seeds)\n" +
       "- Foreground sets defined by regex or preset match on taxon NAMES: verify the matched list\n" +
-      "- This pillar runs through the Python reference (`provenance.surface: python-reference`) " +
-      "until its port lands; the numbers are the reference's own\n\n" +
+      "- **Permulations need a phylogeny.** With `permulations > 0` AND a tree with branch lengths, " +
+      "`p_assoc_perm` and `gene_p_value_perm` come from a Brownian-motion null over the trait. A " +
+      "TREE-FREE run (no tree, or no usable branch lengths) has no phylogeny to draw a covariance " +
+      "from, so they are skipped: check `permulations.reason` (`tree-free`, `no-tree`, " +
+      "`not-requested`, `failed`) and read `p_assoc` as the parametric t-test p, which is what " +
+      "`hyphaeon phenotype --use-tn93` reports too. The display-only neighbour-joining tree is NOT " +
+      "used as a null, deliberately: a null built from the same distances as the alternative shares " +
+      "its error\n" +
+      "- `permulations` (Brownian permuLations of the trait, `--permulations`, default 0) and " +
+      "`n_permutations` (random K-site subsets for trait SECTOR significance, `--n-permutations`, " +
+      "default 10,000) are different nulls one letter apart; say which one a p-value came from\n\n" +
       "## Common misinterpretations\n" +
       "- Reading `q_value <= alpha` as proof of adaptive convergence\n" +
       "- Reporting sites with `foreground_freq_pct` near `background_freq_pct` because rho is high\n" +
@@ -246,8 +259,9 @@ export const GUIDES = {
       "— it is the order they were computed and the order each one's evidence depends on the last.\n\n" +
       "## 1. `diagnostics` — what was done to the data\n" +
       "The library's \"Before you run\" checks and the automatic repairs: U->T, trailing-codon trim, " +
-      "duplicate collapse, Faith's-PD taxon cap, the variant chosen from tree depth, HKY85 branch " +
-      "lengths from HyPhy when the tree had none, an NJ tree when there was no tree at all. Check " +
+      "duplicate collapse, Faith's-PD taxon cap, the variant chosen from tree depth, and the tree " +
+      "decision — a tree with branch lengths is used as it is, otherwise pairwise TN93 distances " +
+      "(`TREE_FREE_TN93`, info, with the reason). Check " +
       "`provenance.preprocessing` (taxa in vs used, `tree_source`, `distance_rescaled`) before " +
       "trusting any number below: a report on 20 haplotypes collapsed from 200 sequences is a report " +
       "on 20. `DEEP_LARGE_TREE` means every p-value below is ordering only; `SHALLOW_TREE` means the " +
@@ -294,14 +308,23 @@ export const GUIDES = {
       "— do not describe unswept sites as rigid or plastic. Can support: which swept sites' surrogate " +
       "score is robust to substitution and which are not. Cannot support: pathogenicity, stability, " +
       "or a laboratory DMS.\n\n" +
-      "## 8. `sections.phenotype` — on demand, `null` in every report\n" +
-      "Phenotype association needs a trait, so it cannot run unasked. The report offers it; run " +
-      "`hyphaeon_phenotype` with a preset, a foreground list/regex or a CSV when the user has one. " +
-      "Until its port lands that tool runs through the Python reference (`python-reference`).\n\n" +
+      "## 8. `sections.phenotype` — only when a trait was given\n" +
+      "Phenotype association needs a trait, so it cannot run unasked: it is `null` unless the call " +
+      "carried a `phenotype` block (preset, foreground list/regex, or a CSV). When it did, the " +
+      "section came from the SAME forward pass as the sections above " +
+      "(`provenance.phenotype_source: \"report-pass\"`) and holds `sites[]` with `association_rho`, " +
+      "`score`, `q_value` and the foreground/background frequencies, `trait_sectors[]`, " +
+      "`coselection_pairs[]` and the gene-level tracks. Can support: which sites' selection signal " +
+      "lands on the trait's taxa. Cannot support: adaptive convergence, or any claim from `q_value` " +
+      "alone — read the two frequency columns beside rho, and check " +
+      "`phenotype_meta.foreground_count` first. `permulations.reason` says why there is no " +
+      "permulation column (a tree-free run has no phylogeny for a Brownian null). Without a trait, " +
+      "run `hyphaeon_phenotype`, or re-run `hyphaeon_analyze` with the block.\n\n" +
       "## Provenance and reproduction\n" +
       "`provenance` carries `surface`, `model_variant`, `artifact_sha256`, `seed`, `mds_sign`, " +
       "`preprocessing`, `warnings`, the `options` as submitted and the `hyphaeon <cmd>` lines that " +
-      "reproduce each section with the Python reference. `timings` says where the seconds went. " +
+      "reproduce each section with the Python reference CLI, and `preprocessing.tree_source` " +
+      "(`user` / `embedded` / `tn93`). `timings` says where the seconds went. " +
       "Sequences submitted to a remote server are unpublished research: say so before sending them.\n\n" +
       "## Common misinterpretations\n" +
       "- Reading the report as a completed selection analysis: it is a surrogate's ranking, to be " +
@@ -342,14 +365,14 @@ export function registerPrompts(server) {
               "| Question | Tool | Needs | Confirm with |\n" +
               "|---|---|---|---|\n" +
               "| What does HyphAeon say about this alignment? | `hyphaeon_analyze` | codon alignment (+ tree) | the per-pillar confirmations below |\n" +
-              "| Which codon sites show episodic positive selection? | `hyphaeon_meme` | codon alignment + tree | HyPhy MEME |\n" +
+              "| Which codon sites show episodic positive selection? | `hyphaeon_meme` | codon alignment (a tree is optional) | HyPhy MEME |\n" +
               "| Is there selection anywhere in this gene? | `hyphaeon_busted` | same | HyPhy BUSTED |\n" +
               "| Which sites are co-selected / form sectors? | `hyphaeon_epistasis` | same; permutations cost time | structural or experimental evidence |\n" +
               "| Which substitutions would change the selection signal at a site? | `hyphaeon_dms` | same; 19 x sites passes, <= 3,000 sites | laboratory DMS |\n" +
-              "| Which sites associate with a trait across the tree? | `hyphaeon_phenotype` | same + a trait definition (runs through the Python reference) | permulations, then an independent panel |\n" +
+              "| Which sites associate with a trait across the tree? | `hyphaeon_phenotype` | same + a trait definition (preset, foreground or CSV) | permulations (they need a tree), then an independent panel |\n" +
               "| How well does the surrogate match MEME on my gene? | `hyphaeon_evaluate` | a hyphaeon meme CSV + HyPhy MEME JSON | — |\n\n" +
               "## Before any run\n" +
-              "1. `hyphaeon_validate` — format, frame, stops, name matching, tree regime, cost. Refusals must be fixed; warnings decide the variant and how much to trust p-values. (`hyphaeon_analyze` runs the same diagnostics itself and records them.)\n" +
+              "1. `hyphaeon_validate` — format, frame, stops, name matching, tree regime, cost. Refusals must be fixed; warnings decide the variant and how much to trust p-values. A missing tree is NOT a refusal: `TREE_FREE_TN93` (info) says the run will use pairwise TN93 distances instead (PLAN.md D22). (`hyphaeon_analyze` runs the same diagnostics itself and records them.)\n" +
               "2. Pick the variant: `general` for deep cross-species trees, `viral` for shallow viral trees (SHALLOW_TREE suggests it).\n" +
               "3. Every result is a surrogate for MEME (`provenance.is_surrogate`). Rank first; confirm with the real method.\n\n" +
               "Read `hyphaeon://methods/requirements` for options and caps, `hyphaeon://caveats` for the model card and calibration numbers, and the `interpret-report` prompt for how to read a whole report."

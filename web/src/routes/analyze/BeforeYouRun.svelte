@@ -15,6 +15,7 @@
 	import {
 		PRESCREEN_BAND,
 		formatSeconds,
+		treePlanText,
 		type PanelModel,
 		type PrescreenResult
 	} from '$lib/diagnostics/panel';
@@ -36,21 +37,6 @@
 
 	const severityLabel: Record<string, string> = { refuse: 'Refuse', warn: 'Warn', info: 'Info' };
 
-	function treePlanText(m: PanelModel): string {
-		switch (m.treePlan.kind) {
-			case 'user':
-				return 'Uploaded tree with branch lengths.';
-			case 'embedded':
-				return 'Tree embedded in the alignment, with branch lengths.';
-			case 'estimate-branch-lengths':
-				return 'The tree has no branch lengths: HKY85 lengths will be fitted in HyPhy WASM before scoring.';
-			case 'infer':
-				return 'No tree supplied: a neighbour-joining tree (TN93 distances) will be inferred in HyPhy WASM.';
-			default:
-				return 'No usable tree.';
-		}
-	}
-
 	function bytesMb(b: number): string {
 		return `${(b / 1e6).toFixed(0)} MB`;
 	}
@@ -71,7 +57,12 @@
 			<p class="regime"><strong>Regime:</strong> {model.regime}</p>
 		{/if}
 
-		<p class="plan"><strong>Tree:</strong> {treePlanText(model)}</p>
+		<p class="plan">
+			<strong>Tree:</strong> {treePlanText(model.treePlan)}
+			{#if model.saturatedPairs}
+				<span class="saturated">{model.saturatedPairs.toLocaleString()} taxon pair{model.saturatedPairs === 1 ? '' : 's'} came back at the TN93 saturation sentinel.</span>
+			{/if}
+		</p>
 
 		<p class="suggestion">
 			<strong>Variant:</strong>
@@ -254,6 +245,10 @@
 		flex-wrap: wrap;
 	}
 	.over {
+		display: block;
+		color: var(--warn);
+	}
+	.saturated {
 		display: block;
 		color: var(--warn);
 	}

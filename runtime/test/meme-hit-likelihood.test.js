@@ -155,6 +155,16 @@ describe('normalizeTreeSource', () => {
 		expect(normalizeTreeSource('nj')).toBe('inferred-nj');
 		expect(normalizeTreeSource(undefined)).toBe('unknown');
 	});
+
+	it('maps the D22 tree sources: an embedded tree is the user\'s, and tn93 is the NJ case', () => {
+		// PLAN.md §3.5's `tree_source` vocabulary after D22 is 'user' | 'embedded' | 'tn93'. An
+		// embedded tree is one the user uploaded, inside the alignment. A tree-free run has only
+		// the display NJ tree to offer this estimator, whose branch lengths are the nucleotide
+		// distances the 'inferred-nj' caveat is about.
+		expect(normalizeTreeSource('embedded')).toBe('user');
+		expect(normalizeTreeSource('tn93')).toBe('inferred-nj');
+		expect(normalizeTreeSource('hyphy-hky85')).toBe('unknown'); // gone with D22
+	});
 });
 
 // -------------------------------------------------------------------------------------------

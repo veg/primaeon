@@ -1,7 +1,7 @@
 {
   "name": "@veg/hyphaeon-mcp",
-  "version": "0.3.0",
-  "description": "MCP server for HyphAeon: one hyphaeon_analyze tool that runs the whole report in-process (site selection, omnibus, epistasis + sectors, attribution, artifact filter, digital DMS), the per-pillar tools, phenotype association through the Python reference, and MEME concordance, over stdio or streamable HTTP",
+  "version": "0.4.0",
+  "description": "MCP server for HyphAeon: one hyphaeon_analyze tool that runs the whole report in-process (site selection, omnibus, epistasis + sectors, attribution, artifact filter, digital DMS, and phenotype association when a trait is given), the per-pillar tools and MEME concordance, over stdio or streamable HTTP. No Python and no HyPhy at runtime; a tree is optional everywhere (TN93 distances otherwise).",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -18,7 +18,6 @@
     "./http": "./src/http.js",
     "./tools": "./src/tools.js",
     "./engine": "./src/engine.js",
-    "./bridge": "./src/bridge.js",
     "./caps": "./src/caps.js"
   },
   "files": [

@@ -59,7 +59,12 @@ export interface RecordContext {
 	versions?: Record<string, string | number | null>;
 }
 
-const ESTIMATED_SOURCES: ReadonlySet<string> = new Set(['hyphy-hky85', 'nj', 'tn93']);
+/**
+ * Sources whose distances did not come from a supplied tree's branch lengths, so
+ * `branch_lengths_estimated` is true: today only the tree-free TN93 path (D22), plus the two
+ * estimated sources records written before Phase 3 may carry.
+ */
+const ESTIMATED_SOURCES: ReadonlySet<string> = new Set(['tn93', 'nj', 'hky85-fit']);
 
 function num(v: unknown, fallback = 0): number {
 	const n = typeof v === 'number' ? v : Number(v);

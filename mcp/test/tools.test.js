@@ -1,22 +1,24 @@
 /**
  * tools.test.js — the tool registry, hyphaeon_validate through the protocol, and every analysis
- * tool's routing and paging over a STUBBED engine and a STUBBED bridge.
+ * tool's routing and paging over a STUBBED engine.
  *
  * WHY THIS FILE EXISTS
  *
- * The parity files (engine, epistasis, dms, analyze, bridge) load models and run Python; this one
- * pins what the tool layer itself decides without either: which pillar goes to which engine
- * (epistasis and dms to the in-process engine since Phase 2, phenotype alone to the bridge), the
- * refusals that happen before any engine is touched (no tree, TN93 in-process, two taxa, a
- * missing trait), the job path (run_async, job_status progress, get_results shaping, cancel),
- * and hyphaeon_analyze's contract — always a job, inline when small, sections readable through
- * get_results while the stubbed report is still streaming, paged by section afterwards, listed
- * as hyphaeon://report/{id}.
+ * The parity files (engine, tn93, epistasis, dms, analyze, phenotype) load models and score whole
+ * alignments; this one pins what the TOOL LAYER itself decides without loading anything: that
+ * every pillar now goes to the in-process engine (Phase 3 moved the last one, phenotype, and
+ * deleted the Python path with it), the refusals that still happen before any engine is touched
+ * (two taxa, a missing trait) and the one that no longer does (a missing tree — D22 makes that a
+ * TN93 run, not an error), the job path (run_async, job_status progress, get_results shaping,
+ * cancel), and hyphaeon_analyze's contract — always a job, inline when small, sections readable
+ * through get_results while the stubbed report is still streaming, paged by section afterwards,
+ * listed as hyphaeon://report/{id}, and a phenotype section that appears if and only if the call
+ * carried a trait block.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { connect, parseText, example, waitFor } from "./helpers.js";
-import { TOOL_NAMES, NATIVE_ANALYSES, BRIDGED_ANALYSES } from "../src/tools.js";
+import { TOOL_NAMES, NATIVE_ANALYSES } from "../src/tools.js";
 import { PROMPT_NAMES } from "../src/prompts.js";
 
 describe("tool registry", () => {
@@ -39,12 +41,22 @@ describe("tool registry", () => {
     expect(tools.find((t) => t.name === "hyphaeon_meme").description).toMatch(/IN THIS PROCESS/);
     expect(tools.find((t) => t.name === "hyphaeon_epistasis").description).toMatch(/IN THIS PROCESS/);
     expect(tools.find((t) => t.name === "hyphaeon_dms").description).toMatch(/IN THIS PROCESS/);
-    expect(tools.find((t) => t.name === "hyphaeon_phenotype").description).toMatch(/Python reference bridge/);
-    expect(tools.find((t) => t.name === "hyphaeon_phenotype").description).toMatch(/ONE tool/);
-    expect([...NATIVE_ANALYSES]).toEqual(["meme", "busted", "epistasis", "dms", "evaluate", "analyze"]);
-    expect([...BRIDGED_ANALYSES]).toEqual(["phenotype"]);
+    expect(tools.find((t) => t.name === "hyphaeon_phenotype").description).toMatch(/IN THIS PROCESS/);
+    expect(tools.find((t) => t.name === "hyphaeon_phenotype").description).toMatch(/no Python anywhere/);
+    expect([...NATIVE_ANALYSES]).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
+    // D22: every tool says a tree is optional, and none of them offers to estimate branch lengths.
+    for (const name of ["hyphaeon_meme", "hyphaeon_busted", "hyphaeon_epistasis", "hyphaeon_dms", "hyphaeon_phenotype", "hyphaeon_analyze"]) {
+      const tool = tools.find((x) => x.name === name);
+      expect(tool.inputSchema.properties.tree.description, name).toMatch(/OPTIONAL/);
+      expect(tool.inputSchema.properties.tree.description, name).toMatch(/TN93/);
+      expect(JSON.stringify(tool), name).not.toMatch(/HKY85/);
+    }
     const analyze = tools.find((t) => t.name === "hyphaeon_analyze");
-    expect(Object.keys(analyze.inputSchema.properties)).toEqual(expect.arrayContaining(["alignment", "tree", "variant", "seed", "permutations", "dms", "dms_work_budget", "wait_seconds", "section", "fields", "top", "summary_only", "run_async"]));
+    expect(Object.keys(analyze.inputSchema.properties)).toEqual(expect.arrayContaining(["alignment", "tree", "variant", "seed", "permutations", "dms", "dms_work_budget", "phenotype", "phenotype_file", "use_tn93", "wait_seconds", "section", "fields", "top", "summary_only", "run_async"]));
+    const pheno = tools.find((t) => t.name === "hyphaeon_phenotype");
+    expect(Object.keys(pheno.inputSchema.properties)).toEqual(
+      expect.arrayContaining(["alignment", "tree", "use_tn93", "preset", "foreground", "background", "phenotype_file", "trait_col", "species_col", "continuous", "permulations", "n_permutations", "alpha", "min_taxa", "seed"])
+    );
     const getResults = tools.find((t) => t.name === "get_results");
     expect(Object.keys(getResults.inputSchema.properties)).toEqual(expect.arrayContaining(["job_id", "section", "fields", "top", "summary_only"]));
   });
@@ -57,6 +69,15 @@ describe("tool registry", () => {
     const meme = await ctx.client.getPrompt({ name: "interpret-meme" });
     expect(meme.messages[0].content.text).toMatch(/Rank is strong, scale is compressed/);
     expect(meme.messages[0].content.text).toMatch(/mcp-stdio/);
+    // The surrogate preamble now explains tree_source, and no guide claims a Python surface.
+    expect(meme.messages[0].content.text).toMatch(/tree_source/);
+    for (const n of names) {
+      const args = n === "choose-analysis" ? { question: "which sites?" } : {};
+      const text = (await ctx.client.getPrompt({ name: n, arguments: args })).messages[0].content.text;
+      expect(text, n).not.toMatch(/python-reference/);
+    }
+    const phenotype = await ctx.client.getPrompt({ name: "interpret-phenotype" });
+    expect(phenotype.messages[0].content.text).toMatch(/Permulations need a phylogeny/);
     const report = await ctx.client.getPrompt({ name: "interpret-report" });
     const text = report.messages[0].content.text;
     for (const h of ["diagnostics", "sections.sites", "sections.gene", "sections.epistasis", "sections.attribution", "sections.filter", "sections.dms", "sections.phenotype"]) {
@@ -91,15 +112,17 @@ describe("tool registry", () => {
     expect(body.variants[0].busted_head_path).toMatch(/busted_head\.onnx$/);
     expect(body.variants[1].busted_head_path).toBeNull();
     expect(body.native.surface).toBe("mcp-stdio");
-    expect(body.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "evaluate", "analyze"]);
+    expect(body.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
     expect(body.native.engine).toBe("onnxruntime-node");
     expect(body.native.available).toBe(true);
     expect(body.native.onnxruntime_node).toBe("1.23.2");
     expect(body.native.models_dir).toMatch(/models$/);
     expect(body.native.mds_sign).toBe("canonical");
-    expect(body.native.runtime_provides).toEqual({ runEpistasis: true, runDms: true, runEverything: true });
-    expect(body.bridge.surface).toBe("python-reference");
-    expect(body.bridge.analyses).toEqual(["phenotype"]);
+    expect(body.native.runtime_provides).toEqual({ runEpistasis: true, runDms: true, runEverything: true, runPhenotype: true });
+    // D22 / Phase 3: no estimator, no second engine.
+    expect(body.native.branch_length_estimator).toBeNull();
+    expect(body.native.tree_free).toMatch(/tn93/);
+    expect(body.bridge).toBeUndefined();
   });
 });
 
@@ -141,16 +164,17 @@ describe("hyphaeon_validate through the tool", () => {
     expect(body.warnings.find((w) => w.code === "RUN_MODE").message).toMatch(/wait budget/);
   });
 
-  it("camelid: BRANCH_LENGTHS_MISSING with this server's estimator recorded", async () => {
+  it("camelid: a topology-only tree is TREE_FREE_TN93 at info, not a branch-length problem", async () => {
     const alignment = await example("camelid.fasta");
     const tree = await example("camelid.nwk");
     const body = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment, tree } }));
-    const w = body.warnings.find((x) => x.code === "BRANCH_LENGTHS_MISSING");
+    const w = body.warnings.find((x) => x.code === "TREE_FREE_TN93");
     expect(w).toBeDefined();
-    expect(w.severity).toBe("warn");
-    expect(w.data.recoverable).toBe(true);
-    expect(["hyphy-hky85", null]).toContain(w.data.estimator);
-    expect(body.summary.branch_lengths_missing).toBe(true);
+    expect(w.severity).toBe("info");
+    expect(w.data.reason).toBe("no_branch_lengths");
+    expect(body.ok).toBe(true);
+    expect(body.summary.tree_source).toBe("tn93");
+    expect(body.warnings.map((x) => x.code)).not.toContain("BRANCH_LENGTHS_MISSING");
   });
 
   it("bat_oas1: DISTANCE_RESCALED", async () => {
@@ -163,21 +187,19 @@ describe("hyphaeon_validate through the tool", () => {
     expect(body.summary.distance_rescaled).toBe(true);
   });
 
-  it("refuses when no tree is given; TN93 mode is refused for a native pillar and passed through for the bridged one", async () => {
+  it("accepts an alignment with no tree, and use_tn93 on one that has a usable tree", async () => {
     const alignment = await example("bat_oas1.fasta");
     const r1 = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment } }));
-    expect(r1.ok).toBe(false);
-    expect(r1.warnings.find((w) => w.code === "TREE_MISSING").severity).toBe("refuse");
-    const r2 = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment, use_tn93: true } }));
+    expect(r1.ok).toBe(true);
+    expect(r1.summary.tree_source).toBe("tn93");
+    expect(r1.warnings.find((w) => w.code === "TREE_FREE_TN93").data.reason).toBe("no_tree");
+    const r2 = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment, use_tn93: true, analysis: "epistasis" } }));
+    expect(r2.ok).toBe(true);
+    expect(r2.summary.engine).toBe("in-process");
     expect(r2.summary.tree_source).toBe("tn93");
-    expect(r2.ok).toBe(false);
-    expect(r2.warnings.find((w) => w.code === "TN93_UNAVAILABLE").severity).toBe("refuse");
-    const r2b = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment, use_tn93: true, analysis: "epistasis" } }));
-    expect(r2b.ok).toBe(false);
-    expect(r2b.summary.engine).toBe("in-process");
-    const r3 = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment, use_tn93: true, analysis: "phenotype" } }));
+    const r3 = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment, analysis: "phenotype" } }));
     expect(r3.ok).toBe(true);
-    expect(r3.summary.engine).toBe("python-reference");
+    expect(r3.summary.engine).toBe("in-process");
   });
 
   it("refuses alignment taxa that have no tree tip", async () => {
@@ -194,15 +216,15 @@ describe("hyphaeon_validate through the tool", () => {
     expect(body.summary.format).toBe("nexus");
     expect(body.summary.sequence_count).toBe(710);
     expect(body.summary.tree_source).toBe("embedded");
+    expect(body.summary.engine).toBe("in-process");
     expect(body.warnings.map((w) => w.code)).toContain("TAXA_OVER_CAP");
   });
 });
 
-describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
+describe("analysis tools over a stubbed engine", () => {
   let ctx;
   const engineCalls = [];
   const analyzeCalls = [];
-  const bridgeCalls = [];
   const fakeSites = (n) =>
     Array.from({ length: n }, (_, i) => ({
       site: i + 1,
@@ -223,7 +245,6 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
       }
     });
   const fakeEngine = {
-    capabilities: async () => ({ hyphy: false, tn93: false }),
     status: async () => ({ engine: "stub", available: true }),
     run: async (req) => {
       engineCalls.push(req);
@@ -233,12 +254,32 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
         meme: { alignment: "alignment.fasta", tree: "tree.nwk", taxa_count: 18, codon_count: 12, runtime_sec: 0.01, filter_enabled: false, artifacts_masked: [], attribution_enabled: false, attributions: {}, sites: fakeSites(12) },
         busted: { gene: "x", taxa: 18, sites: 12, p_value_acat: 0.5, sites_detail: fakeSites(12) },
         epistasis: { taxa_count: 18, codon_count: 12, edges: [{ site_u: 1, site_v: 2, cesi: 0.9 }, { site_u: 3, site_v: 4, cesi: 2.5 }], sectors: [], plasticity: [] },
-        dms: { taxa_count: 18, codon_count: 12, focal_taxon: "a", total_mutations: 228, plasticity: [{ site: 1, intrinsic_plasticity: 0.3 }] }
+        dms: { taxa_count: 18, codon_count: 12, focal_taxon: "a", total_mutations: 228, plasticity: [{ site: 1, intrinsic_plasticity: 0.3 }] },
+        phenotype: {
+          taxa_count: 18,
+          codon_count: 12,
+          phenotype_meta: { mode: "discrete", foreground_count: 2, background_count: 16, description: "stub" },
+          sites: [{ site: 1, score: 0.9 }],
+          trait_sectors: [],
+          coselection_pairs: [],
+          permulations: { requested: 0, ran: 0, reason: "not-requested", detail: "stub" }
+        }
       };
-      return { result: results[req.analysis], provenance: { surface: req.surface, engine: "in-process", elapsed_sec: 0.01, warnings: [] } };
+      const treeFree = !req.tree || req.options.use_tn93 || req.options.no_tree;
+      return {
+        result: results[req.analysis],
+        provenance: {
+          surface: req.surface,
+          engine: "in-process",
+          elapsed_sec: 0.01,
+          warnings: [],
+          preprocessing: { tree_source: treeFree ? "tn93" : "user", tree_free: treeFree ? { reason: req.tree ? "requested" : "no_tree" } : null }
+        }
+      };
     },
     analyze: async (req) => {
       analyzeCalls.push(req);
+      const trait = req.options && req.options.phenotype;
       const sections = {
         sites: { taxa_count: 18, codon_count: 12, sites: fakeSites(12), summary: {} },
         gene: { record: { p_value_acat: 0.4, positive_selection_detected: false }, statistics: {} },
@@ -246,7 +287,10 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
         attribution: { attributions: { 1: {}, 6: {} }, attribution_enabled: true },
         filter: { artifacts_masked: [], filter_enabled: true, cleaned: null },
         dms: { plasticity: [{ site: 1, intrinsic_plasticity: 0.3 }, { site: 2, intrinsic_plasticity: 0.8 }], focal_taxon: "a", total_mutations: 228, progress: { done: 2, total: 12 }, cancelled: true },
-        phenotype: null
+        // PLAN.md 4.0 row 8: filled if and only if the call carried a trait.
+        phenotype: trait
+          ? { taxa_count: 18, codon_count: 12, phenotype_meta: { mode: "discrete", foreground_count: 2, background_count: 16, description: "stub" }, sites: [{ site: 2, score: 0.8 }], trait_sectors: [], coselection_pairs: [] }
+          : null
       };
       for (const name of ["sites", "gene", "epistasis", "attribution", "filter"]) {
         if (req.progress) req.progress(name === "sites" ? "infer" : name, 1, 1, name);
@@ -256,6 +300,7 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
       req.onSection("dms", { ...sections.dms, plasticity: sections.dms.plasticity.slice(0, 1), progress: { done: 1, total: 12 } }, { final: false });
       await waitOrAbort(req.signal, 15);
       req.onSection("dms", sections.dms, { final: true });
+      if (sections.phenotype) req.onSection("phenotype", sections.phenotype, { final: true });
       return {
         schema_version: 2,
         kind: "report",
@@ -265,21 +310,20 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
         options: req.options,
         diagnostics: { taxa_used: 18, codon_count: 12, warnings: [{ code: "DISTANCE_RESCALED", severity: "warn" }], refused: false },
         sections,
-        provenance: { surface: req.surface, engine: "in-process", model_variant: "general", preprocessing: { taxa_used: 18, taxa_in_alignment: 18, tree_source: "user" }, warnings: [] },
+        provenance: {
+          surface: req.surface,
+          engine: "in-process",
+          model_variant: "general",
+          preprocessing: { taxa_used: 18, taxa_in_alignment: 18, tree_source: req.tree ? "user" : "tn93" },
+          warnings: [],
+          ...(sections.phenotype ? { phenotype_source: "report-pass" } : {})
+        },
         timings: { infer: 0.01, dms: 0.02, total: 0.05 }
       };
     }
   };
-  const fakeBridge = async (req) => {
-    bridgeCalls.push(req);
-    await waitOrAbort(req.signal, 30);
-    return {
-      result: { taxa_count: 18, codon_count: 12, phenotype_meta: { mode: "discrete", foreground_count: 2 }, sites: [{ site: 1, score: 0.9 }], trait_sectors: [], coselection_pairs: [] },
-      provenance: { surface: "python-reference", reference_version: "1.0.0", elapsed_sec: 0.01, command: ["hyphaeon", "phenotype"] }
-    };
-  };
   beforeAll(async () => {
-    ctx = await connect({ engine: fakeEngine, bridge: fakeBridge });
+    ctx = await connect({ engine: fakeEngine });
   });
   afterAll(async () => {
     await ctx.close();
@@ -302,13 +346,12 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
     expect(last.options).toEqual({ model_variant: "viral" });
     expect(last.tree).toBe(tree);
     expect(last.names).toEqual({});
-    expect(bridgeCalls).toHaveLength(0);
+    expect(body.provenance.preprocessing.tree_source).toBe("user");
   });
 
-  it("hyphaeon_epistasis and hyphaeon_dms go to the ENGINE now, never the bridge", async () => {
+  it("epistasis, dms AND phenotype all go to the one in-process engine", async () => {
     const alignment = await example("bat_oas1.fasta");
     const tree = await example("bat_oas1.nwk");
-    const before = bridgeCalls.length;
     const epi = parseText(await ctx.client.callTool({ name: "hyphaeon_epistasis", arguments: { alignment, tree, no_dms: true, n_permutations: 10, seed: 7, top: 1 } }));
     expect(epi.provenance.surface).toBe("mcp-stdio");
     expect(epi.edges).toEqual([{ site_u: 3, site_v: 4, cesi: 2.5 }]);
@@ -318,42 +361,50 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
     expect(dms.provenance.surface).toBe("mcp-stdio");
     expect(engineCalls[engineCalls.length - 1].analysis).toBe("dms");
     expect(engineCalls[engineCalls.length - 1].options).toEqual({ sites: [1, 2], focal_taxon: "R_ferr" });
-    expect(bridgeCalls.length).toBe(before);
+
+    const pheno = parseText(await ctx.client.callTool({ name: "hyphaeon_phenotype", arguments: { alignment, tree, foreground: "R_ferr,R_sin", n_permutations: 10, seed: 3 } }));
+    expect(pheno.provenance.surface).toBe("mcp-stdio");
+    expect(pheno.provenance.engine).toBe("in-process");
+    expect(pheno.phenotype_meta.foreground_count).toBe(2);
+    const last = engineCalls[engineCalls.length - 1];
+    expect(last.analysis).toBe("phenotype");
+    expect(last.options).toEqual({ foreground: "R_ferr,R_sin", n_permutations: 10, seed: 3 });
+    // The phenotype table is an INPUT, not an option: no CSV ends up in the recorded options.
+    const withCsv = parseText(
+      await ctx.client.callTool({ name: "hyphaeon_phenotype", arguments: { alignment, tree, phenotype_file: "species,trait\nR_ferr,1\nR_sin,1\nM_lyra,0\n" } })
+    );
+    expect(withCsv.provenance.surface).toBe("mcp-stdio");
+    const csvCall = engineCalls[engineCalls.length - 1];
+    expect(csvCall.options.phenotype_file).toBeUndefined();
+    expect(csvCall.phenotype_file).toMatch(/^species,trait/);
   });
 
-  it("hyphaeon_phenotype goes to the bridge and is labelled python-reference", async () => {
+  it("ACCEPTS a run with no tree and records tree_source tn93 (D22): no tool refuses for want of one", async () => {
+    const alignment = await example("bat_oas1.fasta");
+    for (const name of ["hyphaeon_meme", "hyphaeon_busted", "hyphaeon_epistasis", "hyphaeon_dms"]) {
+      const res = await ctx.client.callTool({ name, arguments: { alignment } });
+      expect(res.isError, name).toBeFalsy();
+      const body = parseText(res);
+      expect(body.provenance.preprocessing.tree_source, name).toBe("tn93");
+      expect(engineCalls[engineCalls.length - 1].tree, name).toBeUndefined();
+    }
+    const pheno = await ctx.client.callTool({ name: "hyphaeon_phenotype", arguments: { alignment, preset: "marine" } });
+    expect(pheno.isError).toBeFalsy();
+    expect(parseText(pheno).provenance.preprocessing.tree_source).toBe("tn93");
+  });
+
+  it("use_tn93 is forwarded to the engine instead of refused", async () => {
     const alignment = await example("bat_oas1.fasta");
     const tree = await example("bat_oas1.nwk");
-    const before = engineCalls.length;
-    const res = await ctx.client.callTool({ name: "hyphaeon_phenotype", arguments: { alignment, tree, foreground: "R_ferr,R_sin", n_permutations: 10, seed: 3 } });
-    const body = parseText(res);
-    expect(res.isError).toBeFalsy();
-    expect(body.provenance.surface).toBe("python-reference");
-    expect(body.sites).toHaveLength(1);
-    expect(bridgeCalls[bridgeCalls.length - 1].options).toEqual({ foreground: "R_ferr,R_sin", n_permutations: 10, seed: 3 });
-    expect(engineCalls.length).toBe(before);
-  });
-
-  it("refuses a run with no tree before touching either engine", async () => {
-    const alignment = await example("bat_oas1.fasta");
-    const before = engineCalls.length + bridgeCalls.length;
-    const res = await ctx.client.callTool({ name: "hyphaeon_meme", arguments: { alignment } });
-    expect(res.isError).toBe(true);
-    expect(parseText(res).kind).toBe("input");
-    expect(parseText(res).hint).toMatch(/hyphaeon_analyze/);
-    expect(engineCalls.length + bridgeCalls.length).toBe(before);
-  });
-
-  it("refuses TN93 mode for the native pillars when the engine has no TN93, but lets the bridged one through", async () => {
-    const alignment = await example("bat_oas1.fasta");
-    for (const name of ["hyphaeon_busted", "hyphaeon_epistasis", "hyphaeon_dms"]) {
-      const res = await ctx.client.callTool({ name, arguments: { alignment, use_tn93: true } });
-      expect(res.isError, name).toBe(true);
-      expect(parseText(res).error).toMatch(/TN93/);
+    for (const name of ["hyphaeon_meme", "hyphaeon_busted", "hyphaeon_epistasis", "hyphaeon_dms"]) {
+      const res = await ctx.client.callTool({ name, arguments: { alignment, tree, use_tn93: true } });
+      expect(res.isError, name).toBeFalsy();
+      expect(engineCalls[engineCalls.length - 1].options.use_tn93, name).toBe(true);
+      expect(parseText(res).provenance.preprocessing.tree_source, name).toBe("tn93");
     }
     const ok = await ctx.client.callTool({ name: "hyphaeon_phenotype", arguments: { alignment, use_tn93: true, preset: "marine" } });
     expect(ok.isError).toBeFalsy();
-    expect(bridgeCalls[bridgeCalls.length - 1].options).toEqual({ use_tn93: true, preset: "marine" });
+    expect(engineCalls[engineCalls.length - 1].options).toEqual({ use_tn93: true, preset: "marine" });
   });
 
   it("refuses a two-sequence alignment with an input-class error", async () => {
@@ -419,18 +470,20 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
     expect(cancel.message).toMatch(/already completed/);
   });
 
-  it("a bridged (phenotype) job keeps python-reference provenance through get_results", async () => {
+  it("a phenotype job keeps in-process provenance through get_results", async () => {
     const alignment = await example("bat_oas1.fasta");
     const tree = await example("bat_oas1.nwk");
     const queued = parseText(await ctx.client.callTool({ name: "hyphaeon_phenotype", arguments: { alignment, tree, preset: "marine", run_async: true } }));
-    expect(queued.engine).toBe("python-reference");
+    expect(queued.engine).toBe("in-process");
+    expect(queued.tree_source).toBe("user");
     await waitFor(async () => {
       const s = parseText(await ctx.client.callTool({ name: "job_status", arguments: { job_id: queued.job_id } }));
       return s.status === "completed" ? s : null;
     });
     const full = parseText(await ctx.client.callTool({ name: "get_results", arguments: { job_id: queued.job_id, summary_only: true } }));
-    expect(full.provenance.surface).toBe("python-reference");
+    expect(full.provenance.surface).toBe("mcp-stdio");
     expect(full.collections).toEqual({ sites: 1, trait_sectors: 0, coselection_pairs: 0 });
+    expect(full.summary.phenotype_meta.foreground_count).toBe(2);
   });
 
   it("cancel_job aborts a running job", async () => {
@@ -529,5 +582,41 @@ describe("analysis tools with a stubbed engine and a stubbed bridge", () => {
       expect(short.reason).toMatch(/did not finish within wait_seconds/);
       expect(short.next).toMatch(/get_results/);
     }
+  });
+
+  it("hyphaeon_analyze fills sections.phenotype if and only if a trait block was given", async () => {
+    const alignment = await example("bat_oas1.fasta");
+    const tree = await example("bat_oas1.nwk");
+
+    const without = parseText(await ctx.client.callTool({ name: "hyphaeon_analyze", arguments: { alignment, tree, summary_only: true } }));
+    expect(without.summary.sections_absent).toEqual(["phenotype"]);
+    expect(without.summary.phenotype).toMatch(/on demand/);
+    expect(analyzeCalls[analyzeCalls.length - 1].options.phenotype).toBeUndefined();
+
+    const withTrait = parseText(
+      await ctx.client.callTool({ name: "hyphaeon_analyze", arguments: { alignment, tree, phenotype: { preset: "marine", permulations: 100 }, summary_only: true } })
+    );
+    expect(withTrait.summary.sections_present).toContain("phenotype");
+    expect(withTrait.summary.sections_absent).toEqual([]);
+    expect(withTrait.summary.phenotype.phenotype_meta.foreground_count).toBe(2);
+    expect(withTrait.provenance.phenotype_source).toBe("report-pass");
+    const call = analyzeCalls[analyzeCalls.length - 1];
+    expect(call.options.phenotype).toEqual({ preset: "marine", permulations: 100 });
+
+    // The section pages like every other one.
+    const section = parseText(await ctx.client.callTool({ name: "get_results", arguments: { job_id: withTrait.job_id, section: "phenotype", top: 1 } }));
+    expect(section.section).toBe("phenotype");
+    expect(section.sites).toHaveLength(1);
+  });
+
+  it("hyphaeon_analyze carries a phenotype_file input to the engine without putting the CSV in the options", async () => {
+    const alignment = await example("bat_oas1.fasta");
+    const tree = await example("bat_oas1.nwk");
+    const csv = "species,trait\nR_ferr,1\nR_sin,1\nM_lyra,0\n";
+    const body = parseText(await ctx.client.callTool({ name: "hyphaeon_analyze", arguments: { alignment, tree, phenotype_file: csv, summary_only: true } }));
+    expect(body.status).toBe("completed");
+    const call = analyzeCalls[analyzeCalls.length - 1];
+    expect(call.phenotype_file).toBe(csv);
+    expect(call.options.phenotype_file).toBeUndefined();
   });
 });

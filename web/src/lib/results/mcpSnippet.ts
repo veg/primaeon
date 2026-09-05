@@ -59,7 +59,9 @@ export function mcpToolArguments(record: MemeRecord): Record<string, unknown> {
 	const args: Record<string, unknown> = {};
 	args.alignment = `file:///path/to/${record.name ?? 'alignment.fasta'}`;
 	const treeSource = record.provenance?.preprocessing?.tree_source;
-	if (treeSource === 'user' || treeSource === 'hyphy-hky85') {
+	// D22: 'user' is the only source with a tree FILE to name; everything else is tree-free
+	// (`--use-tn93`) or the alignment's own embedded tree.
+	if (treeSource === 'user') {
 		args.tree = 'file:///path/to/tree.nwk';
 	} else if (treeSource === 'tn93' || treeSource === 'nj') {
 		args.use_tn93 = true;

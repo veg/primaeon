@@ -110,7 +110,7 @@
       { "id": "veg/HyphAeon#8", "summary": "Maximum patristic distance > 10 is rescaled silently by dividing the matrix by the codon count", "surface_rule": "warn MAX_PATRISTIC_ABOVE_10" },
       { "id": "veg/HyphAeon#9", "summary": "Alignment taxa missing from the tree are zeroed silently", "surface_rule": "refuse ALIGNMENT_TAXA_MISSING_FROM_TREE" },
       { "id": "veg/HyphAeon#13", "summary": "Nearly invariant to the tree topology, sensitive to branch-length units, reading frame and U-vs-T", "surface_rule": "one set of pre-run checks on every surface" },
-      { "id": "veg/HyphAeon#16", "summary": "ONNX export needs mean_root_attns and root_repr outputs plus busted_head.onnx (reopened with that scope)", "surface_rule": "Phase 0 bridges to Python until the export lands" },
+      { "id": "veg/HyphAeon#16", "summary": "ONNX export needs mean_root_attns and root_repr outputs plus busted_head.onnx (reopened with that scope)", "surface_rule": "Closed: the three-output export landed and every pillar runs in-process from it (Phase 2a, 3a)" },
       { "id": "veg/HyphAeon#33", "summary": "Shallow single-ancestor panels return nothing, silently", "surface_rule": "warn STAR_LIKE_TREE" }
     ],
     "measured_cost_python_reference": {

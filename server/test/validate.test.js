@@ -5,6 +5,11 @@
  * surface the library's diagnostic codes unchanged (bat_oas1 is the example whose tree is
  * DISTANCE_RESCALED on every surface, PHASE1.md), refuse what the caps refuse with the
  * CAPS_EXCEEDED code the MCP uses, and reject a malformed body before touching the library.
+ *
+ * D22 adds one contract to hold here: a MISSING TREE IS NOT A REFUSAL. camelid has no tree of its
+ * own, and the route must answer ok with `TREE_FREE_TN93` at info level and
+ * `summary.tree_source: "tn93"`; `use_tn93` must do the same on an alignment that DOES have a
+ * usable tree. Nothing may report a branch-length estimator, because the server has none.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -39,6 +44,37 @@ describe("POST /api/v1/validate", () => {
     expect(res.body.summary.mode).toBe("job");
     expect(res.body.summary.surface).toBe("node-server");
     expect(res.body.summary.work).toBe(351 * 18 * 18);
+  });
+
+  it("accepts an alignment with no tree: TREE_FREE_TN93 at info, tree_source tn93, no estimator", async () => {
+    const ex = example("bat_oas1");
+    const res = await request(handle.app).post("/api/v1/validate").send({ alignment: ex.alignment });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const w = res.body.warnings.find((x) => x.code === "TREE_FREE_TN93");
+    expect(w).toBeDefined();
+    expect(w.severity).toBe("info");
+    expect(w.data.reason).toBe("no_tree");
+    expect(res.body.summary.tree_source).toBe("tn93");
+    expect(res.body.summary.tree_free).toBe("no_tree");
+    // The codes D22 retired must not come back, and nothing may claim an estimator.
+    const codes = res.body.warnings.map((x) => x.code);
+    expect(codes).not.toContain("TREE_MISSING");
+    expect(codes).not.toContain("BRANCH_LENGTHS_MISSING");
+    expect(codes).not.toContain("TN93_UNAVAILABLE");
+    expect(JSON.stringify(res.body)).not.toMatch(/hyphy/i);
+  });
+
+  it("use_tn93 forces the tree-free path even when the tree is usable", async () => {
+    const ex = example("bat_oas1");
+    const withTree = await request(handle.app).post("/api/v1/validate").send({ alignment: ex.alignment, tree: ex.tree });
+    expect(withTree.body.summary.tree_source).toBe("user");
+    expect(withTree.body.warnings.map((w) => w.code)).not.toContain("TREE_FREE_TN93");
+    const forced = await request(handle.app).post("/api/v1/validate").send({ alignment: ex.alignment, tree: ex.tree, use_tn93: true });
+    expect(forced.status).toBe(200);
+    expect(forced.body.ok).toBe(true);
+    expect(forced.body.summary.tree_source).toBe("tn93");
+    expect(forced.body.warnings.find((w) => w.code === "TREE_FREE_TN93").data.reason).toBe("requested");
   });
 
   it("refuses two sequences with a refuse-level warning", async () => {

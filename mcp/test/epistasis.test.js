@@ -185,13 +185,18 @@ describe("hyphaeon_epistasis in-process on Smc6 vs fixtures/e2e/epistasis_Smc6_n
     expect(t.dms_enabled).toBe(false);
   });
 
-  it("refuses --mds-sign lapack and TN93 mode in-process with input-class errors", async () => {
+  it("refuses --mds-sign lapack, and runs tree-free instead of refusing it (D22)", async () => {
     const r1 = await ctx.client.callTool({ name: "hyphaeon_epistasis", arguments: { alignment, tree, mds_sign: "lapack" } });
     expect(r1.isError).toBe(true);
     expect(parseText(r1).kind).toBe("input");
     expect(parseText(r1).error).toMatch(/canonical/);
-    const r2 = await ctx.client.callTool({ name: "hyphaeon_epistasis", arguments: { alignment, use_tn93: true } });
-    expect(r2.isError).toBe(true);
-    expect(parseText(r2).error).toMatch(/TN93/);
-  });
+    // Before Phase 3 this was an input-class refusal; the library computes the distances now.
+    const r2 = await ctx.client.callTool({ name: "hyphaeon_epistasis", arguments: { alignment, use_tn93: true, n_permutations: 10, no_dms: true, summary_only: true } });
+    if (r2.isError) throw new Error(r2.content[0].text);
+    const treeFree = parseText(r2);
+    expect(treeFree.provenance.preprocessing.tree_source).toBe("tn93");
+    expect(treeFree.provenance.preprocessing.tree_free.reason).toBe("requested");
+    expect(treeFree.provenance.reference_command).toContain("--use-tn93");
+    expect(typeof treeFree.summary.edges).toBe("number");
+  }, 900000);
 });

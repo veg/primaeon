@@ -11,9 +11,12 @@
  *
  * THE ORDER, AND WHAT EACH STEP REUSES (PLAN.md §4.0's table, left to right):
  *
- *   1. diagnostics   `prepareRun` (parse -> tree -> matching -> duplicates -> PD cap -> MDS ->
- *                    tokens) ONCE, plus the library's `diagnose()`. Everything below reads the
- *                    LoadedAlignment it produced; nothing loads the alignment a second time.
+ *   1. diagnostics   `prepareRun` (parse -> tree decision -> matching -> duplicates -> PD cap ->
+ *                    MDS -> tokens) ONCE, plus the library's `diagnose()`. Everything below reads
+ *                    the LoadedAlignment it produced; nothing loads the alignment a second time.
+ *                    Under PLAN.md D22 the tree decision may be "there is no usable tree, so use
+ *                    TN93 distances" (pipeline.js `decideTreePolicy`); the report records that as
+ *                    `tree_source: 'tn93'` with the reason, and carries a display-only NJ tree.
  *   2. sites         `runMeme` over that preparation, requesting `lrt` AND the two optional
  *                    heads: `mean_root_attns` (epistasis) and `root_repr` (busted). One graph
  *                    pass over the variable sites is the whole cost of steps 2-4.
@@ -37,7 +40,10 @@
  *   7. dms           last, progressive, cancellable through its OWN child AbortController, and
  *                    capped by work (dms.js). Cancelling it cancels nothing else.
  *   8. phenotype     null. It needs a trait, so it cannot run unasked; the report renders the
- *                    offer (PLAN.md §4.0 row 8, Phase 3).
+ *                    offer (PLAN.md §4.0 row 8). When the user answers it, the surface calls
+ *                    `runEverything.phenotype(record, trait)` (= `runPhenotypeForReport`), which
+ *                    reuses the meme pass's attention and LRTs exactly as the epistasis section
+ *                    does — no forward pass — and fills `sections.phenotype` in place.
  *
  * NOTHING BUT A REFUSAL STOPS THE REPORT. Steps 1 and 2 are the report (a run with no sites is
  * not a report), so they propagate. Every later section is wrapped: a failure is attached to
@@ -81,6 +87,7 @@ import { predictFromSession, resolveBatchSize, throwIfAborted } from './predict.
 import { CALL_DEFAULTS } from './callModes.js';
 import { runEpistasis, BROWSER_PERMUTATIONS_DEFAULT } from './epistasis.js';
 import { runDms, DMS_WORK_BUDGET_DEFAULT } from './dms.js';
+import { runPhenotype, PHENOTYPE_SURROGATE_FOR } from './phenotype.js';
 import { createReport, setSection, addTiming, REPORT_PHASES, SECTION_ORDER } from './report.js';
 
 /** What each section of the report is a surrogate for (PLAN.md §2, hard truth 1). */
@@ -90,7 +97,8 @@ export const SURROGATE_FOR = Object.freeze({
 	epistasis: 'co-evolution / sector analysis (ESSM)',
 	attribution: 'MEME branch attribution',
 	filter: 'alignment-artifact screen',
-	dms: 'deep mutational scanning (ESSM)'
+	dms: 'deep mutational scanning (ESSM)',
+	phenotype: PHENOTYPE_SURROGATE_FOR
 });
 
 /** The report's own defaults. Every one of them is changeable behind "Re-run with…", not before. */
@@ -200,6 +208,94 @@ export async function geneFromPass({ loaded, inference, head = null, options = {
 }
 
 /**
+ * The phenotype section, on demand, over a report that has already run (PLAN.md §4.0 row 8, D21:
+ * "phenotype runs on demand because it needs a trait").
+ *
+ * IT COSTS NO FORWARD PASS. A live `ReportRecord` still carries the meme pass on its sites
+ * section as the non-enumerable `loaded` and `inference` handles (pipeline.js), and this reuses
+ * `inference.mean_root_attns` + `inference.lrt` exactly as the epistasis section did — the same
+ * attention, through the same `attributionsFromPass`. A record that has been serialised and read
+ * back has lost those handles (by design: an [L, N] matrix does not belong in IndexedDB), so a
+ * caller in that position passes `{loaded, attention, lrt}` — or, on the surfaces that keep the
+ * session, re-runs `prepareRun` + `runMeme` first and passes THAT pass.
+ *
+ * The record is filled in place: `sections.phenotype`, `timings.phenotype`, and
+ * `provenance.report.sections_run`. On failure the section is set to `{failed, error}` AND the
+ * error is re-thrown — unlike the automatic sections, this one was explicitly requested, so the
+ * caller has to hear about it, while a report already on screen still gets a section that says
+ * what went wrong.
+ *
+ * @param {object} record the ReportRecord `runEverything` returned
+ * @param {object} [phenotypeInput] the trait: `{preset}` | `{foreground}` | `{phenotypeCsv,
+ *   phenotypeFile, traitCol, speciesCol}` | `{y}`, with `continuous`. A wrapper of the form
+ *   `{phenotype: {...}, options: {...}}` is accepted too, so a surface can pass one object.
+ * @param {{loaded?: object, attention?: any, lrt?: ArrayLike<number>, session?: object,
+ *   options?: object, tree?: object|null, progress?: Function, onSection?: Function,
+ *   signal?: AbortSignal}} [context]
+ * @returns {Promise<object>} the phenotype section
+ */
+export async function runPhenotypeForReport(record, phenotypeInput = {}, context = {}) {
+	if (!record || !record.sections) throw new Error('runPhenotypeForReport: pass the ReportRecord runEverything returned');
+	const phenotype = phenotypeInput.phenotype ?? phenotypeInput;
+	const sitesSection = record.sections.sites;
+	const loaded = context.loaded ?? sitesSection?.loaded ?? null;
+	const inference = sitesSection?.inference ?? null;
+	const attention = context.attention ?? inference?.mean_root_attns ?? null;
+	const lrt = context.lrt ?? inference?.lrt ?? null;
+	if (!loaded) {
+		throw new Error(
+			'runPhenotypeForReport: this report no longer carries its loaded alignment (a stored record ' +
+				'drops the [L, N] pass). Pass {loaded, attention, lrt} from a fresh prepareRun + runMeme.'
+		);
+	}
+	if (!attention && !lrt && !context.session) {
+		throw new Error('runPhenotypeForReport: pass the meme pass (attention + lrt) or a `session` to run one');
+	}
+	const options = {
+		seed: record.options?.seed ?? REPORT_DEFAULTS.seed,
+		permutations: record.options?.permutations ?? REPORT_DEFAULTS.permutations,
+		...(phenotypeInput.options ?? {}),
+		...(context.options ?? {})
+	};
+	const start = now();
+	try {
+		const section = await runPhenotype({
+			loaded,
+			attention,
+			lrt,
+			session: context.session ?? null,
+			phenotype,
+			options,
+			tree: context.tree,
+			inputs: {
+				alignment: record.inputs?.alignmentName ?? null,
+				tree: record.inputs?.treeName ?? null
+			},
+			progress: context.progress,
+			signal: context.signal
+		});
+		addTiming(record, 'phenotype', (now() - start) / 1000);
+		setSection(record, 'phenotype', section);
+		emit(context.onSection, 'phenotype', section, true);
+		if (record.provenance?.report) {
+			record.provenance.report.sections_run = SECTION_ORDER.filter((name) => record.sections[name] != null);
+			record.provenance.report.sections_failed = SECTION_ORDER.filter((name) => record.sections[name]?.failed);
+			record.provenance.report.surrogate_for = SURROGATE_FOR;
+		}
+		return section;
+	} catch (err) {
+		addTiming(record, 'phenotype', (now() - start) / 1000);
+		setSection(record, 'phenotype', sectionError(err));
+		emit(context.onSection, 'phenotype', record.sections.phenotype, true);
+		if (record.provenance?.report) {
+			record.provenance.report.sections_run = SECTION_ORDER.filter((name) => record.sections[name] != null);
+			record.provenance.report.sections_failed = SECTION_ORDER.filter((name) => record.sections[name]?.failed);
+		}
+		throw err;
+	}
+}
+
+/**
  * Run every analysis one upload can produce, in PLAN.md §4.0's order, and return the ReportRecord.
  *
  * @param {object} args
@@ -219,7 +315,9 @@ export async function geneFromPass({ loaded, inference, head = null, options = {
  * @param {boolean} [args.options.epistasis] run the epistasis section (default true)
  * @param {boolean} [args.options.attribute] run the attribution section (default true)
  * @param {boolean} [args.options.filter] run the artifact filter section (default true)
- * @param {Function} [args.options.estimateTree] the HyPhy / NJ hook (dataset.py:601-611)
+ * @param {boolean} [args.options.useTn93] force the tree-free TN93 path (D22; it is taken
+ *   automatically when the upload has no usable tree)
+ * @param {boolean} [args.options.requireBranchLengths] refuse rather than go tree-free
  * @param {{backbone?: object, head?: object, session?: any, ort?: any}} args.session the handle
  *   `createSession()` returned (or a bare backbone handle)
  * @param {object} [args.head] the busted-head handle, when the session object does not carry one
@@ -299,8 +397,10 @@ export async function runEverything({
 		maxSpecies: options.maxSpecies ?? REPORT_DEFAULTS.maxSpecies,
 		pruneDuplicates: options.pruneDuplicates,
 		referenceSequence: options.referenceSequence,
-		estimateTree: options.estimateTree,
+		useTn93: options.useTn93,
+		tn93Options: options.tn93Options,
 		requireBranchLengths: options.requireBranchLengths,
+		displayTree: options.displayTree,
 		treeSource: options.treeSource,
 		alignmentName: inputs.alignmentName,
 		treeName: inputs.treeName,
@@ -328,13 +428,17 @@ export async function runEverything({
 		loaded,
 		speciesCap,
 		runtimeWarnings: prep.warnings,
-		enabled: options.diagnose
+		enabled: options.diagnose,
+		useTn93: prep.useTn93
 	});
 	record.diagnostics = {
 		taxa_in_alignment: preprocessing.taxa_in_alignment,
 		taxa_used: N,
 		codon_count: L,
 		preprocessing,
+		tree_free: prep.treeFree,
+		// DISPLAY ONLY (nj.js): the site-tree modal and the phenotype foreground picker read this.
+		display_tree: prep.displayTree,
 		warnings,
 		refused: false
 	};
@@ -607,3 +711,9 @@ export async function runEverything({
 	phase('postprocess', 1, 1, 'Report ready');
 	return record;
 }
+
+/**
+ * `runEverything.phenotype(record, trait, context)` — the on-demand section, reachable from the
+ * same import a surface already has. Identical to `runPhenotypeForReport`.
+ */
+runEverything.phenotype = runPhenotypeForReport;

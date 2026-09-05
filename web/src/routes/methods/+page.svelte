@@ -82,6 +82,28 @@
 				</tbody>
 			</table>
 		</div>
+		<h3>What the model is given instead of a tree</h3>
+		<p>
+			The four tensors above include a patristic distance matrix and its 4-D embedding, and those
+			are the only way the phylogeny reaches the network: it never sees a topology. So a tree is an
+			input to a distance calculation, not to the model, and the app treats it that way. A tree that
+			carries branch lengths is used exactly as supplied. A tree without them, or no tree at all,
+			puts the run in <strong>tree-free mode</strong>: pairwise Tamura–Nei 93 distances are computed
+			from the alignment and feed the embedding directly. That is the reference's own
+			<code>--use-tn93</code> path, not a fallback invented here, and the manuscript reports
+			Spearman ρ = 0.9997 between the site scores it produces and the tree-based ones. Nothing is
+			fitted, nothing is inferred for the model, and every sequence is kept, in alignment order,
+			because there is no tree to match names against.
+		</p>
+		<p>
+			The report still draws a tree — the site-specific tree modal and the phenotype foreground
+			picker both need one — and in tree-free mode that is a neighbour-joining tree built from the
+			same TN93 distances, labelled <em>display only</em> wherever it appears. Two consequences are
+			worth stating: the gene-level phenotype permulations are withheld on such a run, because a
+			Brownian null drawn from a topology inferred from the association's own distances would share
+			its error; and the depth diagnostics now judge the regime on TN93 distances, so an alignment
+			that used to get no depth advice at all may now be told it is deep or shallow.
+		</p>
 		<p class="fine">
 			Every surface verifies the full hash of the graph it loads and records it, the variant, the
 			seed and the surface in the result's provenance. Source: {set.sources[card.source]}.

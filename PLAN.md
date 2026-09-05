@@ -241,7 +241,7 @@ days; no accounts; 128-bit job ids; per-IP rate limit; CSP `default-src 'self'`.
   "preprocessing": {
     "taxa_in_alignment": 24, "taxa_used": 20, "dropped_taxa": ["…"], "duplicates_collapsed": 3,
     "pd_subsampled": false, "reference_sequence": "hg38",
-    "tree_source": "user | embedded | hyphy-hky85 | nj | tn93", "branch_lengths_estimated": false,
+    "tree_source": "user | embedded | tn93", "tree_free": { "reason": "no_tree | no_branch_lengths | requested" }, "display_tree_source": "user | nj",
     "distance_rescaled": false, "codons_trimmed": 0, "unknown_codon_fraction": 0.004, "in_frame_stops": 0
   },
   "warnings": [ { "code": "DEEP_LARGE_TREE", "severity": "warn", "message": "…" } ]
@@ -304,7 +304,7 @@ a tree, starts everything, and one report fills in as results arrive:
 
 | Order | What runs | Why this order | Cost in the browser |
 |---|---|---|---|
-| 1 | Diagnostics, with automatic repairs: U→T, trailing-codon trim, duplicate collapse, Faith's-PD cap, variant chosen from tree depth, branch lengths estimated by HyPhy WASM when missing, an NJ tree built when there is no tree at all | Decides the inputs; the only blocking outcome is a refuse-level problem (too few taxa, frameshifted, unparseable) | milliseconds to a few seconds (HyPhy) |
+| 1 | Diagnostics, with automatic repairs: U→T, trailing-codon trim, duplicate collapse, Faith's-PD cap, variant chosen from tree depth; a tree with branch lengths is used as is, anything else (no tree, or no usable lengths) takes the tree-free TN93 path (D22), with a display-only NJ tree for the site views | Decides the inputs; the only blocking outcome is a refuse-level problem (too few taxa, frameshifted, unparseable) | milliseconds |
 | 2 | Site selection (`meme`) | The core result | one forward pass over variable sites, seconds |
 | 3 | Gene-level omnibus (`busted`) | Free from (2) plus one head pass | negligible |
 | 4 | Epistasis network and sectors | Attention comes out of the same forward pass; the rest is graph math | seconds; permutation null in a worker |
@@ -610,7 +610,7 @@ changes the port needs:
 | D3 | Pillars in v1 | `meme`, `busted`, `epistasis`, `dms`, `phenotype`, `evaluate`. Exclude `disease`. |
 | D4 | Where visualisations live | In-app first, promote to hyphy-scope in phase 4. |
 | D5 | Tree optional? | Yes. **Superseded by D22:** no tree → tree-free TN93 distances. |
-| D6 | Topology-only trees | **Superseded by D22:** a tree without branch lengths is treated as no tree (TN93 distances); its topology is kept only for display. |
+| D6 | Topology-only trees | **Superseded by D22:** a tree without branch lengths is treated as no tree (TN93 distances). As built in Phase 3 the display tree on a tree-free run is the NJ tree from the TN93 distances; keeping the user's topology for display instead is a Phase 4 polish item. |
 | D7 | Accounts and persistence | None. Browser results in IndexedDB; server jobs by URL with a 7-day TTL. |
 | D8 | Styling | Scoped CSS with DM3's tokens; no Tailwind; no CDNs. |
 | D9 | Repository | **Resolved: two repositories split by what they are.** `veg/HyphAeon` holds the methods: the Python reference, the `js/` library that mirrors it, fixtures, models, and parity CI, publishing to PyPI and npm from one tag. `veg/hyphaeon-app` holds everything that runs: `web/`, `runtime/`, `mcp/`, `server/`, `deploy/`, `e2e/`, and pins the library (§5.5). |
@@ -620,7 +620,7 @@ changes the port needs:
 | D13 | Threads | COOP/COEP on, multi-threaded ORT; one-thread fallback when headers are absent. |
 | D14 | Fate of axomeme3 and DM3's copy | axomeme3 redirects here at launch; DM3's `src/lib/services/axomeme` is replaced by the package in phase 4. |
 | D15 | Remote MCP auth | Datamonkey's auto-approving OAuth (dynamic registration, PKCE, OOB). |
-| D16 | Python at runtime | None after phase 3. The Python CLI bridge in the MCP is temporary and labelled as such in provenance. |
+| D16 | Python at runtime | **Done in Phase 3:** none. The Python CLI bridge was deleted; every pillar runs on the library in the browser, the MCP and the Node server. |
 | D17 | PRNG and seeds | xoshiro256** with a default seed of 42, recorded in provenance; `--seed` added upstream so both sides are reproducible; statistical parity per §5.4. |
 | D18 | Where the port's fixtures live | **Resolved by D9:** `veg/HyphAeon/fixtures/`, generated and replayed in the same repository and CI run. |
 | D19 | Versioning and publishing | The JS packages carry the repository tag as their version (`hyphaeon==1.4.0` ↔ `@veg/hyphaeon-js@1.4.0`); `release.yml` publishes both on tag; `manifest.json` records the tag; the app pins an exact version and bumps deliberately. |

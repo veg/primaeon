@@ -1,77 +1,74 @@
 /**
- * engine.js — the in-process HyphAeon engine behind hyphaeon_analyze, hyphaeon_meme,
- * hyphaeon_busted, hyphaeon_epistasis, hyphaeon_dms and hyphaeon_evaluate: runtime/ over
- * onnxruntime-node, no Python.
+ * engine.js — the in-process HyphAeon engine behind every tool: runtime/ over onnxruntime-node,
+ * no Python, no HyPhy.
  *
  * WHY THIS FILE EXISTS
  *
- * PLAN.md 3.6, "Bridge, then port": once a pillar's JavaScript port lands, its tool stops
+ * PLAN.md 3.6, "port pillar by pillar": once a pillar's JavaScript port lands, its tool stops
  * shelling to `hyphaeon <cmd>` and runs `runtime/` in this process, and `provenance.surface`
  * becomes "mcp-stdio" / "mcp-http". Phase 1a ported site selection, the omnibus statistics and
  * the evaluation (veg/HyphAeon js/ at tag phase-1a); Phase 1b's runtime wraps them as
  * `runMeme` (runtime/src/pipeline.js), `runBusted` (runtime/src/busted.js) and `runEvaluate`
  * (runtime/src/evaluate.js) over a session `createSession` (runtime/src/createSession.js) loads
  * from the manifest, and serialises them with runtime/src/results.js. Phase 2a ported the
- * epistasis pillar (js/src/epistasis.js, sectors.js, dms.js at tag phase-2a; PHASE2A.md) and the
- * runtime wraps it as `runEpistasis` (runtime/src/epistasis.js) and `runDms` (runtime/src/dms.js)
- * over a `prepareRun()` load, and orchestrates the whole PLAN.md 4.0 report as `runEverything`
- * (runtime/src/analyze.js, the contract every surface codes against). This module is the MCP's
- * side of all that: it resolves the models directory (src/models.js), loads and memoises one
- * session per variant, maps the tool's CLI-shaped options onto the runtime's, hands the runtime a
- * branch-length estimator built on its HyPhy WASM driver, turns the runtime's result into the
- * document `hyphaeon <cmd> -o` writes (Appendix B of PLAN.md; cli.py:298-311 for meme, :486-505
- * for busted, epistasis.py:717-731 for epistasis, :759-768 for dms, evaluation.py's report for
- * evaluate) with a PLAN.md 3.5 provenance block, and classifies failures into the two classes
- * src/bridge.js established (input | server). The ONE bridged pillar left (phenotype) stays on
- * src/bridge.js until Phase 3.
+ * epistasis pillar (js/src/epistasis.js, sectors.js, dms.js at tag phase-2a) and the runtime
+ * wraps it as `runEpistasis` (runtime/src/epistasis.js) and `runDms` (runtime/src/dms.js) over a
+ * `prepareRun()` load, and orchestrates the whole PLAN.md 4.0 report as `runEverything`
+ * (runtime/src/analyze.js, the contract every surface codes against). **Phase 3a ported the last
+ * pillar, phenotype** (js/src/phenotype.js + permulations.js at tag phase-3a; HyphAeon/PHASE3A.md),
+ * the runtime wraps it as `runPhenotype` (runtime/src/phenotype.js) — and with that the last
+ * subprocess in the product went away. Nothing in this process spawns anything: there is no
+ * Python at runtime anywhere (PLAN.md 8 phase 3, D16).
  *
- * OPTIONS MIRROR THE CLI ONE TO ONE (hyphaeon/cli.py at phase-2a; evaluation.py
+ * This module is the MCP's side of all that: it resolves the models directory (src/models.js),
+ * loads and memoises one session per variant, maps the tool's CLI-shaped options onto the
+ * runtime's, turns the runtime's result into the document `hyphaeon <cmd> -o` writes (Appendix B
+ * of PLAN.md; cli.py:298-311 for meme, :486-505 for busted, epistasis.py:717-731 for epistasis,
+ * :759-768 for dms, phenotype.py:624-646 for phenotype, evaluation.py's report for evaluate) with
+ * a PLAN.md 3.5 provenance block, and classifies failures into two classes (input | server).
+ *
+ * OPTIONS MIRROR THE CLI ONE TO ONE (hyphaeon/cli.py at phase-3a; evaluation.py
  * configure_parser), with these documented seams:
- *   - `max_species` unset means NO cap for meme, epistasis and dms (cli.py `--max-species`
- *     default None; the epistasis and dms parsers have no such flag and their handlers call
- *     `load_alignment_and_tree` without one) and 512 for busted; the runtime spells "no cap" as
- *     `Infinity`.
+ *   - `max_species` unset means NO cap for meme, epistasis, dms and phenotype (cli.py
+ *     `--max-species` default None; those parsers either have no such flag or default to None)
+ *     and 512 for busted; the runtime spells "no cap" as `Infinity`.
  *   - `cpu` is accepted and recorded; onnxruntime-node here is CPU-only.
- *   - `use_tn93` / `no_tree` (dataset.py:544-580, TN93 pairwise distances in place of a tree)
- *     need the tn93 binary or package, which neither the library nor the runtime provides;
- *     refused as an input error with a hint. (The runtime's NJ-on-TN93 tree is a different
- *     thing — PLAN.md D5's "no tree -> NJ" — and is not offered under the CLI's flag.)
  *   - `min_patch_consec` is recorded but not forwarded: runMeme fixes the cmd_meme copy of the
  *     OCI screen at its default (3); a non-default value raises a provenance warning
  *     (OPTION_NOT_APPLIED) rather than silently doing something else.
- *   - `mds_sign` (phase-2a `--mds-sign {canonical,lapack}`): the library computes CANONICAL
- *     eigenvector signs only (MDS_SIGN.md; PHASE2A.md gap 9 — `loadAlignmentAndTree` has no
- *     `mdsSign` option), which is also the reference's default. `lapack` would reproduce
- *     pre-convention numbers and is refused as an input error; every native result records
+ *   - `mds_sign` (`--mds-sign {canonical,lapack}`): the library computes CANONICAL eigenvector
+ *     signs only (MDS_SIGN.md), which is also the reference's default. `lapack` would reproduce
+ *     pre-convention numbers and is refused as an input error; every result records
  *     `provenance.mds_sign: "canonical"` as MDS_SIGN.md recommends.
- *   - `seed` (phase-2a `--seed`, epistasis) feeds the sector permutation null. The reference draws
- *     with PCG64 and the library with xoshiro256**, so the same seed gives a DIFFERENT sequence of
- *     K-subsets and `p_perm` agrees statistically, never bit for bit (PLAN.md 5.4).
+ *   - `seed` feeds the sector permutation null (epistasis, phenotype) and the phenotype
+ *     permulations. The reference draws with PCG64 and the library with xoshiro256**, so the same
+ *     seed gives a DIFFERENT sequence and `p_perm` / `p_assoc_perm` / `gene_p_value_perm` agree
+ *     statistically, never bit for bit (PLAN.md 5.4).
  *   - `sites` on hyphaeon_dms is APP-SIDE (the CLI sweeps every site): 1-indexed codon sites to
  *     sweep, so a caller can pay for the sites it cares about; `total_mutations` stays 19 x L as
  *     `run_digital_dms_analysis` computes it, and `progress` says how many were swept.
+ *   - `phenotype_file` is the CSV/TSV TEXT, not a path: the library does no I/O and this process
+ *     must not read a caller's disk over HTTP. `phenotype_file_name` (default `phenotype.csv`)
+ *     carries the basename the reference derives the separator and the description from.
  *
- * BRANCH LENGTHS. dataset.py:601-611 shells out to `hyphy` when a tree has no usable branch
- * lengths: the parsed sequences are written as FASTA, the tree is pruned to those taxa and its
- * lengths stripped (`re.sub(r':[0-9.eE-]+', '', ...)`), and HKY85 is optimised on the fixed
- * topology (dataset.py:224-287). The runtime carries the same HBL script (runtime/src/hyphy,
- * HyPhy 2.5.98 compiled to WebAssembly, run under Node) and `prepareRun` takes the call as
- * `options.estimateTree(alignmentText, treeText)`; `estimateTreeHook` below is that call, with
- * the library's parser for the FASTA and the reference's regex for the topology. What it does
- * NOT do is prune: the library has no Newick writer, and every bundled example's tips match its
- * alignment; a tree with extra tips makes HyPhy fail, which surfaces as an input-class error
- * naming HyPhy's message. Without the driver (assets absent) the runtime takes the reference's
- * "HyPhy not found" branch (1e-3 / 1e-4 defaults) and the provenance carries
- * BRANCH_LENGTHS_MISSING. HyPhy's optimisation blocks the event loop for its duration
- * (camelid, 212 taxa: ~2.8 s measured by the runtime); a stdio server serves one client.
+ * THE TREE, AFTER D22. A tree WITH branch lengths is used as it is. No tree, a tree without
+ * usable branch lengths, or `use_tn93` / `no_tree`: the library's tree-free path takes pairwise
+ * TN93 distances straight into the MDS (dataset.py:493-571 and 598-636, the reference's own
+ * `--use-tn93`) and says so in `loaded.notices.treeFree.reason`
+ * ('requested' | 'no_tree' | 'no_branch_lengths'). Nothing here estimates branch lengths and
+ * nothing builds a tree: the WebAssembly tree tool, its vendored build and its HBL scripts are
+ * gone from the product (PLAN.md D22, phase 3). `treeSourceFor` below turns the library's notice into the
+ * `preprocessing.tree_source` every result records — 'user', 'embedded' or 'tn93' — so a reader
+ * can always tell which of the two paths produced the distance matrix the model saw. A tree TEXT
+ * that will not parse is still an error on both sides: a bad tree is not a missing one.
  *
  * THE RUNTIME IS REACHED THROUGH ITS PACKAGE ENTRY, WITH A FILE-PATH FALLBACK. Each name is also
  * resolvable from `runtime/src/<file>.js` by absolute file URL — a file URL is not subject to
  * the package's exports map — so the MCP keeps working across the runtime's index catching up
- * with its modules (the HyPhy driver is not on the exports map at all) and prefers the public
- * name once it exists. The Phase 2 names (`runEpistasis`, `runDms`, `runEverything`, the report
- * writers) are OPTIONAL at load: an older runtime still serves meme/busted/evaluate, and the
- * tools that need the missing name answer with a server-class error saying which file to update.
+ * with its modules, and prefers the public name once it exists. The Phase 2 and Phase 3 names
+ * (`runEpistasis`, `runDms`, `runEverything`, `runPhenotype`, the report writers) are OPTIONAL at
+ * load: an older runtime still serves meme/busted/evaluate, and the tools that need the missing
+ * name answer with a server-class error saying which file to update.
  *
  * SESSIONS ARE LOADED ON FIRST USE AND MEMOISED PER VARIANT. onnxruntime-node dlopens ~100 MB of
  * native code and the graph is 8 MB and hash-verified (runtime/src/session-node.js); the stdio
@@ -83,11 +80,21 @@
  *
  * THE REPORT (`analyze`). `runEverything` is the orchestrator every surface shares: one loaded
  * alignment, one forward pass, sections fired through `onSection(name, payload, {final})` in
- * PLAN.md 4.0's order, DMS last and budget-capped, phenotype null. The engine's job here is
- * small on purpose — pick the variant when the caller did not (from the diagnostics' tree
- * regime, the same rule the report page uses), load the session and head, pass the HyPhy hook,
- * relay sections and progress, and stamp the MCP's provenance on the finished record. The MCP
- * adds nothing to the arithmetic and the record is the runtime's `ReportRecord` as it stands.
+ * PLAN.md 4.0's order, DMS last and budget-capped. The engine's job here is small on purpose —
+ * pick the variant when the caller did not (from the diagnostics' tree regime, the same rule the
+ * report page uses), load the session and head, relay sections and progress, and stamp the MCP's
+ * provenance on the finished record. The MCP adds nothing to the arithmetic and the record is the
+ * runtime's `ReportRecord` as it stands.
+ *
+ * PHENOTYPE IN THE REPORT. `sections.phenotype` stays null unless the caller supplies a trait
+ * (PLAN.md 4.0 row 8: it "cannot run unasked"), which is why `runEverything` never fills it.
+ * With `options.phenotype` the engine fills it after the orchestrator returns and BEFORE the
+ * record is serialised, out of the report's own pass: `runMeme` already requested
+ * `mean_root_attns` for the epistasis section, and those attentions plus the site LRTs are
+ * exactly what `runPhenotype` takes, so the section costs graph maths and NO inference. That is
+ * recorded as `provenance.phenotype_source: "report-pass"`. A report run with `epistasis: false`
+ * has no attention to reuse; the same call then takes the reference's all-sites loop through the
+ * session, a real second pass, and says so as "second-pass".
  *
  * The neural BUSTED head is one seeded draw of a head the reference loads unseeded (PHASE0.md
  * gap 10, PHASE1A.md item 4): its fields are returned as the runtime returns them, with the
@@ -99,7 +106,7 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseAlignmentSequences, diagnose as libraryDiagnose, extractTree } from "@veg/hyphaeon-js";
+import { diagnose as libraryDiagnose, extractTree } from "@veg/hyphaeon-js";
 import { resolveModels } from "./models.js";
 import { JOB_TIMEOUT_MS, NATIVE_ANALYSES } from "./caps.js";
 
@@ -112,7 +119,7 @@ export { NATIVE_ANALYSES };
 export const MDS_SIGN = "canonical";
 
 /** cli.py `--max-species` defaults per subcommand: None (no cap) except busted's 512. */
-const MAX_SPECIES_DEFAULT = Object.freeze({ meme: Infinity, busted: undefined, epistasis: Infinity, dms: Infinity });
+const MAX_SPECIES_DEFAULT = Object.freeze({ meme: Infinity, busted: undefined, epistasis: Infinity, dms: Infinity, phenotype: Infinity });
 
 export class EngineError extends Error {
   /**
@@ -164,9 +171,10 @@ let runtimePromise = null;
 
 /**
  * The runtime's functions, resolved once: the package entry first, the module files second.
- * Phase 1 names are required; Phase 2 names (`runEpistasis`, `runDms`, `runEverything`,
- * `prepareRun`, `diagnoseWarnings`, `provenanceBlock`, `toReportRecord`) resolve to null when
- * the runtime checkout predates them, and the tools that need them say so.
+ * Phase 1 names are required; the Phase 2 and Phase 3 names (`runEpistasis`, `runDms`,
+ * `runEverything`, `runPhenotype`, `prepareRun`, `diagnoseWarnings`, `provenanceBlock`,
+ * `toReportRecord`) resolve to null when the runtime checkout predates them, and the tools that
+ * need them say so.
  *
  * @returns {Promise<object>}
  */
@@ -186,12 +194,6 @@ export function loadRuntime() {
         hint: "The @veg/hyphaeon-runtime workspace is older than this MCP; update the checkout."
       });
     };
-    let hyphy = null;
-    try {
-      hyphy = (await importRuntimeSubpath("@veg/hyphaeon-runtime/hyphy", "hyphy/index.js")) || null;
-    } catch {
-      hyphy = null;
-    }
     let version = null;
     try {
       version = JSON.parse(readFileSync(path.join(runtimeDir(), "package.json"), "utf8")).version || null;
@@ -215,7 +217,8 @@ export function loadRuntime() {
       runDms: await optional("runDms", "dms.js"),
       runEverything: await optional("runEverything", "analyze.js"),
       toReportRecord: await optional("toReportRecord", "report.js"),
-      hyphy,
+      // Phase 3 (optional at load)
+      runPhenotype: await optional("runPhenotype", "phenotype.js"),
       version
     };
   })();
@@ -225,58 +228,67 @@ export function loadRuntime() {
   return runtimePromise;
 }
 
-/** Are the HyPhy WASM assets the runtime's driver needs on disk? */
-function hyphyAssetsPresent(hyphyMod) {
-  if (!hyphyMod || typeof hyphyMod.createHyPhy !== "function") return false;
-  const version = hyphyMod.HYPHY_WASM_VERSION;
-  if (!version) return true; // the driver locates its own assets; let it decide
-  const dir = path.join(runtimeDir(), "vendor", "hyphy", String(version));
-  return (hyphyMod.HYPHY_ASSETS || ["hyphy.js", "hyphy.wasm", "hyphy.data"]).every((f) => existsSync(path.join(dir, f)));
-}
+// ── the tree, after D22 ─────────────────────────────────────────────────────
 
-// ── branch lengths (dataset.py:224-287) ─────────────────────────────────────
-
-/** `re.sub(r'\{[^}]*\}', '', s)` then `re.sub(r'\[[^\]]*\]', '', s)`: HyPhy tags, NEXUS comments. */
-function cleanNewick(s) {
-  return s.replace(/\{[^}]*\}/g, "").replace(/\[[^\]]*\]/g, "");
+/**
+ * Does the alignment carry a tree the reference would find (dataset.py:161-212)?
+ * @param {string} alignmentText
+ */
+export function hasEmbeddedTree(alignmentText) {
+  try {
+    return extractTree(alignmentText) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * The Newick TEXT the reference would take from a tree file or an alignment with an embedded
- * tree (dataset.py:161-206: a `TREE name = (...)` command, else a line starting with '(' that
- * holds at least two '(', else the whole text). The library's `extractTree` returns a parsed
- * tree; HyPhy wants the string.
+ * The `preprocessing.tree_source` a finished run records (PLAN.md 3.5): 'tn93' whenever the
+ * library took the tree-free path (`loaded.notices.treeFree`, D22 — no tree, no usable branch
+ * lengths, or `use_tn93`), else 'user' for a supplied tree and 'embedded' for one found inside
+ * the alignment. The old 'hyphy-hky85' and 'nj' values are gone: nothing estimates branch lengths and nothing
+ * builds a tree for the model any more.
+ *
+ * The library's notice is the authority — it is the object the MDS was actually built from — so
+ * this RECONCILES whatever the runtime recorded rather than trusting it, and a mismatch is a
+ * reconciliation, not an error (the runtime may legitimately spell a tree-free load 'embedded'
+ * because that is where it looked for the tree).
+ *
+ * @param {object|null} loaded the library's LoadedAlignment, when the run has one
+ * @param {{treeGiven?: boolean, alignmentText?: string, recorded?: string|null}} facts
+ * @returns {"user"|"embedded"|"tn93"}
  */
-export function newickTextFrom(text) {
-  const s = String(text ?? "");
-  const cmd = /tree\s+[^=]+=\s*(\([^;]+;)/i.exec(s);
-  if (cmd) return cleanNewick(cmd[1]);
-  for (const raw of s.split(/\r?\n/)) {
-    let line = raw.trim();
-    if (line.startsWith("(") && (line.match(/\(/g) || []).length >= 2) {
-      if (!line.endsWith(";")) line += ";";
-      return cleanNewick(line);
-    }
-  }
-  let all = s.trim();
-  if (all.startsWith("(") && (all.match(/\(/g) || []).length >= 2) {
-    if (!all.endsWith(";")) all += ";";
-    return cleanNewick(all);
-  }
-  return null;
+export function treeSourceFor(loaded, { treeGiven = false, alignmentText = "", recorded = null } = {}) {
+  const treeFree = loaded && loaded.notices ? loaded.notices.treeFree : undefined;
+  if (treeFree) return "tn93";
+  if (treeFree === null) return treeGiven ? "user" : "embedded";
+  // No loaded alignment to ask (an early failure, or a runtime that returns none).
+  if (recorded === "tn93" || recorded === "user" || recorded === "embedded") return recorded;
+  if (treeGiven) return "user";
+  return hasEmbeddedTree(alignmentText) ? "embedded" : "tn93";
 }
 
-/** dataset.py:245: `re.sub(r':[0-9.eE-]+', '', raw_tree_str)`. */
-export function stripBranchLengths(newick) {
-  return String(newick).replace(/:[0-9.eE-]+/g, "");
-}
-
-/** dataset.py:252-254: the parsed sequences written as FASTA, one record per taxon. */
-export function fastaFromAlignment(alignmentText) {
-  const seqs = parseAlignmentSequences(alignmentText);
-  let out = "";
-  for (const [name, seq] of seqs) out += ">" + name + "\n" + seq + "\n";
-  return out;
+/**
+ * Stamp `tree_source` (and the tree-free reason) on a provenance block's `preprocessing`.
+ *
+ * The runtime's `prepareRun` already records all three fields, and in the same vocabulary; this
+ * RECONCILES rather than overwrites, so a runtime that reports them keeps its own values and one
+ * that does not still produces a complete block. `tree_free` is the runtime's
+ * `{reason, taxa_order}` object, and is only synthesised when it is absent.
+ */
+export function stampTreeSource(provenance, loaded, facts) {
+  if (!provenance || typeof provenance !== "object") return provenance;
+  const pre = (provenance.preprocessing = Object.assign({}, provenance.preprocessing));
+  pre.tree_source = treeSourceFor(loaded, Object.assign({ recorded: pre.tree_source ?? null }, facts));
+  const notices = loaded && loaded.notices ? loaded.notices : null;
+  if (pre.tree_free === undefined) {
+    const treeFree = notices ? notices.treeFree : null;
+    pre.tree_free = treeFree ? { reason: treeFree.reason, taxa_order: treeFree.taxaOrder } : null;
+  }
+  if (pre.tn93_saturated_pairs === undefined) pre.tn93_saturated_pairs = notices ? notices.tn93SaturatedPairs ?? null : null;
+  // Nothing estimates branch lengths any more (D22): the field stays for schema stability.
+  pre.branch_lengths_estimated = false;
+  return provenance;
 }
 
 // ── option mapping ──────────────────────────────────────────────────────────
@@ -289,9 +301,9 @@ export function fastaFromAlignment(alignmentText) {
  * `options` (camelCase, the CLI's defaults left to the runtime's `EPISTASIS_CLI_DEFAULTS`);
  * `runtime.maxSpecies` etc. are consumed by `prepareRun` first and are harmless to the pillar.
  *
- * @param {"meme"|"busted"|"epistasis"|"dms"} analysis
+ * @param {"meme"|"busted"|"epistasis"|"dms"|"phenotype"} analysis
  * @param {object} options
- * @param {{defaultVariant?: string, alignmentName?: string, treeName?: string|null, estimateTree?: Function|null}} [extra]
+ * @param {{defaultVariant?: string, alignmentName?: string, treeName?: string|null}} [extra]
  * @returns {{runtime: object, variant: string, notApplied: string[]}}
  */
 export function mapOptions(analysis, options = {}, extra = {}) {
@@ -303,6 +315,8 @@ export function mapOptions(analysis, options = {}, extra = {}) {
   else if (MAX_SPECIES_DEFAULT[analysis] !== undefined) out.maxSpecies = MAX_SPECIES_DEFAULT[analysis];
   if (options.no_prune_duplicates === true) out.pruneDuplicates = false;
   if (has("batch_size")) out.batchSize = options.batch_size;
+  // D22: `--use-tn93` / `--no-tree` force the tree-free path even when a usable tree was given.
+  if (options.use_tn93 === true || options.no_tree === true) out.useTn93 = true;
   if (analysis === "meme") {
     if (options.filter === true) out.filter = true;
     if (has("filter_p_thresh")) out.filterPThresh = options.filter_p_thresh;
@@ -333,10 +347,33 @@ export function mapOptions(analysis, options = {}, extra = {}) {
     if (has("focal_taxon")) out.focalTaxon = options.focal_taxon;
     if (Array.isArray(options.sites) && options.sites.length) out.siteSubset = options.sites.map((s) => s - 1);
   }
+  if (analysis === "phenotype") {
+    // cli.py cmd_phenotype -> resolve_phenotype_vector + run_phenotype_association, keyword for
+    // keyword (phenotype.py:121-274, 347-646). The trait is a nested object because the library's
+    // `resolvePhenotypeVector` takes one; `phenotypeCsv` is the file's TEXT and `phenotypeFile`
+    // its basename, which is what the reference derives the separator and the description from.
+    const trait = {};
+    if (has("preset")) trait.preset = options.preset;
+    if (has("foreground")) trait.foreground = options.foreground;
+    if (has("background")) trait.background = options.background; // accepted and never read, as upstream
+    if (has("phenotype_file")) {
+      trait.phenotypeCsv = options.phenotype_file;
+      trait.phenotypeFile = options.phenotype_file_name || "phenotype.csv";
+    }
+    if (has("trait_col")) trait.traitCol = options.trait_col;
+    if (has("species_col")) trait.speciesCol = options.species_col;
+    if (options.continuous === true) trait.continuous = true;
+    out.phenotype = trait;
+    if (options.continuous === true) out.continuous = true;
+    if (has("permulations")) out.permulations = options.permulations;
+    if (has("n_permutations")) out.nPermutations = options.n_permutations;
+    if (has("alpha")) out.alpha = options.alpha;
+    if (has("min_taxa")) out.minTaxaPerSite = options.min_taxa;
+    if (has("max_perm_p")) out.maxPermP = options.max_perm_p;
+    if (has("seed")) out.seed = options.seed;
+  }
   if (extra.alignmentName) out.alignmentName = extra.alignmentName;
   if (extra.treeName !== undefined) out.treeName = extra.treeName;
-  if (typeof extra.estimateTree === "function") out.estimateTree = extra.estimateTree;
-  if (extra.treeSource) out.treeSource = extra.treeSource;
   return { runtime: out, variant, notApplied };
 }
 
@@ -344,6 +381,11 @@ export function mapOptions(analysis, options = {}, extra = {}) {
  * The `hyphaeon <cmd> ...` line that reproduces a native run through the Python reference
  * (the "reproduce this with the CLI" snippet of PLAN.md 3.6). `--mds-sign canonical` is spelled
  * out because it is what this surface computed; the CLI default is the same today.
+ *
+ * `--use-tn93` is spelled out whenever the run WAS tree-free, not only when the caller asked for
+ * it: the reference REFUSES an alignment with no tree (dataset.py:647-651) and silently
+ * substitutes 1e-3 defaults for a tree with no branch lengths, so `--use-tn93` is the only
+ * invocation that reproduces what this surface did (`cliOptionsFor` below adds it).
  */
 export function referenceCommand(analysis, options = {}, names = {}) {
   const argv = ["hyphaeon", analysis];
@@ -357,6 +399,7 @@ export function referenceCommand(analysis, options = {}, names = {}) {
   }
   argv.push("-a", names.alignment || "alignment.fasta");
   if (names.tree) argv.push("-t", names.tree);
+  if (options.use_tn93 || options.no_tree) argv.push("--use-tn93");
   if (analysis === "meme" || analysis === "busted") {
     if (options.model_variant) argv.push("--model-variant", options.model_variant);
     if (has("max_species")) argv.push("--max-species", String(options.max_species));
@@ -392,9 +435,43 @@ export function referenceCommand(analysis, options = {}, names = {}) {
   if (analysis === "dms") {
     if (has("focal_taxon")) argv.push("--focal-taxon", String(options.focal_taxon));
   }
+  if (analysis === "phenotype") {
+    // cli.py:1038-1094's parser, in its own order; `--phenotype-file` names the basename this
+    // surface was given, since the CLI takes a path and this tool takes the text.
+    if (names.phenotype_file) argv.push("--phenotype-file", names.phenotype_file);
+    for (const [key, flag] of [
+      ["model_variant", "--model-variant"],
+      ["preset", "--preset"],
+      ["foreground", "--foreground"],
+      ["background", "--background"],
+      ["trait_col", "--trait-col"],
+      ["species_col", "--species-col"],
+      ["permulations", "--permulations"],
+      ["min_taxa", "--min-taxa"],
+      ["alpha", "--alpha"],
+      ["n_permutations", "--n-permutations"],
+      ["max_perm_p", "--max-perm-p"],
+      ["seed", "--seed"]
+    ]) {
+      if (has(key)) argv.push(flag, String(options[key]));
+    }
+    if (options.continuous) argv.push("--continuous");
+  }
   argv.push("--mds-sign", MDS_SIGN);
   argv.push("-o", "<out.json>");
   return argv;
+}
+
+/**
+ * The options a reproducing CLI line needs: the caller's, plus `use_tn93` when the load actually
+ * went tree-free (see `referenceCommand`).
+ *
+ * @param {object} options the tool's options as submitted
+ * @param {object|null} loaded the library's LoadedAlignment, when the run has one
+ */
+export function cliOptionsFor(options, loaded) {
+  const treeFree = loaded && loaded.notices ? loaded.notices.treeFree : null;
+  return treeFree ? Object.assign({}, options, { use_tn93: true }) : options;
 }
 
 /**
@@ -407,15 +484,19 @@ export function referenceCommandsForReport(options = {}, names = {}) {
   const common = {};
   if (options.variant) common.model_variant = options.variant;
   if (options.maxSpecies !== undefined && options.maxSpecies !== null && Number.isFinite(options.maxSpecies)) common.max_species = options.maxSpecies;
+  if (options.useTn93) common.use_tn93 = true;
   const epi = {};
   if (options.permutations !== undefined && options.permutations !== null) epi.n_permutations = options.permutations;
   if (options.seed !== undefined && options.seed !== null) epi.seed = options.seed;
-  return {
+  const out = {
     sites: referenceCommand("meme", Object.assign({ attribute: true, filter: true }, common), names),
     gene: referenceCommand("busted", common, names),
     epistasis: referenceCommand("epistasis", Object.assign({ no_dms: true }, epi), names),
-    dms: referenceCommand("dms", {}, names)
+    dms: referenceCommand("dms", Object.assign({}, options.useTn93 ? { use_tn93: true } : {}), names)
   };
+  // The report runs phenotype only when the caller supplied a trait (PLAN.md 4.0 row 8).
+  if (options.phenotypeCli) out.phenotype = referenceCommand("phenotype", Object.assign({}, options.phenotypeCli, common.use_tn93 ? { use_tn93: true } : {}), names);
+  return out;
 }
 
 /**
@@ -430,6 +511,57 @@ export function variantFromDiagnostics(warnings) {
   return Array.isArray(warnings) && warnings.some((w) => w && w.code === "SHALLOW_TREE") ? "viral" : "general";
 }
 
+/** A runtime function that must exist for a call, or a server error naming the file to update. */
+export function requireRuntimeFn(rt, name, rel) {
+  if (rt && typeof rt[name] === "function") return rt[name];
+  throw new EngineError("server", "The HyphAeon runtime does not provide " + name + " (expected in runtime/src/" + rel + ").", {
+    hint: "The @veg/hyphaeon-runtime workspace is older than this build; update the checkout.",
+    code: "RUNTIME_OUTDATED"
+  });
+}
+
+/**
+ * Fill a finished report's `phenotype` section from the pass it already ran.
+ *
+ * `runEverything` leaves `sections.phenotype` null by design — a trait cannot be guessed
+ * (PLAN.md 4.0 row 8) — and filling it needs no second forward pass: the meme pass requested
+ * `mean_root_attns` for the epistasis section, and those attentions plus the site LRTs are
+ * exactly what `compute_transformer_attributions` wants, so the runtime's `runPhenotype` takes
+ * them as `attention` + `lrt` and the section costs graph maths and NO inference. Call this on
+ * the LIVE report object, before `toReportRecord` strips the pass off it.
+ *
+ * A report run with `epistasis: false` has no attention to reuse; the same call then falls back
+ * to the reference's own all-sites loop through the session, which IS a second pass, and the
+ * returned `source` says so.
+ *
+ * Both the MCP's `hyphaeon_analyze` and the Node server's `analysis: "analyze"` job go through
+ * here, so the report's phenotype section cannot differ between the two surfaces.
+ *
+ * @param {object} rt the resolved runtime module bag (loadRuntime()'s shape, or the module itself)
+ * @param {object} report the live ReportRecord from `runEverything`
+ * @param {{trait: object, options?: object, session: object, inputs?: object, progress?: Function, signal?: AbortSignal}} args
+ * @returns {Promise<{section: object, source: "report-pass"|"second-pass"}>}
+ */
+export async function runPhenotypeSection(rt, report, { trait, options = {}, session, inputs = {}, progress, signal }) {
+  const runPhenotype = requireRuntimeFn(rt, "runPhenotype", "phenotype.js");
+  const sites = report && report.sections ? report.sections.sites : null;
+  const pass = sites ? sites.inference : null;
+  const loaded = sites ? sites.loaded : null;
+  const shared = Boolean(pass && pass.mean_root_attns && pass.lrt && loaded);
+  const section = await runPhenotype({
+    loaded: loaded || undefined,
+    attention: shared ? pass.mean_root_attns : null,
+    lrt: shared ? pass.lrt : null,
+    session,
+    phenotype: trait,
+    options,
+    inputs,
+    progress,
+    signal
+  });
+  return { section, source: shared ? "report-pass" : "second-pass" };
+}
+
 // ── error classification ────────────────────────────────────────────────────
 
 const INPUT_PATTERNS = [
@@ -437,18 +569,20 @@ const INPUT_PATTERNS = [
   /No sequences found/i,
   /Could not parse any sequences/i,
   /needs at least \d+ sequences/i,
-  /needs a phylogenetic tree/i,
-  /needs a tree with branch lengths/i,
-  /No tree specified/i,
   /Could not parse phylogenetic tree/i,
   /No matching taxa/i,
   /shorter than one codon|shorter than/i,
   /Alignment too short/i,
   /input check failed/i,
   /Unknown callMode/i,
-  /estimateTree returned no tree/i,
-  /estimateBranchLengths:/i,
-  /HyPhy could not fit/i,
+  // phenotype.py's own refusals (phenotype.py:274, 231-236, :404-406) through the library.
+  // runtime/src/pipeline.js prepareRun: the tn93 package raised on a saturated or non-overlapping
+  // pair (PHASE3A.md quirks); that is the alignment's property, not the engine's.
+  /TN93 distances could not be computed/i,
+  /Insufficient foreground taxa/i,
+  /Unknown preset/i,
+  /Provide one of|no trait/i,
+  /y has \d+ entries/i,
   /Single-gene files do not match/i,
   /mismatched sites/i,
   /Missing required|missing column|No rows|No sites|Unable to parse|is not a valid|could not be read/i,
@@ -466,12 +600,13 @@ export function classifyEngineError(err) {
   if (name === "AbortError" || /cancelled/i.test(message)) {
     return new EngineError("input", "The run was cancelled.", { cause: err });
   }
-  if (name === "EvaluationError" || name === "HyPhyError" || INPUT_PATTERNS.some((re) => re.test(message))) {
+  if (name === "EvaluationError" || INPUT_PATTERNS.some((re) => re.test(message))) {
     return new EngineError("input", "HyphAeon could not process this input: " + message, {
       cause: err,
       hint:
-        "Check that the alignment is an in-frame codon alignment (FASTA, NEXUS or PHYLIP), that the " +
-        "sequence names match the tree tips exactly, and that a tree is supplied. Run hyphaeon_validate " +
+        "Check that the alignment is an in-frame codon alignment (FASTA, NEXUS or PHYLIP) and that, if " +
+        "you supplied a tree, its tip names match the sequence names exactly. A tree is optional: without " +
+        "one (or without branch lengths) HyphAeon uses pairwise TN93 distances. Run hyphaeon_validate " +
         "first for a full diagnosis."
     });
   }
@@ -529,7 +664,6 @@ export function createEngine(opts = {}) {
   const threads = Number.isInteger(opts.threads) && opts.threads >= 1 ? opts.threads : Number.isInteger(threadsEnv) && threadsEnv >= 1 ? threadsEnv : 1;
   const timeoutMs = opts.timeoutMs ?? JOB_TIMEOUT_MS;
   const sessions = new Map();
-  let hyphyPromise = null;
 
   const runtime = () => (opts.runtime ? Promise.resolve(opts.runtime) : loadRuntime());
 
@@ -585,92 +719,6 @@ export function createEngine(opts = {}) {
     return handle;
   }
 
-  /** The HyPhy WASM driver, instantiated once (assets fetched and compiled) on first use. */
-  async function hyphy() {
-    const rt = await runtime();
-    if (!hyphyAssetsPresent(rt.hyphy)) return null;
-    if (!hyphyPromise) {
-      hyphyPromise = rt.hyphy.createHyPhy({ progress: (phase, done, total, message) => logger.debug("hyphy " + phase + ": " + message) });
-      hyphyPromise.catch(() => {
-        hyphyPromise = null;
-      });
-    }
-    return hyphyPromise;
-  }
-
-  /**
-   * `options.estimateTree` for the runtime's prepareRun: dataset.py:224-287 through the
-   * runtime's HyPhy driver. Returns `{treeText, source: 'hyphy-hky85'}`.
-   */
-  async function estimateTreeHook(alignmentText, treeText, progress) {
-    const hy = await hyphy();
-    if (!hy) throw new EngineError("server", "The HyPhy WASM driver is not available in this runtime.");
-    const newick = treeText ? newickTextFrom(treeText) : newickTextFrom(alignmentText);
-    if (!newick) throw new EngineError("input", "No tree topology could be read for branch-length estimation.");
-    const topology = stripBranchLengths(newick);
-    const fasta = fastaFromAlignment(alignmentText);
-    const t0 = Date.now();
-    let r;
-    try {
-      r = await hy.estimateBranchLengths(fasta, topology, {
-        progress: (phase, done, total, message) => {
-          if (typeof progress === "function") progress("prepare", 1, 2, "HyPhy HKY85: " + message);
-        }
-      });
-    } catch (err) {
-      throw new EngineError("input", "HyPhy could not fit HKY85 branch lengths to the tree: " + ((err && err.message) || err), {
-        cause: err,
-        hint: "Supply a tree with branch lengths, or make sure every tree tip has a sequence of the same name (the reference prunes extra tips; this server does not)."
-      });
-    }
-    logger.info("engine estimated branch lengths with HyPhy HKY85 in " + (Date.now() - t0) + " ms");
-    return { treeText: r.result, source: "hyphy-hky85" };
-  }
-
-  /**
-   * PLAN.md 4.0 row 1, "an NJ tree built when there is no tree at all": the report's answer to an
-   * alignment that carries no tree, through the runtime's HyPhy driver (DM3's NJ.bf, the same
-   * call the browser's tree worker makes). Per-pillar tools refuse instead — they mirror a CLI
-   * that requires a tree — so this is used by `analyze` only.
-   */
-  async function njTreeHook(alignmentText, progress) {
-    const hy = await hyphy();
-    if (!hy) {
-      throw new EngineError("input", "HyphAeon needs a phylogenetic tree and none was supplied or embedded in the alignment; this runtime has no HyPhy driver to build one.", {
-        hint: "Pass `tree` (Newick with branch lengths)."
-      });
-    }
-    const t0 = Date.now();
-    if (typeof progress === "function") progress("prepare", 0, 2, "Building a neighbour-joining tree (HyPhy)...");
-    let r;
-    try {
-      r = await hy.njTree(alignmentText, {
-        progress: (phase, done, total, message) => {
-          if (typeof progress === "function") progress("prepare", 0, 2, "HyPhy NJ: " + message);
-        }
-      });
-    } catch (err) {
-      throw new EngineError("input", "HyPhy could not build a neighbour-joining tree from this alignment: " + ((err && err.message) || err), {
-        cause: err,
-        hint: "Pass `tree` (Newick with branch lengths), or check that the alignment parses as an in-frame codon alignment."
-      });
-    }
-    const text = String(r.result || "").trim();
-    if (!text) throw new EngineError("input", "HyPhy returned no neighbour-joining tree for this alignment.");
-    logger.info("engine built an NJ tree with HyPhy in " + (Date.now() - t0) + " ms");
-    return text.endsWith(";") ? text : text + ";";
-  }
-
-  /** What this process can do about recoverable tree problems (src/validate.js reads it). */
-  async function capabilities() {
-    try {
-      const rt = await runtime();
-      return { hyphy: hyphyAssetsPresent(rt.hyphy), tn93: false };
-    } catch {
-      return { hyphy: false, tn93: false };
-    }
-  }
-
   /**
    * Whether the engine can score: models present, onnxruntime-node loadable. Never loads a
    * graph (list_models must stay cheap); says why when it cannot.
@@ -687,16 +735,17 @@ export function createEngine(opts = {}) {
     try {
       const rt = await runtime();
       out.runtime_version = rt.version;
-      const caps = await capabilities();
-      out.branch_length_estimator = caps.hyphy ? "hyphy-hky85" : null;
-      out.hyphy_wasm_version = caps.hyphy ? rt.hyphy.HYPHY_WASM_VERSION || null : null;
-      out.tn93 = caps.tn93;
       out.mds_sign = MDS_SIGN;
-      // Which Phase 2 entry points this runtime checkout provides.
+      // D22: distances come from the tree when it has branch lengths, otherwise from TN93 in the
+      // library. Nothing estimates branch lengths and nothing builds a tree for the model.
+      out.tree_free = "tn93 (library)";
+      out.branch_length_estimator = null;
+      // Which Phase 2 / Phase 3 entry points this runtime checkout provides.
       out.runtime_provides = {
         runEpistasis: typeof rt.runEpistasis === "function",
         runDms: typeof rt.runDms === "function",
-        runEverything: typeof rt.runEverything === "function"
+        runEverything: typeof rt.runEverything === "function",
+        runPhenotype: typeof rt.runPhenotype === "function"
       };
     } catch (err) {
       out.reason = "The HyphAeon runtime could not be loaded: " + ((err && err.message) || err);
@@ -714,13 +763,7 @@ export function createEngine(opts = {}) {
   }
 
   /** A runtime function that must exist for this call, or a server error naming the file. */
-  function requireRuntime(rt, name, rel) {
-    if (typeof rt[name] === "function") return rt[name];
-    throw new EngineError("server", "The HyphAeon runtime does not provide " + name + " (expected in runtime/src/" + rel + ").", {
-      hint: "The @veg/hyphaeon-runtime workspace is older than this MCP; update the checkout.",
-      code: "RUNTIME_OUTDATED"
-    });
-  }
+  const requireRuntime = requireRuntimeFn;
 
   /** The MCP's own provenance fields, stamped on every native result. */
   function mcpProvenance(rt, base, { surface, analysis, options, names, t0, reference }) {
@@ -757,7 +800,7 @@ export function createEngine(opts = {}) {
     const { analysis, options = {}, surface = "mcp-stdio", progress } = req;
     if (!NATIVE_ANALYSES.includes(analysis) || analysis === "analyze") {
       throw new EngineError("input", "Analysis '" + analysis + "' is not served by engine.run.", {
-        hint: analysis === "analyze" ? "Use engine.analyze." : "It runs through the Python bridge."
+        hint: analysis === "analyze" ? "Use engine.analyze." : "Known analyses: " + NATIVE_ANALYSES.filter((a) => a !== "analyze").join(", ") + "."
       });
     }
     const t0 = Date.now();
@@ -796,24 +839,22 @@ export function createEngine(opts = {}) {
       if (typeof req.alignment !== "string" || !req.alignment.trim()) {
         throw new EngineError("input", "An alignment is required.");
       }
-      if (options.use_tn93 || options.no_tree) {
-        throw new EngineError(
-          "input",
-          "use_tn93 / no_tree asks for TN93 pairwise distances instead of a tree (dataset.py:544-580); " +
-            "hyphaeon_" + analysis + " runs in-process here and has no TN93 implementation.",
-          { hint: "Supply a tree (Newick with branch lengths, or a topology for HyPhy to fit)." }
-        );
-      }
       checkMdsSign(options, analysis);
-      const caps = await capabilities();
       const alignmentName = names.alignment || "alignment.fasta";
       const treeGiven = typeof req.tree === "string" && req.tree.trim().length > 0;
       const treeName = treeGiven ? names.tree || "tree.nwk" : null;
-      const mapped = mapOptions(analysis, options, {
+      // The phenotype table arrives as an INPUT (its text), not an option, so that neither the
+      // job store nor `provenance.options` ends up holding a copy of the caller's CSV; the
+      // mapper needs it beside the flags, and only there.
+      let toolOptions = options;
+      if (analysis === "phenotype" && typeof req.phenotype_file === "string" && req.phenotype_file.trim()) {
+        names.phenotype_file = names.phenotype_file || options.phenotype_file_name || "phenotype.csv";
+        toolOptions = Object.assign({}, options, { phenotype_file: req.phenotype_file, phenotype_file_name: names.phenotype_file });
+      }
+      const mapped = mapOptions(analysis, toolOptions, {
         defaultVariant: env.HYPHAEON_VARIANT,
         alignmentName,
-        treeName,
-        estimateTree: caps.hyphy ? (alignmentText, treeText) => estimateTreeHook(alignmentText, treeText, progress) : null
+        treeName
       });
       const handle = await session(mapped.variant, { bustedHead: analysis === "busted" });
       const common = {
@@ -827,6 +868,7 @@ export function createEngine(opts = {}) {
       };
       let result;
       let baseProvenance;
+      let loaded = null;
       const warnings = [];
 
       if (analysis === "meme") {
@@ -837,8 +879,10 @@ export function createEngine(opts = {}) {
         result.sites = rt.jsonSafe(out.sites);
         result.summary = rt.jsonSafe(out.summary);
         baseProvenance = out.provenance;
+        loaded = out.loaded || null;
       } else if (analysis === "busted") {
         const out = await rt.runBusted(Object.assign(common, { head: handle.head || null }));
+        loaded = out.loaded || null;
         result = rt.bustedDocument(out, { alignment: alignmentName, gene: options.gene || out.record.gene || alignmentName.replace(/\.[^.]*$/, ""), provenance: false });
         result.sites_detail = rt.jsonSafe(out.sites);
         result.statistics = rt.jsonSafe(out.statistics);
@@ -853,9 +897,9 @@ export function createEngine(opts = {}) {
           });
         }
       } else {
-        // epistasis | dms: the front half is prepareRun (parse, load, branch lengths), then the
-        // pillar over the loaded alignment and the session — run_epistatic_analysis /
-        // run_digital_dms_analysis steps 2-5.
+        // epistasis | dms | phenotype: the front half is prepareRun (parse, tree or TN93, MDS,
+        // tokens), then the pillar over the loaded alignment and the session —
+        // run_epistatic_analysis / run_digital_dms_analysis / run_phenotype_association steps 2-5.
         const prepareRun = requireRuntime(rt, "prepareRun", "pipeline.js");
         const provenanceBlock = requireRuntime(rt, "provenanceBlock", "pipeline.js");
         const prep = await prepareRun({
@@ -866,9 +910,27 @@ export function createEngine(opts = {}) {
           signal: guard.signal,
           defaultMaxSpecies: Infinity
         });
+        loaded = prep.loaded;
         const inputs = { alignment: alignmentName, tree: treeName ?? (prep.treeArg === null ? "embedded_in_alignment" : null) };
         let out;
-        if (analysis === "epistasis") {
+        if (analysis === "phenotype") {
+          const runPhenotype = requireRuntime(rt, "runPhenotype", "phenotype.js");
+          out = await runPhenotype({
+            prepared: prep,
+            loaded: prep.loaded,
+            session: handle.backbone,
+            // The trait is its own argument (the shape `resolvePhenotypeVector` takes); the rest
+            // of `mapped.runtime` is what `resolvePhenotypeOptions` reads. The permulation tree
+            // comes from `prepared` and is null in tree-free mode, where the library records a
+            // reason instead of raising (D22).
+            phenotype: mapped.runtime.phenotype,
+            options: mapped.runtime,
+            inputs: { alignment: alignmentName, tree: treeName },
+            progress,
+            signal: guard.signal
+          });
+          result = rt.jsonSafe(out);
+        } else if (analysis === "epistasis") {
           const runEpistasis = requireRuntime(rt, "runEpistasis", "epistasis.js");
           out = await runEpistasis({
             loaded: prep.loaded,
@@ -909,23 +971,46 @@ export function createEngine(opts = {}) {
         baseProvenance = provenanceBlock({
           surface,
           session: handle.backbone,
-          surrogateFor: "MEME",
-          seed: analysis === "epistasis" ? (out.permutations && out.permutations.seed) ?? mapped.runtime.seed ?? null : null,
+          surrogateFor: analysis === "phenotype" ? "no HyPhy counterpart (attention-based trait association)" : "MEME",
+          seed: analysis === "meme" ? null : (out.permutations && out.permutations.seed) ?? mapped.runtime.seed ?? null,
           elapsedSec: (Date.now() - t0) / 1000,
           options: mapped.runtime,
           preprocessing: prep.preprocessing,
           warnings: diagnosed,
           inputs
         });
-        if (analysis === "epistasis" && out.permutations) baseProvenance.permutations = out.permutations;
+        if (out.permutations) baseProvenance.permutations = out.permutations;
         if (analysis === "dms") {
           baseProvenance.focal_index = out.focal_index;
           baseProvenance.focal_name = out.focal_name;
           if (out.progress) baseProvenance.dms_progress = out.progress;
         }
+        if (analysis === "phenotype") {
+          baseProvenance.phenotype_meta = out.phenotype_meta ?? null;
+          baseProvenance.trait = out.trait ?? null;
+          if (out.permulations) baseProvenance.permulations = out.permulations;
+          if (out.sector_permutations) baseProvenance.permutations = out.sector_permutations;
+        }
       }
 
-      const provenance = mcpProvenance(rt, baseProvenance, { surface, analysis, options, names: { alignment: alignmentName, tree: treeName }, t0 });
+      // D22: if `use_tn93` was asked for, the load must actually have taken the tree-free path —
+      // a runtime that dropped the option would silently score against a tree instead.
+      if (mapped.runtime.useTn93 && loaded && loaded.notices && !loaded.notices.treeFree) {
+        throw new EngineError("server", "use_tn93 was requested but the load kept a tree; this runtime does not forward the option to the library.", {
+          hint: "The @veg/hyphaeon-runtime workspace is older than this MCP; update the checkout.",
+          code: "RUNTIME_OUTDATED"
+        });
+      }
+
+      const provenance = mcpProvenance(rt, baseProvenance, {
+        surface,
+        analysis,
+        options,
+        names: { alignment: alignmentName, tree: treeName, phenotype_file: names.phenotype_file },
+        t0,
+        reference: referenceCommand(analysis, cliOptionsFor(options, loaded), { alignment: alignmentName, tree: treeName, phenotype_file: names.phenotype_file })
+      });
+      stampTreeSource(provenance, loaded, { treeGiven, alignmentText: req.alignment });
       provenance.warnings = Array.isArray(provenance.warnings) ? [...provenance.warnings] : [];
       for (const key of mapped.notApplied) {
         provenance.warnings.push({
@@ -952,8 +1037,9 @@ export function createEngine(opts = {}) {
    * @param {string} req.alignment
    * @param {string} [req.tree]
    * @param {object} [req.options]  app-side: variant, max_species, reference_sequence, call_mode,
-   *   seed, permutations, dms (bool), dms_work_budget
-   * @param {{alignment?: string, tree?: string}} [req.names]
+   *   seed, permutations, dms (bool), dms_work_budget, use_tn93, phenotype (the trait block)
+   * @param {string} [req.phenotype_file]  CSV/TSV TEXT for the phenotype section, when asked for
+   * @param {{alignment?: string, tree?: string, phenotype_file?: string}} [req.names]
    * @param {AbortSignal} [req.signal]
    * @param {string} [req.surface]
    * @param {Function} [req.progress]
@@ -971,26 +1057,14 @@ export function createEngine(opts = {}) {
       const runEverything = requireRuntime(rt, "runEverything", "analyze.js");
       if (typeof req.alignment !== "string" || !req.alignment.trim()) throw new EngineError("input", "An alignment is required.");
       checkMdsSign(options, "analyze");
-      const caps = await capabilities();
       const alignmentName = names.alignment || "alignment.fasta";
-      let treeText = typeof req.tree === "string" && req.tree.trim().length > 0 ? req.tree : null;
-      let treeName = treeText ? names.tree || "tree.nwk" : null;
-      let treeSource;
+      const treeGiven = typeof req.tree === "string" && req.tree.trim().length > 0;
+      const treeText = treeGiven ? req.tree : null;
+      const treeName = treeText ? names.tree || "tree.nwk" : null;
+      const useTn93 = options.use_tn93 === true || options.no_tree === true;
 
-      // No tree at all: build one (PLAN.md 4.0 row 1), the only tree-less path any tool offers.
-      let embedded = false;
-      if (!treeText) {
-        try {
-          embedded = extractTree(req.alignment) !== null;
-        } catch {
-          embedded = false;
-        }
-        if (!embedded) {
-          treeText = await njTreeHook(req.alignment, progress);
-          treeName = "nj.nwk";
-          treeSource = "nj";
-        }
-      }
+      // D22: no tree, no usable branch lengths, or use_tn93 -> the library's tree-free TN93 path
+      // inside loadAlignmentAndTree. There is nothing to build and nothing to estimate here.
 
       // The variant: the caller's, else the operator's default, else the tree regime (PLAN.md 4.0).
       let variant = options.variant || env.HYPHAEON_VARIANT || null;
@@ -998,13 +1072,23 @@ export function createEngine(opts = {}) {
       if (!variant) {
         let warnings = [];
         try {
-          warnings = libraryDiagnose({ alignmentText: req.alignment, treeText }).warnings;
+          warnings = libraryDiagnose({ alignmentText: req.alignment, treeText, useTn93 }).warnings;
         } catch {
           warnings = [];
         }
         variant = variantFromDiagnostics(warnings);
       }
       const handle = await session(variant, { bustedHead: true });
+
+      // The trait, when the caller gave one (PLAN.md 4.0 row 8: phenotype "cannot run unasked").
+      // The report's own `seed` and `permutations` are the section's defaults, so one "Re-run
+      // with..." setting does not mean two different nulls in one report.
+      const traitOptions = phenotypeOptionsFor(options.phenotype, req.phenotype_file, names);
+      if (traitOptions) {
+        if (traitOptions.seed === undefined && options.seed !== undefined) traitOptions.seed = options.seed;
+        if (traitOptions.n_permutations === undefined && options.permutations !== undefined) traitOptions.n_permutations = options.permutations;
+      }
+      const phenotypeMapped = traitOptions ? mapOptions("phenotype", traitOptions, { defaultVariant: variant }) : null;
 
       const runtimeOptions = {
         variant,
@@ -1014,8 +1098,7 @@ export function createEngine(opts = {}) {
         seed: options.seed ?? undefined,
         permutations: options.permutations ?? undefined,
         dms: { enabled: options.dms !== false, workBudget: options.dms_work_budget ?? undefined },
-        treeSource,
-        estimateTree: caps.hyphy ? (alignmentText, treeTxt) => estimateTreeHook(alignmentText, treeTxt, progress) : undefined
+        useTn93: useTn93 || undefined
       };
       for (const k of Object.keys(runtimeOptions)) if (runtimeOptions[k] === undefined) delete runtimeOptions[k];
       if (runtimeOptions.dms.workBudget === undefined) delete runtimeOptions.dms.workBudget;
@@ -1040,8 +1123,39 @@ export function createEngine(opts = {}) {
         }
       });
 
+      // ── 8. phenotype, when the caller answered the report's offer ──────────────────────────
+      // `runEverything` leaves `sections.phenotype` null by design (PLAN.md 4.0 row 8). Filling
+      // it needs no second forward pass: the meme pass the report already ran holds the two
+      // things `compute_transformer_attributions` wants, `mean_root_attns` and the site LRTs, and
+      // that is exactly what the epistasis section consumed. The runtime's `runPhenotype` takes
+      // them as `attention` + `lrt` (runtime/src/phenotype.js), so the section costs graph maths
+      // and no inference. Without the attention (a report run with `epistasis: false`) the same
+      // call falls back to the reference's own all-sites loop through the session, which is a
+      // real second pass and is recorded as one.
+      let phenotypeSource = null;
+      if (phenotypeMapped) {
+        const filled = await runPhenotypeSection(rt, report, {
+          trait: phenotypeMapped.runtime.phenotype,
+          options: phenotypeMapped.runtime,
+          session: handle.backbone,
+          inputs: { alignment: alignmentName, tree: treeName },
+          progress,
+          signal: guard.signal
+        });
+        phenotypeSource = filled.source;
+        report.sections.phenotype = filled.section;
+        if (typeof onSection === "function") {
+          try {
+            onSection("phenotype", sectionForRelay(rt, "phenotype", report.sections.phenotype), { final: true });
+          } catch {
+            // section relays are advisory, like progress
+          }
+        }
+      }
+
       const record = typeof rt.toReportRecord === "function" ? rt.toReportRecord(report, { includeArrays: false }) : rt.jsonSafe(report);
       if (req.id) record.id = req.id;
+
       record.provenance = Object.assign({}, record.provenance || {}, {
         surface,
         engine: "in-process",
@@ -1050,9 +1164,22 @@ export function createEngine(opts = {}) {
         threads,
         mds_sign: MDS_SIGN,
         variant_source: variantSource,
-        reference_commands: referenceCommandsForReport(Object.assign({}, runtimeOptions, { variant }), { alignment: alignmentName, tree: treeName }),
+        reference_commands: referenceCommandsForReport(
+          Object.assign({}, runtimeOptions, {
+            variant,
+            phenotypeCli: traitOptions || undefined,
+            // The reference cannot reproduce a tree-free run without the flag; see referenceCommand.
+            useTn93: record.provenance && record.provenance.preprocessing && record.provenance.preprocessing.tree_source === "tn93"
+          }),
+          { alignment: alignmentName, tree: treeName, phenotype_file: names.phenotype_file }
+        ),
         elapsed_sec: (Date.now() - t0) / 1000,
-        options: Object.assign({}, options)
+        options: Object.assign({}, options, req.phenotype_file ? { phenotype_file: "<" + (names.phenotype_file || "phenotype.csv") + ">" } : {})
+      });
+      if (phenotypeSource) record.provenance.phenotype_source = phenotypeSource;
+      stampTreeSource(record.provenance, (report.sections && report.sections.sites && report.sections.sites.loaded) || null, {
+        treeGiven,
+        alignmentText: req.alignment
       });
       record.provenance.warnings = Array.isArray(record.provenance.warnings) ? [...record.provenance.warnings] : [];
       if (handle.headError) {
@@ -1091,7 +1218,35 @@ export function createEngine(opts = {}) {
     }
   }
 
-  return { run, analyze, status, capabilities, session, models, hyphy, threads, close };
+  return { run, analyze, status, session, models, threads, close };
+}
+
+/**
+ * The report's `phenotype` block as the per-pillar tool's options, or null when the caller asked
+ * for no trait. Accepts the same keys `hyphaeon_phenotype` takes (PLAN.md 4.0 row 8's "presets,
+ * a foreground list/regex, or a CSV"); an empty block is no trait at all, as Python truthiness
+ * makes it upstream (phenotype.py:239, 274).
+ *
+ * @param {object|undefined} block
+ * @param {string|undefined} phenotypeFileText
+ * @param {{phenotype_file?: string}} names  mutated with the table's basename when there is one
+ * @returns {object|null}
+ */
+function phenotypeOptionsFor(block, phenotypeFileText, names) {
+  const b = block && typeof block === "object" ? block : {};
+  const hasText = typeof phenotypeFileText === "string" && phenotypeFileText.trim().length > 0;
+  const hasTrait = Boolean(b.preset || b.foreground || hasText);
+  if (!hasTrait) return null;
+  const out = {};
+  for (const k of ["preset", "foreground", "background", "trait_col", "species_col", "continuous", "permulations", "n_permutations", "alpha", "min_taxa", "max_perm_p", "seed"]) {
+    if (b[k] !== undefined && b[k] !== null) out[k] = b[k];
+  }
+  if (hasText) {
+    names.phenotype_file = names.phenotype_file || b.phenotype_file_name || "phenotype.csv";
+    out.phenotype_file = phenotypeFileText;
+    out.phenotype_file_name = names.phenotype_file;
+  }
+  return out;
 }
 
 function safeStem(s) {

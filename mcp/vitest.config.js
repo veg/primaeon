@@ -1,7 +1,8 @@
 // Vitest configuration for @veg/hyphaeon-mcp.
 //
-// The bridge test runs the Python reference end to end (about 2 s on a laptop, longer on a cold
-// torch import), so the per-test timeout is generous. Set HYPHAEON_MCP_SKIP_BRIDGE=1 to skip it.
+// The parity tests load an ONNX graph and score whole alignments (the bat_oas1 report and the
+// RHO phenotype run are tens of seconds on a laptop CPU), so the per-test timeout is generous.
+// Nothing here starts a subprocess: every pillar runs in-process since Phase 3.
 export default {
   test: {
     environment: "node",

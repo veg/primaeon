@@ -43,27 +43,38 @@ describe("resources", () => {
     expect(caveats.v1.model_card.variants.viral.spearman_vs_meme_unseen_viral).toBe(0.43);
   });
 
-  it("serves the requirements with the validation codes and the engine split", async () => {
+  it("serves the requirements with the validation codes; every pillar in-process, no tree required", async () => {
     const res = await ctx.client.readResource({ uri: "hyphaeon://methods/requirements" });
     const body = JSON.parse(res.contents[0].text);
     expect(Object.keys(body.pillars).sort()).toEqual(["analyze", "busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
     expect(body.pillars.meme.options.model_variant.cli).toBe("--model-variant");
-    expect(body.pillars.meme.engine).toBe("in-process");
-    expect(body.pillars.epistasis.engine).toBe("in-process");
-    expect(body.pillars.dms.engine).toBe("in-process");
-    expect(body.pillars.phenotype.engine).toBe("python-reference");
-    expect(body.pillars.analyze.engine).toBe("in-process");
+    for (const name of Object.keys(body.pillars)) {
+      expect(body.pillars[name].engine, name).toBe("in-process");
+      // D22: no pillar requires a tree.
+      expect(body.pillars[name].requires_tree, name).toBe(false);
+    }
     expect(body.pillars.analyze.sections_in_order[0]).toBe("diagnostics");
     expect(body.pillars.epistasis.options.seed.cli).toBe("--seed");
     expect(body.pillars.meme.options.mds_sign.default).toBe("canonical");
+    // The tree rule says what happens without one, and names TN93 rather than an estimator.
+    expect(body.pillars.meme.tree).toMatch(/OPTIONAL/);
+    expect(body.pillars.meme.tree).toMatch(/Tamura-Nei 93/);
+    expect(body.pillars.meme.tree).not.toMatch(/HKY85/);
+    expect(body.pillars.phenotype.trait).toMatch(/preset/);
+    expect(body.pillars.phenotype.permulations_need_a_tree).toMatch(/tree-free/);
+    expect(body.pillars.analyze.options.phenotype.note).toMatch(/report-pass/);
     expect(body.report_sections).toEqual(["diagnostics", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype", "provenance", "timings"]);
     expect(body.validation_codes).toEqual(CODES);
-    expect(body.validation_codes).toHaveProperty("BRANCH_LENGTHS_MISSING");
+    expect(body.validation_codes).toHaveProperty("TREE_FREE_TN93");
+    expect(body.validation_codes).toHaveProperty("TN93_SATURATED_PAIRS");
     expect(body.validation_codes).toHaveProperty("DISTANCE_RESCALED");
+    expect(body.validation_codes).not.toHaveProperty("BRANCH_LENGTHS_MISSING");
+    expect(body.validation_codes).not.toHaveProperty("TREE_MISSING");
     expect(body.caps.work.sync_max).toBe(2.5e9);
     expect(body.caps.analyze.wait_default_sec).toBe(120);
-    expect(body.provenance.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "evaluate", "analyze"]);
-    expect(body.provenance.bridged.analyses).toEqual(["phenotype"]);
+    expect(body.provenance.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
+    expect(body.provenance.bridged.analyses).toEqual([]);
+    expect(body.provenance.bridged.note).toMatch(/no Python/i);
   });
 
   it("serves an example by name and refuses traversal", async () => {

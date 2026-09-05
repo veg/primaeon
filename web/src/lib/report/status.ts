@@ -64,7 +64,10 @@ export function sectionStatus(record: ReportRecord, state: LoadedState, name: Se
 	const payload = record.sections[name];
 	const completed = record.status.completed.includes(name);
 	const reason = skippedReason(payload);
-	if (name === 'phenotype') return { name, state: 'unavailable', phase: null, reason: null };
+	// The phenotype pillar is never pending or running with the rest: it needs a trait, so its
+	// section is either a result the reader asked for or an invitation to ask (PLAN.md §4.0 row 8).
+	// Its shell therefore always renders its body, and the panel itself shows a failed run.
+	if (name === 'phenotype') return { name, state: 'done', phase: null, reason: null };
 	if (payload != null) {
 		if (isFailedSection(payload)) return { name, state: 'failed', phase, reason: payload.error };
 		if (reason) return { name, state: 'skipped', phase, reason };

@@ -25,9 +25,13 @@
  * finished — the contract offers one AbortSignal, and this is how the report's "Cancel" on the DMS
  * bar maps onto it.
  *
- * TREE ESTIMATION happens in `prepareTree()` before the worker is asked to run, exactly as
- * lib/analyze/run.ts did for `runMeme`: no tree → NJ, a tree without branch lengths → HKY85, both
- * in the tree worker (HyPhy WASM). The record keeps the tree WITH lengths so a re-run skips HyPhy.
+ * THE TREE IS NOT PREPARED ANY MORE (D22). Phase 1 and 2 fitted branch lengths, or built a tree,
+ * in a vendored WebAssembly engine before the worker was asked to run. `planTree()` is what is
+ * left of that step: a pure decision about which text to hand over and what to call the source —
+ * a tree WITH branch lengths is used as given, and anything else (no tree, or a tree without
+ * usable lengths) is handed over as nothing at all, so the library takes pairwise TN93 distances
+ * into the MDS inside `loadAlignmentAndTree` and reports it through `notices.treeFree`. The record
+ * keeps the tree text it handed over, which for a tree-free run is null.
  */
 
 import type {
@@ -44,7 +48,7 @@ import { REPORT_PHASES } from '$lib/api';
 import { digest } from '$lib/analyze/inputs';
 import { emptySections, type DmsSection, type ReportSections } from '$lib/report/types';
 import { newReportId, saveReport } from '$lib/storage/reports';
-import { analyzeClient, treeClient } from '$lib/workers/clients';
+import { analyzeClient } from '$lib/workers/clients';
 import type { AnalyzeResponse } from '$lib/workers/protocol';
 
 export const MAX_THREADS = 16;
@@ -78,41 +82,49 @@ function absolute(base: string, path: string): string {
 	return new URL(`${base}${path}`, globalThis.location?.href ?? 'http://localhost/').href;
 }
 
-export interface PrepareTreeRequest {
-	alignmentText: string;
+export interface TreePlanRequest {
+	/** The tree text the reader supplied, or null. */
 	treeText: string | null;
 	/** From the diagnosis: the tree is embedded in the alignment. */
 	embeddedTree: boolean;
-	/** From the diagnosis: the tree (uploaded or embedded) has no usable branch lengths. */
-	branchLengthsMissing: boolean;
-	base: string;
-	signal?: AbortSignal;
-	onProgress?: (message: string, done?: number, total?: number) => void;
+	/** From the diagnosis (`TREE_FREE_TN93`): no tree, or no usable branch lengths. */
+	treeFree: boolean;
+	/** The library's reason, when it gave one; kept for the status line and the strip. */
+	treeFreeReason?: string | null;
 }
 
 export interface PreparedTree {
-	/** The tree the model will be given; '' when the embedded tree (with lengths) is to be used. */
+	/** The tree handed to the runtime; '' for an embedded tree AND for a tree-free run. */
 	treeText: string;
 	treeSource: TreeSource;
+	/** Set when the run will be tree-free, for the status line. */
+	treeFreeReason?: string | null;
 }
 
-/** Decide the tree source and fit lengths / build an NJ tree in the tree worker when needed. */
-export async function prepareTree(req: PrepareTreeRequest): Promise<PreparedTree> {
-	const userTree = req.treeText && req.treeText.trim() ? req.treeText : null;
-	let treeSource: TreeSource = userTree ? 'user' : req.embeddedTree ? 'embedded' : 'nj';
-	let treeText: string | null = userTree;
-	const needsTree = treeSource === 'nj';
-	const needsLengths = !needsTree && req.branchLengthsMissing;
-	if (needsTree || needsLengths) {
-		req.onProgress?.(needsTree ? 'Loading HyPhy WASM for a neighbour-joining tree...' : 'Loading HyPhy WASM for HKY85 branch lengths...');
-		const estimated = await treeClient().call(
-			{ alignmentText: req.alignmentText, treeText: needsTree ? null : treeText, hyphyBase: absolute(req.base, '/wasm/hyphy/') },
-			{ signal: req.signal, onProgress: (_phase, done, total, message) => req.onProgress?.(message, done, total) }
-		);
-		treeText = estimated.treeText;
-		treeSource = estimated.treeSource;
+/**
+ * Which tree the run gets, and what to call the source. Pure and synchronous: under D22 there is
+ * nothing to fit and nothing to build, so the only decision left is what to CALL the source. The
+ * decision itself belongs to the library, which takes TN93 distances inside `loadAlignmentAndTree`
+ * whenever the tree it is handed has no usable branch lengths.
+ *
+ * THE TEXT IS ALWAYS PASSED THROUGH, even when the diagnosis already says the run will be
+ * tree-free. Withholding it would make the library report `no_tree` for a reader who supplied one,
+ * which is a different sentence on the report's strip and a wrong one; the library keeps such a
+ * tree for display and says `no_branch_lengths` instead. It never reaches the model either way:
+ * in tree-free mode the distances come from the alignment and every sequence is kept, in alignment
+ * order, with no matching against the tree's tips.
+ */
+export function planTree(req: TreePlanRequest): PreparedTree {
+	const userTree = req.treeText && req.treeText.trim() ? req.treeText.trim() : null;
+	if (req.treeFree) {
+		return {
+			treeText: userTree ?? '',
+			treeSource: 'tn93',
+			treeFreeReason: req.treeFreeReason ?? (userTree || req.embeddedTree ? 'no_branch_lengths' : 'no_tree')
+		};
 	}
-	return { treeText: treeText ?? '', treeSource };
+	if (userTree) return { treeText: userTree, treeSource: 'user' };
+	return { treeText: '', treeSource: 'embedded' };
 }
 
 export interface StartRequest {
@@ -121,7 +133,7 @@ export interface StartRequest {
 	/** The ORIGINAL tree text as uploaded (for the digest), or null. */
 	uploadedTreeText: string | null;
 	treeName: string | null;
-	/** From prepareTree(): the tree the model is given. */
+	/** From planTree(): the tree the model is given, and what to call the source. */
 	tree: PreparedTree;
 	options: ReportOptions;
 	diagnosis: DiagnosisSnapshot | null;
@@ -192,8 +204,9 @@ export async function startReport(req: StartRequest): Promise<string> {
 	};
 
 	const finished = analyzeClient()
-		.call(
+		.call<AnalyzeResponse>(
 			{
+				kind: 'analyze',
 				alignmentText: req.alignmentText,
 				treeText: req.tree.treeText,
 				treeSource: req.tree.treeSource,

@@ -114,9 +114,10 @@ describe('toMemeRecord', () => {
 		expect(record.attributions).toBeNull();
 	});
 
-	it('marks an estimated tree and converts the attribution map', () => {
+	it('marks a tree-free run and converts the attribution map', () => {
 		const attributions = new Map([['2', { site_0indexed: 1, site_1indexed: 2 }]]);
-		const record = toMemeRecord(rawResult([], { attributions }), { ...CTX, treeSource: 'nj' });
+		const record = toMemeRecord(rawResult([], { attributions }), { ...CTX, treeSource: 'tn93' });
+		// D22: no tree of the model's own, so the distances did not come from branch lengths.
 		expect(record.provenance.preprocessing.branch_lengths_estimated).toBe(true);
 		expect(record.attributions).toEqual({ '2': { site_0indexed: 1, site_1indexed: 2 } });
 	});

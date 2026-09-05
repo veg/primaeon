@@ -15,15 +15,23 @@
 	reliably — the original's post-render `d3.selectAll(...)` restyling is kept for the same reason,
 	scoped to this modal's container rather than the document.
 
-	REQUIRES `record.tree` (the Newick actually used, estimated or supplied) and
-	`record.alignment` (the selected taxa's sequences): without both there is nothing to label,
-	and the modal says so instead of drawing a bare topology.
+	REQUIRES a tree and `record.alignment` (the selected taxa's sequences): without both there is
+	nothing to label, and the modal says so instead of drawing a bare topology.
+
+	WHICH TREE, AND WHETHER THE MODEL SAW IT (D22). The tree now comes in as a prop rather than off
+	the record, because the two are no longer the same thing: a tree-free run gave the model pairwise
+	TN93 distances and never a topology, and what is drawn here is then the neighbour-joining tree
+	the runtime built on those distances FOR DISPLAY (lib/report/displayTree.ts decides which).
+	Parsimony substitutions on such a tree are still worth showing — the states are the alignment's
+	and the topology is a faithful summary of the distances the model did see — but the caption says
+	which tree it is every time, so no reader takes an inferred topology for a supplied one.
 -->
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
 	import * as d3 from 'd3';
 	import 'phylotree/dist/phylotree.css';
 	import type { MemeRecord } from '$lib/results/types';
+	import type { DisplayTree } from '$lib/report/displayTree';
 	import type { SiteRow } from '$lib/results/derive';
 	import { fitchReconstruct, isSubstitution, type FitchNode } from '$lib/results/fitch';
 	import { siteColumn, translateCodon, type SiteComposition } from '$lib/results/entropy';
@@ -33,9 +41,15 @@
 		record: MemeRecord;
 		row: SiteRow;
 		composition: SiteComposition | null;
+		/** Which Newick to draw and what to call it (lib/report/displayTree.ts). */
+		tree?: DisplayTree | null;
 		onClose: () => void;
 	}
-	let { record, row, composition, onClose }: Props = $props();
+	let { record, row, composition, tree = null, onClose }: Props = $props();
+
+	/** The tree prop when the report supplied one; otherwise the record's own, as before Phase 3. */
+	const newick = $derived(tree?.newick ?? record.tree ?? null);
+	const treeLabel = $derived(tree?.label ?? null);
 
 	let labelType = $state<'codon' | 'aa'>('codon');
 	let layout = $state<'linear' | 'radial'>('linear');
@@ -48,7 +62,7 @@
 	let substitutions = $state<number | null>(null);
 	let error = $state<string | null>(null);
 
-	const canDraw = $derived(Boolean(record.tree && record.alignment && record.alignment.sequences.length > 0));
+	const canDraw = $derived(Boolean(newick && record.alignment && record.alignment.sequences.length > 0));
 
 	/** Codon (or amino acid) of a taxon at this site, '?' when the taxon is not in the alignment. */
 	function stateOf(name: string): string {
@@ -70,12 +84,12 @@
 			const tips = record.alignment?.names.length ?? 20;
 			const width = Math.max(480, container.clientWidth - 24);
 			const height = layout === 'radial' ? Math.max(520, Math.min(900, width)) : Math.max(320, Math.min(900, 18 * tips + 60));
-			const tree = new phylotree(record.tree!);
-			const root = tree.nodes as unknown as FitchNode;
+			const drawn = new phylotree(newick!);
+			const root = drawn.nodes as unknown as FitchNode;
 			const result = fitchReconstruct(root, stateOf, collapse);
 			substitutions = result.substitutions;
 
-			const display = tree.render({
+			const display = drawn.render({
 				container,
 				width,
 				height,
@@ -134,6 +148,7 @@
 		void alignTips;
 		void collapse;
 		void row.site;
+		void newick;
 		void render();
 	});
 
@@ -174,6 +189,9 @@
 					<span class="mono danger">{substitutions ?? '—'}</span>
 				</span>
 			</div>
+			{#if treeLabel}
+				<p class="treesource">{treeLabel}</p>
+			{/if}
 			{#if composition}
 				<div class="facts__row facts__row--composition">
 					<span class="eyebrow-sm">Amino-acid composition at site</span>
@@ -413,6 +431,11 @@
 	.tree :global(.tree-scale-bar line),
 	.tree :global(.tree-scale-bar path) {
 		stroke: var(--text-muted);
+	}
+	.treesource {
+		margin: 0;
+		font-size: var(--text-xs);
+		color: var(--text-muted);
 	}
 	.legend {
 		margin: 0;

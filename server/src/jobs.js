@@ -10,7 +10,7 @@
  *   - src/db.js (SQLite) for metadata that must survive a restart: status, timestamps, options,
  *     input sizes, the latest progress record, the error, the warnings;
  *   - one directory per job, `<jobsDir>/<id>/`, holding `alignment.fasta` (+ `tree.nwk`,
- *     `prediction.csv`, `meme.json` as submitted), `result.json` once the run completes and
+ *     `prediction.csv`, `meme.json`, `phenotype.csv` as submitted), `result.json` once the run completes and
  *     `sections/<name>.json` for every section of an `analyze` report as it finalises, so a
  *     report page attached mid-run can render the sections that exist (PLAN.md 4.5 "the page
  *     never waits for the slowest one").
@@ -37,7 +37,7 @@ import path from "node:path";
 import { openDb, TERMINAL } from "./db.js";
 import { REPORT_SECTIONS } from "./runner.js";
 
-const INPUT_FILES = Object.freeze({ alignment: "alignment.fasta", tree: "tree.nwk", prediction: "prediction.csv", meme_result: "meme.json" });
+const INPUT_FILES = Object.freeze({ alignment: "alignment.fasta", tree: "tree.nwk", prediction: "prediction.csv", meme_result: "meme.json", phenotype_file: "phenotype.csv" });
 
 const nowIso = () => new Date().toISOString();
 
@@ -172,6 +172,7 @@ export function createJobManager({ config, pool, logger }) {
      * @param {string} [spec.tree]
      * @param {string} [spec.prediction]
      * @param {string} [spec.meme_result]
+     * @param {string} [spec.phenotype_file]  the phenotype table's TEXT
      * @param {object} [spec.options]
      * @param {number} [spec.seed]
      * @param {object} [spec.names]     {alignment, tree, demo}
@@ -204,6 +205,7 @@ export function createJobManager({ config, pool, logger }) {
         tree: spec.tree,
         prediction: spec.prediction,
         meme_result: spec.meme_result,
+        phenotype_file: spec.phenotype_file,
         options: spec.options || {},
         seed: spec.seed,
         names: spec.names || {}

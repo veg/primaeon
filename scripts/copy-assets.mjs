@@ -3,7 +3,7 @@
  * a dev session.
  *
  * WHY THIS FILE EXISTS. The site must be self-contained: no CDN, no other origin (PLAN.md D8, §4.4;
- * the e2e asserts it). Four kinds of asset are therefore served by the site itself, and none of
+ * the e2e asserts it). Three kinds of asset are therefore served by the site itself, and none of
  * them belongs in git:
  *
  *   1. ONNX RUNTIME WASM  (node_modules/onnxruntime-web/dist → static/ort/)
@@ -19,25 +19,33 @@
  *      by `hyphaeon export-onnx`. Absent until upstream PR 1 lands, so a missing directory is a
  *      warning, never a failure: the Phase 0 site has no run path that needs them.
  *
- *   3. HYPHY WASM  (runtime/vendor/hyphy/<version>/ → static/wasm/hyphy/<version>/)
- *      HyPhy compiled to WASM, used for HKY85 branch-length fitting, NJ trees and format
- *      conversion (PLAN.md D5/D6). Vendored into runtime/vendor/hyphy/ (DataMonkey 3's build,
- *      provenance and hashes in runtime/vendor/hyphy/PROVENANCE.md) so the site is built from
- *      this repository alone; runtime/src/hyphy/index.js loads the same files under Node and
- *      names the version directory (HYPHY_WASM_VERSION), which is why the layout is preserved.
- *      The DataMonkey checkout is no longer consulted for it. Missing directory: warning.
+ *   3. _headers  (written here → static/_headers)
+ *      The site's own security headers for a static host that honours a `_headers` file, kept in
+ *      step with deploy/apache-hyphaeon.conf: Cross-Origin-Opener-Policy: same-origin and
+ *      Cross-Origin-Embedder-Policy: require-corp so SharedArrayBuffer, and therefore
+ *      multi-threaded ORT, is available (D13); a same-origin Content-Security-Policy in which
+ *      'wasm-unsafe-eval' is onnxruntime-web's and 'unsafe-inline' in script-src is SvelteKit's
+ *      inline start script on every prerendered page (adapter-static, no `kit.csp`). Phases 0–2
+ *      copied datamonkey3/static/_headers verbatim, which grants https://unpkg.com, `connect-src
+ *      https:` and the bare 'unsafe-eval' the HyPhy glue needed in a module worker; PLAN.md D22
+ *      removed the only consumer of 'unsafe-eval' (PHASE2.md gap 12) and this app has never loaded
+ *      from another origin (the e2e asserts every request is same-origin), so the file is now
+ *      authored here rather than inherited. DATAMONKEY3_DIR is no longer read.
  *
- *   4. _headers  (datamonkey3/static/_headers → static/_headers, plus COOP/COEP)
- *      DataMonkey's security headers, with Cross-Origin-Opener-Policy: same-origin and
- *      Cross-Origin-Embedder-Policy: require-corp appended so SharedArrayBuffer, and therefore
- *      multi-threaded ORT, is available (D13). DataMonkey's own file is copied verbatim rather
- *      than rewritten so a diff against it stays meaningful; note that it still allows
- *      https://unpkg.com in script-src/style-src and `connect-src https:`, which this app does not
- *      need. Tightening that is a deliberate change to make later, not a side effect of a copy.
+ * THERE IS NO FOURTH KIND ANY MORE. Phase 2 copied a vendored HyPhy WebAssembly build into
+ * `static/wasm/hyphy/<version>/`, because the app fitted HKY85 branch lengths and built NJ trees
+ * with it when an upload's tree was unusable. PLAN.md D22 (resolved 2026-09-05) replaced that with
+ * the reference's own tree-free path: no tree, or a tree without usable branch lengths, now means
+ * pairwise TN93 distances straight into the MDS (`@veg/hyphaeon-js`), and the display topology is
+ * a neighbour-joining tree computed in JavaScript from those same distances
+ * (`runtime/src/nj.js`). HyPhy is gone from the product — `runtime/src/hyphy/`,
+ * `runtime/vendor/hyphy/` and the `./hyphy` export of `@veg/hyphaeon-runtime` were deleted in
+ * Phase 3 — so nothing is copied to `web/static/wasm/` and HYPHAEON_HYPHY_WASM_DIR is no longer
+ * read. A `web/static/wasm/` directory left over from a Phase 2 build is stale: it is gitignored
+ * output of a step that no longer exists, and deleting it is safe.
  *
- * Sources are resolved relative to this repository (`../HyphAeon`, `../datamonkey3`,
- * `runtime/vendor/hyphy`) and can be overridden with HYPHAEON_ENGINE_DIR, DATAMONKEY3_DIR and
- * HYPHAEON_HYPHY_WASM_DIR. onnxruntime-web is located through
+ * Sources are resolved relative to this repository (`../HyphAeon`) and can be overridden with
+ * HYPHAEON_ENGINE_DIR. onnxruntime-web is located through
  * Node's resolver from web/, so it is found whether npm hoisted it to the workspace root or not.
  *
  * Wired as web's `predev` and `prebuild`. Runs in well under a second when nothing has changed.
@@ -61,8 +69,6 @@ const web = join(repo, 'web');
 const staticDir = join(web, 'static');
 
 const engineDir = process.env.HYPHAEON_ENGINE_DIR ?? resolve(repo, '..', 'HyphAeon');
-const dm3Dir = process.env.DATAMONKEY3_DIR ?? resolve(repo, '..', 'datamonkey3');
-const hyphyWasmDir = process.env.HYPHAEON_HYPHY_WASM_DIR ?? join(repo, 'runtime', 'vendor', 'hyphy');
 
 const log = (tag, msg) => console.log(`[copy-assets] ${tag}: ${msg}`);
 const warn = (tag, msg) => console.warn(`[copy-assets] ${tag}: WARNING ${msg}`);
@@ -74,25 +80,6 @@ function copy(src, dest) {
 	mkdirSync(dirname(dest), { recursive: true });
 	copyFileSync(src, dest);
 	return statSync(src).size;
-}
-
-/** Copy every regular file under `srcDir` (recursively) into `destDir`, preserving layout. */
-function copyTree(srcDir, destDir) {
-	let files = 0;
-	let bytes = 0;
-	for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-		const src = join(srcDir, entry.name);
-		const dest = join(destDir, entry.name);
-		if (entry.isDirectory()) {
-			const sub = copyTree(src, dest);
-			files += sub.files;
-			bytes += sub.bytes;
-		} else if (entry.isFile()) {
-			bytes += copy(src, dest);
-			files += 1;
-		}
-	}
-	return { files, bytes };
 }
 
 // 1. ONNX Runtime WASM ---------------------------------------------------------------------------
@@ -177,66 +164,39 @@ function findOrtPackage() {
 	}
 }
 
-// 3. HyPhy WASM ---------------------------------------------------------------------------------
+// 3. _headers -----------------------------------------------------------------------------------
 
-{
-	const hyphySrc = hyphyWasmDir;
-	if (!existsSync(hyphySrc)) {
-		warn('hyphy', `${hyphySrc} does not exist; HyPhy WASM not copied (tree estimation will not run).`);
-	} else {
-		// Only the <version>/ directories: PROVENANCE.md and anything else at the top level is
-		// documentation for the repository, not an asset to serve.
-		const versions = readdirSync(hyphySrc, { withFileTypes: true })
-			.filter((d) => d.isDirectory())
-			.map((d) => d.name);
-		let files = 0;
-		let bytes = 0;
-		for (const version of versions) {
-			const sub = copyTree(join(hyphySrc, version), join(staticDir, 'wasm', 'hyphy', version));
-			files += sub.files;
-			bytes += sub.bytes;
-		}
-		if (versions.length === 0) {
-			warn('hyphy', `${hyphySrc} has no <version>/ directory; HyPhy WASM not copied.`);
-		} else {
-			log('hyphy', `copied ${files} files (${mb(bytes)}) [${versions.join(', ')}] to web/static/wasm/hyphy/`);
-		}
-	}
-}
-
-// 4. _headers -----------------------------------------------------------------------------------
-
-/** Appended to the catch-all block. See the file header for why. */
-const CROSS_ORIGIN_ISOLATION = [
+/**
+ * The catch-all block. See the file header for why each line is here; the CSP mirrors
+ * deploy/apache-hyphaeon.conf and must change together with it.
+ */
+const HEADERS = [
+	'/*',
+	'  X-Frame-Options: DENY',
+	'  X-Content-Type-Options: nosniff',
+	'  Referrer-Policy: strict-origin-when-cross-origin',
+	'  Permissions-Policy: camera=(), microphone=(), geolocation=()',
+	"  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'",
+	'  Strict-Transport-Security: max-age=31536000; includeSubDomains',
 	'  Cross-Origin-Opener-Policy: same-origin',
-	'  Cross-Origin-Embedder-Policy: require-corp'
+	'  Cross-Origin-Embedder-Policy: require-corp',
+	'',
+	'/assets/*',
+	'  Cache-Control: public, max-age=31536000, immutable',
+	'',
+	'/models/*',
+	'  Cache-Control: public, max-age=31536000, immutable',
+	'  Cross-Origin-Resource-Policy: same-origin',
+	'',
+	'/ort/*',
+	'  Cache-Control: public, max-age=31536000, immutable',
+	'  Cross-Origin-Resource-Policy: same-origin'
 ];
 
 {
-	const headersSrc = join(dm3Dir, 'static', '_headers');
 	const headersDest = join(staticDir, '_headers');
-	let text;
-	if (existsSync(headersSrc)) {
-		text = readFileSync(headersSrc, 'utf8');
-	} else {
-		warn('headers', `${headersSrc} does not exist; writing a minimal _headers with COOP/COEP only.`);
-		text = '/*\n  X-Content-Type-Options: nosniff\n';
-	}
-
-	// Insert after the `/*` block's existing header lines, before the next path block (or EOF).
-	const lines = text.replace(/\s+$/, '').split('\n');
-	const start = lines.findIndex((l) => l.trim() === '/*');
-	if (start === -1) {
-		lines.push('/*', ...CROSS_ORIGIN_ISOLATION);
-	} else {
-		let end = start + 1;
-		while (end < lines.length && lines[end].startsWith('  ')) end += 1;
-		const missing = CROSS_ORIGIN_ISOLATION.filter(
-			(h) => !lines.slice(start + 1, end).some((l) => l.trim() === h.trim())
-		);
-		lines.splice(end, 0, ...missing);
-	}
 	mkdirSync(staticDir, { recursive: true });
-	writeFileSync(headersDest, lines.join('\n') + '\n');
-	log('headers', `wrote web/static/${basename(headersDest)} (COOP/COEP added)`);
+	writeFileSync(headersDest, HEADERS.join('\n') + '\n');
+	log('headers', `wrote web/static/${basename(headersDest)} (COOP/COEP + same-origin CSP)`);
 }
+

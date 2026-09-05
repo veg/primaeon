@@ -17,8 +17,12 @@
  *       case every other section stays and the record persists as `done` with `dms.cancelled`;
  *     - a reload restores every section from IndexedDB without fetching a model or ORT;
  *     - during the run exactly the two graphs the report needs (general.onnx, busted_head.onnx) and
- *       only the CPU SIMD-threaded ORT binary were requested, all same-origin; no HyPhy for a tree
- *       with branch lengths;
+ *       only the CPU SIMD-threaded ORT binary were requested, all same-origin; nothing HyPhy, which
+ *       under D22 is true of every run and not only of this one (treefree.spec.ts drives the two
+ *       inputs that used to load it);
+ *     - THE TREE IS USED AS IT IS (D22): bat_oas1.nwk is a chronogram with branch lengths, so the
+ *       record must say `tree_source: 'user'`, carry no `tree_free` notice, and claim nothing was
+ *       estimated — the case the tree-free path must not swallow;
  *     - PARITY (PLAN.md §5.4, PARITY.md): is_invariable exact against fixtures/e2e/meme_bat_oas1.json;
  *       hyphaeon_lrt within the graph class against the Python reference — STRICT now: veg/HyphAeon
  *       phase-2a made the canonical MDS sign the default on both sides (MDS_SIGN.md, D20), so the
@@ -49,7 +53,7 @@ import { readFileSync } from 'node:fs';
 import {
 	COMPUTED_SECTIONS,
 	HEAVY_ASSET,
-	HYPHY_ASSET,
+	HYPHY_ANY,
 	ONNX,
 	ORT_FORBIDDEN,
 	ORT_LOADER,
@@ -196,6 +200,11 @@ test.describe('report: bat_oas1 runs everything', () => {
 		expect(stored.provenance!.model_variant).toBe('general');
 		expect(stored.provenance!.artifact_verified).not.toBe(false);
 		expect(stored.provenance!.preprocessing.distance_rescaled).toBe(true);
+		// D22: a tree WITH branch lengths is used as it is — no fit, no TN93, no NJ.
+		expect(stored.treeSource).toBe('user');
+		expect(stored.treeFree, 'a usable tree must not be routed through the tree-free path').toBeNull();
+		expect(stored.provenance!.preprocessing.branch_lengths_estimated).toBe(false);
+		expect(stored.displayTreeSource, 'the tree drawn is the tree the model was given').toBe('user');
 		expect(stored.provenance!.preprocessing.tree_source).toBe('user');
 		expect(stored.provenance!.preprocessing.taxa_used).toBe(18);
 		expect(stored.siteCount).toBe(351);
@@ -221,7 +230,7 @@ test.describe('report: bat_oas1 runs everything', () => {
 			expect(new URL(u).pathname).toMatch(/^\/ort\/ort-wasm-simd-threaded\.(wasm|mjs)$/);
 			expect(u).not.toMatch(ORT_FORBIDDEN);
 		}
-		expect(requests.matching(HYPHY_ASSET), 'no HyPhy WASM for a tree with branch lengths').toEqual([]);
+		expect(requests.matching(HYPHY_ANY), 'HyPhy is not in the product any more (D22)').toEqual([]);
 
 		const failedHeavy = requests.failed().filter((u) => HEAVY_ASSET.test(u));
 		expect(failedHeavy, `heavy assets that failed: ${failedHeavy.join(', ')}`).toEqual([]);

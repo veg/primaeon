@@ -6,6 +6,10 @@
  * and GraphML formats, `fields`/`top`, DELETE -> 404; and the refusals that must happen before a
  * worker is touched: too many taxa, too many codons for dms, permutations above the cap, a body
  * above 8 MiB, an unknown analysis.
+ *
+ * Phase 3 adds two rows to that contract, both of them things this server could not do before:
+ * a job with NO TREE succeeds and records `tree_source: "tn93"` (D22 — the refusal is gone), and
+ * `analysis: "phenotype"` runs in the worker like every other pillar, with no Python anywhere.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -194,18 +198,107 @@ describe("per-pillar jobs", () => {
     expect(csv.text.split("\n")[0]).toMatch(/^Gene,Taxa,Sites,p_ACAT,p_Simes/);
   });
 
-  it("a failed input (no tree) is a failed job with kind input, 410 on result", async () => {
+  it("meme with NO TREE succeeds on TN93 distances and records tree_source \"tn93\" (D22)", async () => {
     const ex = example("bat_oas1");
-    const post = await request(handle.app).post("/api/v1/jobs").send({ analysis: "meme", alignment: ex.alignment });
+    const post = await request(handle.app).post("/api/v1/jobs").send({ analysis: "meme", alignment: ex.alignment, names: { alignment: "bat_oas1.fasta" } });
+    expect(post.status).toBe(202);
+    const events = await readSse(srv.baseUrl, "/api/v1/jobs/" + post.body.id + "/events");
+    expect(events.at(-1).data.status).toBe("completed");
+    const res = await request(handle.app).get("/api/v1/jobs/" + post.body.id + "/result?top=3");
+    expect(res.status).toBe(200);
+    expect(res.body.analysis).toBe("meme");
+    expect(res.body.codon_count).toBe(351);
+    expect(res.body.taxa_count).toBe(18);
+    const pre = res.body.provenance.preprocessing;
+    expect(pre.tree_source).toBe("tn93");
+    expect(pre.tree_free.reason).toBe("no_tree");
+    expect(pre.branch_lengths_estimated).toBe(false);
+    expect(res.body.provenance.reference_command).toContain("--use-tn93");
+    // The tree-based run of the same alignment is a different, tree-sourced run.
+    const withTree = await request(handle.app).post("/api/v1/jobs").send({ analysis: "meme", alignment: ex.alignment, tree: ex.tree });
+    await readSse(srv.baseUrl, "/api/v1/jobs/" + withTree.body.id + "/events");
+    const treed = await request(handle.app).get("/api/v1/jobs/" + withTree.body.id + "/result?top=1");
+    expect(treed.body.provenance.preprocessing.tree_source).toBe("user");
+  }, 180000);
+
+  it("phenotype runs in the worker with a trait, and no subprocess is involved", async () => {
+    const ex = example("bat_oas1");
+    const post = await request(handle.app)
+      .post("/api/v1/jobs")
+      .send({
+        analysis: "phenotype",
+        alignment: ex.alignment,
+        tree: ex.tree,
+        names: ex.names,
+        options: { phenotype: { foreground: "R_ferr,R_sin,R_aeg,H_arm", n_permutations: 20 }, seed: 42 }
+      });
     expect(post.status).toBe(202);
     const events = await readSse(srv.baseUrl, "/api/v1/jobs/" + post.body.id + "/events");
     const done = events.at(-1).data;
+    expect(done.status, JSON.stringify(done.error || {})).toBe("completed");
+    const res = await request(handle.app).get("/api/v1/jobs/" + post.body.id + "/result?top=5");
+    expect(res.status).toBe(200);
+    expect(res.body.analysis).toBe("phenotype");
+    expect(res.body.taxa_count).toBe(18);
+    expect(res.body.codon_count).toBe(351);
+    expect(res.body.phenotype_meta.foreground_count).toBe(4);
+    expect(Array.isArray(res.body.sites)).toBe(true);
+    expect(res.body.provenance.surface).toBe("node-server");
+    expect(res.body.provenance.engine).toBe("in-process");
+    expect(res.body.provenance.reference_command.slice(0, 2)).toEqual(["hyphaeon", "phenotype"]);
+    expect(res.body.provenance.reference_command).toContain("--foreground");
+    // Permulations were not asked for, so they are recorded as not-requested rather than missing.
+    expect(res.body.permulations.reason).toBe("not-requested");
+  }, 180000);
+
+  it("a failed input (two taxa) is a failed job with kind input, 410 on result", async () => {
+    const alignment = ">a\nATGAAACCC\n>b\nATGAAACCG\n";
+    const post = await request(handle.app).post("/api/v1/jobs").send({ analysis: "meme", alignment });
+    // Two sequences are refused by the caps before a worker is touched.
+    expect(post.status).toBe(422);
+    expect(post.body.error.kind).toBe("input");
+    const bad = await request(handle.app).post("/api/v1/jobs").send({ analysis: "meme", alignment: example("bat_oas1").alignment, tree: "((x:0.1,y:0.1):0.1,z:0.1);" });
+    expect(bad.status).toBe(202);
+    const events = await readSse(srv.baseUrl, "/api/v1/jobs/" + bad.body.id + "/events");
+    const done = events.at(-1).data;
     expect(done.status).toBe("failed");
     expect(done.error.kind).toBe("input");
-    const res = await request(handle.app).get("/api/v1/jobs/" + post.body.id + "/result");
+    const res = await request(handle.app).get("/api/v1/jobs/" + bad.body.id + "/result");
     expect(res.status).toBe(410);
     expect(res.body.error.code).toBe("NOT_READY");
-  });
+  }, 180000);
+});
+
+describe("the report's phenotype section (analyze + a trait block)", () => {
+  it("fills sections.phenotype from the report's own pass, and leaves it null without a trait", async () => {
+    const ex = example("bat_oas1");
+    const post = await request(handle.app)
+      .post("/api/v1/jobs")
+      .send({
+        analysis: "analyze",
+        alignment: ex.alignment,
+        tree: ex.tree,
+        names: ex.names,
+        seed: 42,
+        options: {
+          dms: { enabled: false },
+          permutations: 20,
+          phenotype: { foreground: "R_ferr,R_sin,R_aeg,H_arm" }
+        }
+      });
+    expect(post.status).toBe(202);
+    const events = await readSse(srv.baseUrl, "/api/v1/jobs/" + post.body.id + "/events");
+    const done = events.at(-1).data;
+    expect(done.status, JSON.stringify(done.error || {})).toBe("completed");
+    expect(events.filter((e) => e.event === "section").map((e) => e.data.name)).toContain("phenotype");
+    const res = await request(handle.app).get("/api/v1/jobs/" + post.body.id + "/result?section=phenotype&top=5");
+    expect(res.status).toBe(200);
+    expect(res.body.phenotype_meta.foreground_count).toBe(4);
+    expect(res.body.sites.length).toBeGreaterThan(0);
+    const whole = await request(handle.app).get("/api/v1/jobs/" + post.body.id + "/result?top=1");
+    expect(whole.body.provenance.phenotype_source).toBe("report-pass");
+    expect(whole.body.provenance.preprocessing.tree_source).toBe("user");
+  }, 300000);
 });
 
 describe("caps at the door", () => {

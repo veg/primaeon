@@ -75,8 +75,13 @@ export { hasHitLikelihood, treeHasBranchLengths };
  */
 export function normalizeTreeSource(treeSource) {
 	const s = typeof treeSource === 'string' ? treeSource.toLowerCase() : '';
-	if (s === 'user' || s === 'usertree' || s === 'user-supplied') return 'user';
-	if (s === 'nj' || s === 'inferred-nj' || s === 'inferred') return 'inferred-nj';
+	if (s === 'user' || s === 'usertree' || s === 'user-supplied' || s === 'embedded') return 'user';
+	// PLAN.md D22: a tree-free run has no tree at all, and the only Newick a caller can hand this
+	// estimator is the display-only neighbour-joining tree on the TN93 distances (runtime/src/nj.js).
+	// Those ARE nucleotide distances, which is exactly the case the 'inferred-nj' caveat describes,
+	// so 'tn93' lands there rather than in 'unknown' ("taken as given"), which would be the wrong
+	// disclosure in the wrong direction.
+	if (s === 'nj' || s === 'inferred-nj' || s === 'inferred' || s === 'tn93') return 'inferred-nj';
 	return 'unknown';
 }
 

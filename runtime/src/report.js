@@ -29,16 +29,19 @@
  *   attribution  `{attributions, attribution_enabled}`         (cli.py:257-277)
  *   filter       `{artifacts_masked, filter_enabled, cleaned?}` (cli.py:111-218)
  *   dms          `{plasticity, focal_taxon, total_mutations, progress, cancelled?}` (epistasis.py:759-768)
- *   phenotype    null until Phase 3 — the report renders the OFFER, not the analysis
+ *   phenotype    `{sites, coselection_pairs, trait_sectors, ...}` (phenotype.py:624-646) — null
+ *                until the user answers the offer, because the pillar needs a trait; filled by
+ *                `runEverything.phenotype(record, trait)` (analyze.js `runPhenotypeForReport`)
  *
  * DOWNLOADS. `downloadsForReport` returns the same CLI files a per-analysis page offers, one set
- * per section that ran, plus the GraphML `hyphaeon epistasis --graphml` writes (cli.py:821-833,
- * the library's `graphml`) and the whole record as JSON. A section that did not run contributes
+ * per section that ran (the phenotype pair appears once the user has answered the offer), plus
+ * the GraphML `hyphaeon epistasis --graphml` writes (cli.py:821-833, the library's `graphml`)
+ * and the whole record as JSON. A section that did not run contributes
  * nothing rather than an empty file. Text is produced eagerly and is byte-equal to the Python's
  * for the same numbers; a caller that wants only one file passes `only`.
  */
 
-import { memeResult, memeJson, memeCsv, bustedJson, bustedCsv, epistasisCsv, dmsCsv, graphml, resultJson } from '@veg/hyphaeon-js';
+import { memeResult, memeJson, memeCsv, bustedJson, bustedCsv, epistasisCsv, dmsCsv, phenotypeCsv, graphml, resultJson } from '@veg/hyphaeon-js';
 
 import { jsonSafe, memeJsonText, memeCsvText, bustedJsonText, bustedCsvText, resultRecordText } from './results.js';
 
@@ -59,7 +62,10 @@ export const REPORT_PHASES = Object.freeze([
 	'attribute',
 	'filter',
 	'dms',
-	'postprocess'
+	'postprocess',
+	// On demand, after the report is already on screen (PLAN.md §4.0 row 8): the phenotype pillar
+	// needs a trait, so its phase is reported by `runPhenotypeForReport`, not by the automatic run.
+	'phenotype'
 ]);
 
 /** A random 128-bit id in the shape PLAN.md §3.5 gives job ids, without needing node:crypto. */
@@ -270,6 +276,57 @@ export function dmsCsvText(section) {
 	return dmsCsv(section.plasticity ?? []);
 }
 
+/**
+ * The `hyphaeon phenotype` JSON document (phenotype.py:624-646 through `write_json`), from the
+ * phenotype section. The app-only keys `runPhenotype` appends (`trait`, `permulations`,
+ * `sector_permutations`, `attention_source`, `thresholds`, `options`, `elapsed_sec`) are dropped
+ * so the file is the CLI's, key for key and in its order; pass `{extras: true}` to keep them.
+ *
+ * @param {object} section
+ * @param {{extras?: boolean}} [options]
+ */
+export function phenotypeDocument(section, { extras = false } = {}) {
+	const doc = {
+		alignment: section.alignment ?? null,
+		tree: section.tree ?? null,
+		taxa_count: section.taxa_count,
+		codon_count: section.codon_count,
+		phenotype_meta: section.phenotype_meta,
+		spectral_energy: section.spectral_energy,
+		norm_spectral_ratio: section.norm_spectral_ratio,
+		max_assoc: section.max_assoc,
+		p_evd_length_adjusted: section.p_evd_length_adjusted,
+		score_track_a: section.score_track_a,
+		score_track_b: section.score_track_b,
+		dual_track_composite: section.dual_track_composite,
+		compact_pars_signature: section.compact_pars_signature,
+		permulations_count: section.permulations_count,
+		gene_p_value_perm: section.gene_p_value_perm,
+		significant_sites_count: section.significant_sites_count,
+		coselection_pairs_count: section.coselection_pairs_count,
+		trait_sectors_count: section.trait_sectors_count,
+		coselection_pairs: section.coselection_pairs ?? [],
+		trait_sectors: section.trait_sectors ?? [],
+		sites: section.sites ?? []
+	};
+	if (extras) {
+		for (const key of ['trait', 'permulations', 'sector_permutations', 'attention_source', 'options']) {
+			if (section[key] !== undefined) doc[key] = section[key];
+		}
+	}
+	return doc;
+}
+
+/** `hyphaeon phenotype -o` text. */
+export function phenotypeJsonText(section, options = {}) {
+	return resultJson(phenotypeDocument(section, options));
+}
+
+/** `hyphaeon phenotype --csv` text (cli.py:700-701: `write_csv(args.csv, res["sites"])`). */
+export function phenotypeCsvText(section) {
+	return phenotypeCsv(section.sites ?? []);
+}
+
 /** `hyphaeon busted -o` / `--csv` text from a gene section (`{record, statistics}`). */
 export function geneJsonText(section) {
 	return bustedJson([section.record], { batch: false });
@@ -331,6 +388,10 @@ export function downloadsForReport(report, options = {}) {
 	if (s.dms && want('dms') && (s.dms.plasticity ?? []).length > 0) {
 		out.push({ name: `${stem}.dms.json`, type: 'application/json', section: 'dms', text: dmsJsonText(s.dms) });
 		out.push({ name: `${stem}.dms.csv`, type: 'text/csv', section: 'dms', text: dmsCsvText(s.dms) });
+	}
+	if (s.phenotype && want('phenotype') && !s.phenotype.failed && Array.isArray(s.phenotype.sites)) {
+		out.push({ name: `${stem}.phenotype.json`, type: 'application/json', section: 'phenotype', text: phenotypeJsonText(s.phenotype) });
+		out.push({ name: `${stem}.phenotype.csv`, type: 'text/csv', section: 'phenotype', text: phenotypeCsvText(s.phenotype) });
 	}
 	out.push({
 		name: `${stem}.report.json`,

@@ -24,6 +24,12 @@
  * everything and streams sections; the per-pillar analyses exist for the MCP tools and for
  * scripts. A job request carries no analysis picker beyond that word.
  *
+ * A TREE IS OPTIONAL ON EVERY ANALYSIS (PLAN.md D22): a job with no tree, or with a tree that has
+ * no usable branch lengths, uses pairwise TN93 distances, and the result's
+ * `provenance.preprocessing.tree_source` says which happened. `analysis: "phenotype"` (and the
+ * report's `options.phenotype` block) runs in the worker like every other pillar since Phase 3 —
+ * this server starts no subprocess and needs no Python.
+ *
  * Boundaries, all from PLAN.md 3.5: JSON bodies up to 8 MiB (the alignment cap, so the limit and
  * the cap refuse the same files), per-IP rate limits (src/config.js), no accounts, 128-bit ids,
  * same-origin only (an Origin header that is present and not the issuer is refused; a same-origin
@@ -91,6 +97,8 @@ const JobRequest = z
     tree: textField("tree"),
     prediction: textField("prediction"),
     meme_result: textField("meme_result"),
+    /** The phenotype table's TEXT (hyphaeon phenotype --phenotype-file), never a server path. */
+    phenotype_file: textField("phenotype_file"),
     variant: z.string().max(64).optional(),
     options: z.record(z.string(), z.unknown()).optional(),
     seed: z.number().int().min(0).max(2 ** 32 - 1).optional(),
@@ -98,6 +106,7 @@ const JobRequest = z
       .object({
         alignment: z.string().max(255).optional(),
         tree: z.string().max(255).optional(),
+        phenotype_file: z.string().max(255).optional(),
         demo: z.string().max(64).optional()
       })
       .optional()
@@ -109,6 +118,8 @@ const ValidateRequest = z
     alignment: z.string().max(MAX_ALIGNMENT_CHARS),
     tree: textField("tree"),
     analysis: z.enum(ANALYSES).optional(),
+    /** D22: force the tree-free TN93 path even when a usable tree was supplied. */
+    use_tn93: z.boolean().optional(),
     max_species: z.number().int().min(2).optional()
   })
   .strict();
@@ -264,14 +275,7 @@ export function createApp(config = loadConfig(), deps = {}) {
     try {
       const parsed = ValidateRequest.safeParse(req.body);
       if (!parsed.success) throw new HttpError(400, "input", "Invalid request body.", { code: "BAD_REQUEST", details: parsed.error.issues });
-      let capabilities = {};
-      try {
-        const s = await statusOnce();
-        capabilities = { hyphy: !!s.branch_length_estimator, tn93: !!s.tn93 };
-      } catch {
-        capabilities = {};
-      }
-      const out = validate(Object.assign({ analysis: "analyze" }, parsed.data, { capabilities }));
+      const out = validate(Object.assign({ analysis: "analyze" }, parsed.data));
       res.status(200).json(out);
     } catch (err) {
       next(err);
@@ -320,6 +324,7 @@ export function createApp(config = loadConfig(), deps = {}) {
           tree: body.tree,
           prediction: body.prediction,
           meme_result: body.meme_result,
+          phenotype_file: body.phenotype_file,
           options,
           seed: body.seed,
           names: body.names || {},

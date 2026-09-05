@@ -5,8 +5,9 @@
  * of sequence names (to populate the reference-sequence dropdown), whether the file carries an
  * embedded tree (to say "tree found, upload optional"), and whether a dropped file is gzipped (to
  * inflate it with pako before showing it). None of that is parsing. The real parsers — FASTA,
- * NEXUS, PHYLIP, the HyPhy WASM conversion fallback — are `@veg/hyphaeon-js`'s and land in Phase 1
- * (PLAN.md §4.2, §5.1 `dataset.py` row); this file must never grow into a second copy of them.
+ * NEXUS, PHYLIP — are `@veg/hyphaeon-js`'s (PLAN.md §4.2, §5.1 `dataset.py` row); this file must
+ * never grow into a second copy of them. (§4.2 also listed a WebAssembly format-conversion
+ * fallback behind them; D22 removed that engine from the product in Phase 3.)
  *
  * Everything here is deliberately lossy: FASTA names are the header up to the first whitespace,
  * NEXUS names are read from TAXLABELS only, PHYLIP names are the first token of each body line

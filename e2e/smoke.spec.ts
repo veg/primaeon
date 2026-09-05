@@ -13,8 +13,15 @@
  *      MCP: /analyze and /gallery folded into `/` and `/report/gallery/…` (PLAN.md §4.1), so a nav
  *      link to either would be a leftover.
  *   2. Every request during load is same-origin (PLAN.md D8: no CDNs; fonts included).
- *   3. No model (*.onnx), no ORT binary (ort-*.wasm / .mjs) and no HyPhy WASM is requested on the
- *      landing route. PLAN.md §4.4: the lazy assets are fetched on first use from the run path.
+ *   3. No model (*.onnx) and no ORT binary (ort-*.wasm / .mjs) is requested on the landing route.
+ *      PLAN.md §4.4: the lazy assets are fetched on first use from the run path.
+ *   3a. AND NOTHING HYPHY, ON ANY ROUTE OR IN THE BUILD (PLAN.md D22, Phase 3). HyPhy WASM was
+ *      removed from the product: `runtime/src/hyphy/`, `runtime/vendor/hyphy/`, the browser's tree
+ *      worker, the `./hyphy` export and `static/wasm/hyphy/` are all deleted, and the tree-free
+ *      TN93 path replaced what they did. A removal is only real if nothing can still reach for it,
+ *      so the check is on three surfaces at once: no request URL on any route mentions HyPhy
+ *      (`HYPHY_ANY`, folded into `HEAVY_ASSET`), nothing named after it survives in the built site
+ *      or in the sources it is built from, and the URL the old build served answers 404.
  *   4. The response carries COOP/COEP (D13) on every route's document, so SharedArrayBuffer and
  *      multi-threaded ORT are available on this origin. Here they come from vite.config.ts's preview
  *      headers; in production from static/_headers or the vhost. A missing header is a silent fall
@@ -26,7 +33,21 @@
  */
 
 import { expect, test } from '@playwright/test';
-import { HEAVY_ASSET, trackRequests } from './helpers';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { APP_DIR, HEAVY_ASSET, HYPHY_ANY, trackRequests } from './helpers';
+
+/** Every path under `dir` (files and directories), relative to it. */
+function walk(dir: string, prefix = ''): string[] {
+	const out: string[] = [];
+	for (const name of readdirSync(dir)) {
+		const rel = prefix ? `${prefix}/${name}` : name;
+		out.push(rel);
+		const full = join(dir, name);
+		if (statSync(full).isDirectory()) out.push(...walk(full, rel));
+	}
+	return out;
+}
 
 test.describe('landing page', () => {
 	test('renders the drop zone, without the surrogate caveat and without Analyze/Gallery in the nav', async ({ page }) => {
@@ -48,7 +69,7 @@ test.describe('landing page', () => {
 		}
 	});
 
-	test('requests nothing from another origin and no model, ORT or HyPhy bytes', async ({ page, baseURL }) => {
+	test('requests nothing from another origin and no model or ORT bytes', async ({ page, baseURL }) => {
 		const requests = trackRequests(page);
 		await page.goto('/');
 		await page.waitForLoadState('networkidle');
@@ -75,6 +96,38 @@ test.describe('landing page', () => {
 			expect(await page.evaluate(() => globalThis.crossOriginIsolated)).toBe(true);
 		});
 	}
+});
+
+test.describe('HyPhy is gone (D22)', () => {
+	// The tree the model is given now comes from the library: branch lengths as supplied, or
+	// pairwise TN93 distances. Nothing in the product loads a HyPhy build any more.
+	test('nothing named after HyPhy is in the built site or the sources it is built from', async () => {
+		for (const gone of ['web/static/wasm/hyphy', 'web/static/wasm', 'runtime/src/hyphy', 'runtime/vendor/hyphy', 'runtime/test/hyphy.test.js', 'web/src/lib/workers/tree.worker.ts']) {
+			expect(existsSync(resolve(APP_DIR, gone)), `${gone} still exists`).toBe(false);
+		}
+		const build = resolve(APP_DIR, 'web/build');
+		expect(existsSync(build), 'web/build exists: run `npm run build` in web/ first').toBe(true);
+		const named = walk(build).filter((p) => HYPHY_ANY.test(p));
+		expect(named, `built files named after HyPhy: ${named.join(', ')}`).toEqual([]);
+	});
+
+	test('the URL the old build served is a 404, on the served site', async ({ request }) => {
+		for (const url of ['/wasm/hyphy/2.5.98/hyphy.js', '/wasm/hyphy/2.5.98/hyphy.wasm', '/wasm/hyphy/2.5.98/hyphy.data']) {
+			const res = await request.get(url);
+			expect(res.status(), `${url} is still served`).toBe(404);
+		}
+	});
+
+	test('no route requests anything HyPhy', async ({ page, baseURL }) => {
+		const requests = trackRequests(page);
+		for (const route of ['/', '/methods/', '/mcp/', '/evaluate/', '/report/gallery/Smc6/', '/report/gallery/camelid/']) {
+			await page.goto(route);
+			await page.waitForLoadState('networkidle');
+		}
+		const hyphy = requests.matching(HYPHY_ANY);
+		expect(hyphy, `HyPhy URLs requested: ${hyphy.join(', ')}`).toEqual([]);
+		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
+	});
 });
 
 test.describe('methods and mcp pages', () => {

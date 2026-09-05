@@ -11,6 +11,14 @@
  * (the runtime is loaded by a dynamic import inside loadSession()), but keeping them off the
  * default path makes the delivery discipline visible in the import statement.
  *
+ * PHASE 3 ADDS THE PHENOTYPE PILLAR AND REMOVES HYPHY. `runPhenotype` (phenotype.js) runs
+ * `hyphaeon phenotype` in process on every surface — the Python bridge is gone — and
+ * `runPhenotypeForReport` is its on-demand form over a finished report. `nj.js` is the
+ * neighbour-joining routine PLAN.md D22 asks for: a DISPLAY-ONLY topology on the TN93 distances
+ * the tree-free path already computed. The `./hyphy` subpath export, `src/hyphy/` and
+ * `vendor/hyphy/` were deleted with D22; nothing in this package loads WebAssembly other than
+ * onnxruntime.
+ *
  * PHASE 2 ADDS THE REPORT. `runEverything` (analyze.js) is the one call PLAN.md §4.0's product
  * rule needs — one upload runs every pillar in order over one loaded alignment and one session —
  * and `report.js` is the record it returns plus that record's downloads. The pillars it
@@ -42,7 +50,9 @@ export { runBusted } from './busted.js';
 export { runEvaluate } from './evaluate.js';
 export * from './epistasis.js';
 export * from './dms.js';
-export { runEverything, geneFromPass, calledSiteIndices, REPORT_DEFAULTS, SURROGATE_FOR } from './analyze.js';
+export * from './phenotype.js';
+export * from './nj.js';
+export { runEverything, runPhenotypeForReport, geneFromPass, calledSiteIndices, REPORT_DEFAULTS, SURROGATE_FOR } from './analyze.js';
 export * from './report.js';
 export * from './results.js';
 export * from './treeSanitation.js';

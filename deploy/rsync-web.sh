@@ -27,14 +27,14 @@ if [[ ! -f "$BUILD/models/manifest.json" ]]; then
   echo "build has no models/manifest.json (built with HYPHAEON_PREBAKE=skip or without copy-assets?)" >&2
   exit 1
 fi
-if [[ ! -f "$BUILD/wasm/hyphy/"*/hyphy.wasm ]] 2>/dev/null && ! ls "$BUILD"/wasm/hyphy/*/*.wasm >/dev/null 2>&1; then
-  echo "build has no HyPhy WASM under wasm/hyphy/" >&2
+if ! ls "$BUILD"/ort/*.wasm >/dev/null 2>&1; then
+  echo "build has no ONNX Runtime WASM under ort/ (built without copy-assets?)" >&2
   exit 1
 fi
 
 echo "uploading $BUILD -> $HOST:$ROOT/releases/$STAMP"
 ssh "$HOST" "mkdir -p '$ROOT/releases/$STAMP'"
-# Model/ORT/HyPhy assets are large and content-addressed: hard-link them from the current release
+# Model and ORT assets are large and content-addressed: hard-link them from the current release
 # when unchanged so a deploy moves only the app bundle.
 rsync -az --delete \
   --link-dest="$ROOT/build/" \

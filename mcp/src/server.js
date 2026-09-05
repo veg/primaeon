@@ -69,9 +69,10 @@ export const INSTRUCTIONS =
   "checks an alignment without running the model. Results are rankings evaluated against MEME, " +
   "not truth: rank is strong, scale is compressed, calibration depends on tree regime. Every " +
   "result carries a provenance block: surface \"mcp-stdio\" / \"mcp-http\" means the numbers were " +
-  "computed in this process by the JavaScript port (every tool except hyphaeon_phenotype); " +
-  "surface \"python-reference\" means the Python reference ran through a bridge " +
-  "(hyphaeon_phenotype only, until its port lands). Sequences submitted to a remote server are " +
+  "computed in this process by the JavaScript port — every tool, phenotype included, since Phase 3; " +
+  "no Python runs anywhere. `preprocessing.tree_source` says whether the distances came from the " +
+  "tree you gave (\"user\"/\"embedded\") or from pairwise TN93 because there was no usable tree " +
+  "(\"tn93\"); a tree is optional on every tool. Sequences submitted to a remote server are " +
   "unpublished research: say so before sending them.";
 
 /**
@@ -81,7 +82,6 @@ export const INSTRUCTIONS =
  * @param {object} [opts.env]               defaults to process.env
  * @param {object} [opts.logger]            defaults to createLogger(env)
  * @param {object} [opts.engine]            a shared createEngine() (HTTP sessions); default: a new one
- * @param {Function} [opts.bridge]          override the Python bridge (tests)
  * @param {object} [opts.jobStore]          override the job store options
  * @param {string} [opts.name]
  * @returns {{server: McpServer, jobs: object, logger: object, engine: object, close: () => Promise<void>}}
@@ -125,8 +125,7 @@ export function createServer(opts = {}) {
     logger,
     surface,
     engine,
-    allowFilePaths: !!opts.allowFilePaths,
-    bridge: opts.bridge
+    allowFilePaths: !!opts.allowFilePaths
   });
   registerPrompts(server);
   // The job store is handed to the resources for hyphaeon://report/{id}: a finished

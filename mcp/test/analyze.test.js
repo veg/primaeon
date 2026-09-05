@@ -6,12 +6,14 @@
  *
  * PLAN.md 4.0 / 4.1 (D21): the MCP "mirrors the product with a hyphaeon_analyze tool that runs
  * everything and returns the report". What has to be pinned here is the product's shape on this
- * surface, not the arithmetic (runtime/test/analyze.test.js owns that): every non-phenotype
- * section present and phenotype null, the sites section equal to `hyphaeon meme` on bat_oas1
- * (the report's default taxon cap of 256 does not bite at 18 taxa), the report always a job with
- * an id, `get_results section=` paging with top / fields / summary_only, `job_status` naming the
- * sections that are ready, the finished record as `hyphaeon://report/{id}`, and the tree-less
- * path (an NJ tree from HyPhy, PLAN.md 4.0 row 1) that no per-pillar tool offers.
+ * surface, not the arithmetic (runtime/test/analyze.test.js owns that): every section that needs
+ * no further input present, the sites section equal to `hyphaeon meme` on bat_oas1 (the report's
+ * default taxon cap of 256 does not bite at 18 taxa), the report always a job with an id,
+ * `get_results section=` paging with top / fields / summary_only, `job_status` naming the sections
+ * that are ready, the finished record as `hyphaeon://report/{id}`, the tree-less path (D22: TN93
+ * distances, `tree_source: "tn93"` — nothing is built and nothing is estimated), and the phenotype
+ * section, which appears if and only if the call carried a trait and which is computed from the
+ * report's OWN forward pass.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -289,20 +291,84 @@ describe("hyphaeon_analyze on bat_oas1 in-process", () => {
     expect(rec.collections.dms).toBeNull();
   }, 900000);
 
-  it("with no tree at all the report builds an NJ tree first (tree_source nj) — the one tree-less path", async () => {
-    const status = parseText(await ctx.client.callTool({ name: "list_models", arguments: {} }));
+  it("with no tree at all the report runs on TN93 distances (tree_source tn93) — nothing built, nothing estimated", async () => {
     const res = await ctx.client.callTool({ name: "hyphaeon_analyze", arguments: { alignment, permutations: 50, dms: false, wait_seconds: 600, section: "diagnostics" } });
-    if (!status.native.branch_length_estimator) {
-      expect(res.isError).toBe(true);
-      expect(parseText(res).error).toMatch(/needs a phylogenetic tree/);
-      return;
-    }
     if (res.isError) throw new Error(res.content[0].text);
     const diag = parseText(res);
     expect(diag.status).toBe("completed");
-    expect(diag.preprocessing.tree_source).toBe("nj");
+    expect(diag.preprocessing.tree_source).toBe("tn93");
+    expect(diag.preprocessing.tree_free.reason).toBe("no_tree");
+    expect(diag.preprocessing.branch_lengths_estimated).toBe(false);
     expect(diag.taxa_used).toBe(18);
-    expect(diag.provenance.inputs.tree).toBe("nj.nwk");
+    expect(diag.warnings.map((w) => w.code)).toContain("TREE_FREE_TN93");
+    // The reference refuses a missing tree, so the reproducing line must carry the flag.
+    expect(diag.provenance.reference_commands.sites).toContain("--use-tn93");
+    const status = parseText(await ctx.client.callTool({ name: "list_models", arguments: {} }));
+    expect(status.native.branch_length_estimator).toBeNull();
+  }, 900000);
+
+  it("a `phenotype` trait block fills sections.phenotype from the report's own pass", async () => {
+    const res = await ctx.client.callTool({
+      name: "hyphaeon_analyze",
+      arguments: {
+        alignment,
+        tree,
+        seed: 42,
+        permutations: 50,
+        dms: false,
+        wait_seconds: 600,
+        phenotype: { foreground: "R_ferr,R_sin,R_aeg,H_arm", permulations: 50 },
+        summary_only: true
+      }
+    });
+    if (res.isError) throw new Error(res.content[0].text);
+    const body = parseText(res);
+    expect(body.status).toBe("completed");
+    expect(body.summary.sections_present).toContain("phenotype");
+    // The section came out of the meme pass's attention: no second forward pass was run.
+    expect(body.provenance.phenotype_source).toBe("report-pass");
+    expect(body.provenance.reference_commands.phenotype.slice(0, 2)).toEqual(["hyphaeon", "phenotype"]);
+    expect(body.provenance.reference_commands.phenotype).toContain("--foreground");
+
+    const section = parseText(await ctx.client.callTool({ name: "get_results", arguments: { job_id: body.job_id, section: "phenotype", top: 5 } }));
+    expect(section.phenotype_meta.foreground_count).toBe(4);
+    expect(section.phenotype_meta.background_count).toBe(14);
+    expect(section.sites.length).toBeGreaterThan(0);
+    expect(section.sites.length).toBeLessThanOrEqual(5);
+    for (const s of section.sites) {
+      for (const k of ["site", "ref_aa", "derived_aa", "hyphaeon_lrt", "association_rho", "p_value", "q_value", "score", "foreground_freq_pct", "background_freq_pct"]) {
+        expect(s, "site " + s.site).toHaveProperty(k);
+      }
+    }
+    // bat_oas1 has a real tree, so the Brownian permulations actually ran.
+    expect(section.permulations.requested).toBe(50);
+    expect(section.permulations.reason).toBeNull();
+    expect(typeof section.gene_p_value_perm).toBe("number");
+  }, 900000);
+
+  it("with no tree the phenotype section still runs, and records why permulations were skipped", async () => {
+    const res = await ctx.client.callTool({
+      name: "hyphaeon_analyze",
+      arguments: {
+        alignment,
+        seed: 42,
+        permutations: 20,
+        dms: false,
+        wait_seconds: 600,
+        phenotype: { foreground: "R_ferr,R_sin,R_aeg,H_arm", permulations: 50 },
+        section: "phenotype"
+      }
+    });
+    if (res.isError) throw new Error(res.content[0].text);
+    const section = parseText(res);
+    expect(section.status).toBe("completed");
+    expect(section.phenotype_meta.foreground_count).toBe(4);
+    expect(section.permulations.requested).toBe(50);
+    expect(section.permulations.ran).toBe(0);
+    expect(section.permulations.reason).toBe("tree-free");
+    expect(section.permulations.detail).toMatch(/no_tree/);
+    expect(section.gene_p_value_perm).toBeNull();
+    expect(section.provenance.preprocessing.tree_source).toBe("tn93");
   }, 900000);
 
   it("refuses --mds-sign lapack and an unreadable alignment before starting a job", async () => {

@@ -10,6 +10,15 @@
  * upgrade in results.ts (DB_VERSION 2); the connection, the request wrapper and the quota message
  * are shared with it.
  *
+ * THE PHENOTYPE SECTION IS WRITTEN ON ITS OWN (Phase 3). Every other section arrives while the run
+ * is in flight, so `saveReport` puts the whole live record. The phenotype pillar runs later —
+ * minutes or days later, from a report the page loaded back out of this store — and the record the
+ * panel holds may be a copy the loader made. `savePhenotypeSection` therefore does a
+ * read-modify-write against the stored row instead of putting the page's whole record, so a run
+ * that is still streaming cannot be rolled back by a phenotype result, and a report that is not in
+ * this store (a gallery example, a server job, a Phase 1 run) is left alone and says so by
+ * returning false rather than minting a local copy of something the reader did not run.
+ *
  * MIGRATION OF PHASE 1 RUNS. The v1 `runs` store holds `ResultRecord`s (one `meme` run each).
  * They are not rewritten: `getReport(id)` looks in `reports` first and, when the id is a v1 run,
  * returns `wrapLegacyRun()` — a ReportRecord whose only section is `sites` (the v1 `result`),
@@ -24,6 +33,7 @@ import type {
 	ReportListing,
 	ReportOptions,
 	ReportRecord,
+	ReportSections,
 	ResultRecord,
 	SectionName
 } from '$lib/api';
@@ -45,6 +55,25 @@ export async function saveReport(record: ReportRecord): Promise<string> {
 	const tx = db.transaction(REPORTS_STORE, 'readwrite');
 	await requestToPromise(tx.objectStore(REPORTS_STORE).put(record));
 	return record.id;
+}
+
+/**
+ * Store just the phenotype section against the report with this id. Returns false when the report
+ * is not in the `reports` store (nothing is written in that case). See the header.
+ *
+ * @param section the section to store, or null to remove one the reader cleared.
+ */
+export async function savePhenotypeSection(id: string, section: ReportSections['phenotype']): Promise<boolean> {
+	const db = await openDb();
+	const store = db.transaction(REPORTS_STORE, 'readonly').objectStore(REPORTS_STORE);
+	const found = (await requestToPromise(store.get(id))) as ReportRecord | undefined;
+	if (!found) return false;
+	found.sections = { ...found.sections, phenotype: section };
+	const completed = found.status.completed.filter((n) => n !== 'phenotype');
+	found.status = { ...found.status, completed: section ? [...completed, 'phenotype'] : completed };
+	const tx = db.transaction(REPORTS_STORE, 'readwrite');
+	await requestToPromise(tx.objectStore(REPORTS_STORE).put(found));
+	return true;
 }
 
 /** The report, a wrapped v1 run, or null when the id is unknown in both stores. */

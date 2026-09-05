@@ -4,18 +4,19 @@
  * WHY THIS FILE EXISTS
  *
  * PLAN.md 3.6: an analysis tool answers in the call under the synchronous caps and otherwise
- * "returns a job id". In Phase 0 the run is a Python subprocess (src/bridge.js) and this process
- * is the only place that knows about it, so the store is a Map in memory — no redis, no
- * scheduler. That is deliberate: datamonkey-js-server's SLURM path was rejected for v1 because
+ * "returns a job id". The run happens in THIS process (src/engine.js over onnxruntime-node) and
+ * this process is the only place that knows about it, so the store is a Map in memory — no redis,
+ * no scheduler. That is deliberate: datamonkey-js-server's SLURM path was rejected for v1 because
  * scheduling latency exceeds the runtimes (PLAN.md 3.1, option D). The store is written so that
  * `server/` can later replace it with something durable behind the same five calls.
  *
  * Contract:
  *   - ids are 128-bit hex (PLAN.md 3.5 "128-bit job ids"); they are the only handle a client has;
  *   - statuses: queued -> running -> completed | failed | cancelled;
- *   - a job runs at most MAX_CONCURRENT at a time (two Python processes on a laptop is already
- *     ~1 GB of RSS, PLAN.md 1); the rest wait in FIFO order as "queued";
- *   - cancel aborts the runner's AbortSignal (the bridge kills the child) and marks the job;
+ *   - a job runs at most MAX_CONCURRENT at a time (two loaded ONNX sessions on a laptop is
+ *     already ~1 GB of RSS, PLAN.md 1); the rest wait in FIFO order as "queued";
+ *   - cancel aborts the runner's AbortSignal (the runtime checks it between batches) and marks
+ *     the job;
  *   - completed jobs expire after JOB_TTL_MS and the map is bounded by MAX_JOBS (oldest
  *     terminal jobs evicted first), because a process-local map has no other ceiling.
  *

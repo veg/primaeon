@@ -12,6 +12,7 @@
       "mds_sign": "veg/HyphAeon MDS_SIGN.md, 'Measured effect on the reference's own outputs' (scripts/mds_sign_effect.py)",
       "phase1": "hyphaeon-app PHASE1.md, parity table and known gaps",
       "phase2a": "veg/HyphAeon PHASE2A.md, 'Epistasis end to end' and 'Python quirks replicated'",
+      "phase3a": "veg/HyphAeon PHASE3A.md, 'Tree-free parity, the D22 probe', 'The phenotype pillar end to end' and 'Python quirks replicated in this phase'",
       "issues": "GitHub issues veg/HyphAeon #7, #8, #9, #13, #33"
     },
     "model_card": {
@@ -190,11 +191,61 @@
         "source": "model_eval"
       },
       {
+        "id": "tree-free-tn93",
+        "pillars": ["general", "diagnostics", "sites", "gene", "epistasis", "dms", "phenotype"],
+        "headline": "No tree, or no branch lengths, means TN93 distances rather than an estimated tree.",
+        "detail": "The model reads a distance matrix, not a topology. When the upload carries a tree with branch lengths it is used as given; when it does not, pairwise Tamura-Nei 93 distances go into the MDS directly, which is the reference's own --use-tn93 path (dataset.py:493-571 and 598-636) and not a fallback invented here. The manuscript reports Spearman rho = 0.9997 between tree-free and tree-based site scores. Nothing is fitted and no phylogeny is inferred for the model: the tree drawn beside a tree-free report is a neighbour-joining tree on those same distances, for display only. The Python reference and this port compute the same distance matrix bit for bit on the bundled examples, so camelid and HIV-1 RT - whose numbers used to differ between surfaces because two builds of an external engine fitted their branch lengths differently - now agree by construction.",
+        "numbers": [
+          { "label": "Tree-free vs tree-based site scores, Spearman rho", "value": "0.9997" },
+          { "label": "TN93 distance matrix, Python vs JavaScript", "value": "bit-identical (max |delta| 0.0)" },
+          { "label": "MDS coordinates, worst residual (bat_oas1, camelid)", "value": "7.8e-8" }
+        ],
+        "action": "Supply a tree with branch lengths when you have one; the report's strip says which path your dataset took.",
+        "source": "phase3a"
+      },
+      {
+        "id": "tn93-identical-sequences",
+        "pillars": ["diagnostics", "sites"],
+        "headline": "Two identical sequences get the LARGEST distance in the matrix, not the smallest.",
+        "detail": "compute_tn93_distance_matrix imputes max(1.0, max_d) for a pair of byte-identical sequences, while two DIFFERENT sequences whose estimated distance is zero get 1e-4. It is the reference's behaviour and it is reproduced here rather than corrected. Duplicate haplotypes are collapsed before the matrix is built, so the case is normally unreachable; it becomes reachable when duplicate pruning is turned off, and a pair of identical sequences would then sit as far apart as anything in the alignment.",
+        "numbers": [
+          { "label": "Imputed distance, identical sequences", "value": "max(1.0, largest distance)" },
+          { "label": "Imputed distance, different sequences at zero", "value": "1e-4" }
+        ],
+        "source": "phase3a"
+      },
+      {
+        "id": "tn93-saturation",
+        "pillars": ["diagnostics"],
+        "headline": "A saturated pair has no TN93 distance, and the diagnostics count them.",
+        "detail": "The distance is a logarithm, so a pair of sequences too divergent to estimate reaches log of a non-positive number and a pair with no overlapping ungapped position divides by zero. The reference raises there and nothing catches it. Here the failure becomes the TN93_SATURATED_PAIRS diagnostic: at refuse level when the matrix cannot be computed at all, and otherwise a count of how many pairs came back at the saturation sentinel, shown on the report's strip and in the provenance block. A large count on a deep alignment means the distances - and therefore the embedding the model reads - are least reliable exactly where the sequences are most divergent.",
+        "source": "phase3a"
+      },
+      {
+        "id": "phenotype-foreground-is-a-regex",
+        "pillars": ["phenotype"],
+        "headline": "A foreground pattern is a regular expression before it is a glob.",
+        "detail": "resolve_phenotype_vector runs re.search on each pattern first and only falls back to fnmatch if that neither matched nor raised (phenotype.py:249-256), so a pattern typed as a shell glob is silently a regular expression: pan* is 'pa followed by zero or more n' and matches papAnu. The panel says so as soon as a glob character is typed and lists the taxa the pattern actually matched, because the failure is silent and the count is the only way to see it. Presets are unaffected: their branch uses fnmatch, plus a substring test for the patterns that are bare names.",
+        "action": "Read the matched taxa under the box before running; a prefix without the star matches by substring anyway.",
+        "source": "phase3a"
+      },
+      {
+        "id": "permulations-need-a-tree",
+        "pillars": ["phenotype"],
+        "headline": "Permulations need a tree with branch lengths, so a tree-free report has no empirical gene p.",
+        "detail": "The gene-level empirical p comes from Brownian-motion permulations of the trait on the phylogeny (phenotype.py:275-346): a root-to-tip covariance, a Cholesky factor, Gaussian draws rank-matched to the trait. A tree-free run has no such tree, and the neighbour-joining tree drawn beside it is inferred from the very distances the association is computed on, so a null drawn from it would share the alternative's error. The permulation control is therefore disabled with that sentence and the association p-values stay the parametric t-test ones - which is exactly what hyphaeon phenotype --use-tn93 reports. The length-adjusted extreme-value p is computed either way.",
+        "source": "phase3a"
+      },
+      {
         "id": "phenotype-on-demand",
         "pillars": ["phenotype"],
         "headline": "Phenotype association needs a trait, so it runs on demand, and it is not covered by model_eval.",
-        "detail": "model_eval covers hyphaeon meme only; the trait association, PARS signatures and permulations have exact fixtures from the reference but no calibration suite against a simulated neutral trait. Permulations use numpy's legacy global generator upstream, so that parity is statistical from the start.",
-        "source": "model_eval"
+        "detail": "model_eval covers hyphaeon meme only; the trait association, PARS signatures and permulations have exact fixtures from the reference but no calibration suite against a simulated neutral trait. The pillar runs in the browser on the model this report already loaded, and its site statistics were checked against the reference on RHO with the README marine foreground: the 21 record keys in order, 145 site rows, every string, count, sort order and both attention columns bit-identical, and the model-dependent columns within 1e-6. Permulations use numpy's legacy global generator upstream, so that parity is statistical from the start.",
+        "numbers": [
+          { "label": "RHO marine probe, failing assertions", "value": "0" },
+          { "label": "Worst residual on a model-dependent column", "value": "4.4e-7" }
+        ],
+        "source": "phase3a"
       },
       {
         "id": "privacy",

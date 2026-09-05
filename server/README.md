@@ -11,6 +11,14 @@ the two things a browser cannot do: serve the MCP over streamable HTTP to remote
 Claude Code) behind the auto-approving OAuth ceremony, and run jobs above the browser's caps, on
 the same `@veg/hyphaeon-runtime` under `onnxruntime-node`.
 
+**Node and the model files are the whole dependency list.** Every pillar, phenotype association
+included since Phase 3, is JavaScript in a worker thread; the server starts no subprocess, so the
+host needs no Python, no `hyphaeon` CLI and no HyPhy (PLAN.md 8 phase 3, D16). **A tree is optional
+on every route** (PLAN.md D22): one with branch lengths is used as it is, and otherwise the run
+takes pairwise TN93 distances from the sequences — `provenance.preprocessing.tree_source` records
+`user`, `embedded` or `tn93` on every result, and `POST /api/v1/validate` reports a missing tree as
+`TREE_FREE_TN93` at info level rather than refusing it.
+
 ```bash
 npm install                                          # at the repository root: server/ is a workspace
 cd server
@@ -21,7 +29,7 @@ HYPHAEON_MODELS_DIR=../../HyphAeon/models npm test
 | Route | Purpose |
 |---|---|
 | `POST /api/v1/validate` | Library diagnostics (same codes as the browser) + this server's caps |
-| `POST /api/v1/jobs` | `{analysis: "analyze" \| "meme" \| "busted" \| "epistasis" \| "dms" \| "evaluate", alignment, tree?, options?, seed?, names?}` → `202 {id}` |
+| `POST /api/v1/jobs` | `{analysis: "analyze" \| "meme" \| "busted" \| "epistasis" \| "dms" \| "phenotype" \| "evaluate", alignment, tree?, phenotype_file?, options?, seed?, names?}` → `202 {id}` |
 | `GET /api/v1/jobs/:id`, `/events` | Status, progress `{phase, done, total, message}`, warnings, expiry, section states; SSE |
 | `GET /api/v1/jobs/:id/result` | JSON with provenance; `?format=csv\|graphml`, `?fields=`, `?top=`, `?section=`, `?summary_only=1` |
 | `DELETE /api/v1/jobs/:id` | Early deletion (default: 7-day TTL) |
@@ -33,6 +41,15 @@ HYPHAEON_MODELS_DIR=../../HyphAeon/models npm test
 streams `sites → gene → epistasis → attribution → filter → dms` (progressive) into the job, and
 `/result` returns the ReportRecord the report page renders. The per-pillar analyses run through the
 MCP's in-process engine so a REST job and an MCP tool call produce the same bytes.
+
+**Phenotype.** `analysis: "phenotype"` runs the pillar on its own; the trait is
+`options.phenotype` (`preset`, `foreground`, `trait_col`, `species_col`, `continuous`,
+`permulations`, `n_permutations`, `alpha`, `min_taxa`, `max_perm_p`, `seed`) plus the table's TEXT
+as the `phenotype_file` field. The same block on an `analyze` job fills `sections.phenotype` from
+the report's OWN forward pass (`provenance.phenotype_source: "report-pass"`), so it costs graph
+maths and no inference; without it the section stays `null`, because a trait cannot be guessed.
+Brownian-motion permulations need a phylogeny: a tree-free run skips them and says so in
+`permulations.reason`.
 
 | Module | Owns |
 |---|---|

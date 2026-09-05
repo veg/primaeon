@@ -12,11 +12,12 @@
  *   parse        the alignment is parsed by the library's `parseAlignmentSequences`
  *                (dataset.py:59-159) to count taxa; < 3 is refused (veg/HyphAeon#7)
  *   prepare      `loadAlignmentAndTree` (dataset.py:523-730): tree, matching, duplicates, the
- *                `> 10` rescale, Faith's PD to the cap, MDS, tokens, the invariable mask. A tree
- *                without branch lengths goes to `options.estimateTree` when the caller gave one
- *                (the runtime's HyPhy / NJ, PLAN.md D5/D6) and the load is repeated with the
- *                estimated tree; otherwise the library has already taken dataset.py:609-614's
- *                "HyPhy not found" branch (1e-3 / 1e-4 defaults) and that fact is recorded
+ *                `> 10` rescale, Faith's PD to the cap, MDS, tokens, the invariable mask — or,
+ *                under PLAN.md D22, the reference's own TREE-FREE path (dataset.py:598-636):
+ *                pairwise TN93 distances straight into the MDS whenever there is no usable tree.
+ *                `decideTreePolicy` makes that call here, before the library, so the run records
+ *                WHY (`tree_source`, `tree_free.reason`); a display-only NJ tree on the same
+ *                distances is attached as `displayTree` (nj.js) and the model never sees it
  *   infer        `predict_site_lrts` (inference.py:162-192): VARIABLE sites only, batched, the
  *                clamp at 0, float32; invariable sites are never sent to the graph
  *   stats        cli.py:99-100 — p = float32(pvals_from_lrt_meme(lrt)); q = float32(BH(p))
@@ -46,6 +47,17 @@
  *   - The taxon cap defaults to 256 (manifest `default_taxon_cap`, PLAN.md §3.3) where the CLI's
  *     `--max-species` default is None (cli.py:1025); pass `maxSpecies: Infinity` for the CLI's
  *     behaviour (no cap — the parity runner does). The hard cap is 512.
+ *   - THE TREE POLICY IS D22's, AND IT IS THE APP'S, NOT THE REFERENCE'S. A tree with branch
+ *     lengths is used exactly as the reference uses it. No tree at all, and a tree whose branch
+ *     lengths are missing or unusable (`hasNonzeroBranchLengths`, dataset.py:214-222), both take
+ *     TN93 distances instead: the reference raises for the first (dataset.py:647-651) and shells
+ *     out to HyPhy for the second (dataset.py:655-668), and Phase 3 removed HyPhy from this
+ *     product, so `--use-tn93` — a flag there — is the DEFAULT here whenever a tree is absent.
+ *     `../HyphAeon/PHASE3A.md` records the same two divergences on the library side, and
+ *     `notices.treeFree.reason` names which one was taken ('requested' | 'no_tree' |
+ *     'no_branch_lengths'). Unparseable tree TEXT still raises on both sides: that is a bad
+ *     input, not a missing one. `options.requireBranchLengths` restores the old refusal for a
+ *     caller that insists on a real tree.
  *   - Two cmd_meme quirks pass through unchanged because the library replicates them and the
  *     fixtures pin them: with an embedded tree and ≥ 1 masked artifact `--filter` fails at the
  *     cleaned reload ("No tree specified", cli.py:192), and the cleaned re-score reuses the
@@ -58,18 +70,22 @@
 import {
 	loadAlignmentAndTree,
 	parseAlignmentSequences,
+	extractTree,
+	hasNonzeroBranchLengths,
 	memeSitePq,
 	runAlignmentFilter,
 	attributeSelection,
 	memeSiteRecords,
 	attributionsOneIndexed,
 	diagnose,
+	TN93_MATCH_MODE,
 	MAX_SPECIES_DEFAULT,
 	MAX_SPECIES_CAP as LIBRARY_MAX_SPECIES_CAP
 } from '@veg/hyphaeon-js';
 
 import { buildPredictions, CALL_DEFAULTS } from './postprocess.js';
 import { inferSites, predictFromSession, resolveBatchSize, throwIfAborted, yieldToLoop } from './predict.js';
+import { njTreeFromLoaded, newickFromTree } from './nj.js';
 
 /** PLAN.md §3.5: the provenance block's schema version. */
 export const SCHEMA_VERSION = 1;
@@ -97,13 +113,25 @@ export const PHASES = Object.freeze(['parse', 'prepare', 'infer', 'stats', 'filt
  */
 export const CALL_MODES = Object.freeze(['percentile', 'zscore', 'pvalue']);
 
-/** Verbatim from DM3 AnalyzeTab.svelte:167-184 via predict.js. Do not reword — surfaces must agree. */
+/**
+ * The two refusals a caller can still ask for with `options.requireBranchLengths`. They are NOT
+ * the default any more (PLAN.md D22: a missing tree is a tree-free run, not a refusal), so
+ * nothing reaches a user through them unless a surface deliberately insisted on a real tree.
+ * The first sentence of each is unchanged from DM3 AnalyzeTab.svelte:167-184 because
+ * `mcp/src/engine.js` classifies input errors by matching it.
+ */
 export const NO_TREE_MESSAGE =
-	'HyphAeon needs a phylogenetic tree. Infer one or upload your own before running it.';
+	'HyphAeon needs a phylogenetic tree. This run asked for one explicitly ' +
+	'(requireBranchLengths); upload a tree with branch lengths, or drop that requirement and ' +
+	'HyphAeon will use TN93 distances from the alignment instead.';
 export const NO_BRANCH_LENGTHS_MESSAGE =
 	'HyphAeon needs a tree with branch lengths — it reads them as evolutionary distances. ' +
-	'This tree has none, so every pair of sequences would look equally related. Infer a ' +
-	'neighbor-joining tree or upload one with branch lengths.';
+	'This tree has none, so every pair of sequences would look equally related. This run asked ' +
+	'for real branch lengths explicitly (requireBranchLengths); upload a tree that has them, or ' +
+	'drop that requirement and HyphAeon will use TN93 distances from the alignment instead.';
+
+/** `nwk_path` values dataset.py:598 reads as "no tree, use TN93" (the library takes the same three). */
+export const TREE_FREE_MODES = Object.freeze(['tn93', 'none', 'skip']);
 
 /**
  * Hard bounds on the taxon cap. 512 is the model's `taxon_cap` (manifest, MAX_SPECIES_CAP). The
@@ -166,15 +194,143 @@ export function treeArgument(treeText) {
 }
 
 /**
- * The shared front half of every analysis: parse (taxon count gate), load through the library,
- * estimate branch lengths through the caller's hook when the tree has none, and describe what
- * happened in PLAN.md §3.5's `preprocessing` terms.
+ * @typedef {{
+ *   useTn93: boolean,
+ *   reason: 'requested'|'no_tree'|'no_branch_lengths'|null,
+ *   treeSupplied: 'user'|'embedded'|null,
+ *   tree: object|null,
+ *   branchLengthsMissing: boolean,
+ *   treeUnparseable: boolean
+ * }} TreePolicy
+ */
+
+/**
+ * PLAN.md D22's tree decision, made by the RUNTIME rather than left to the library.
+ *
+ * The library decides the same thing inside `loadAlignmentAndTree` and would reach the same
+ * answer with `useTn93` unset; the runtime asks first anyway for three reasons. It has to refuse
+ * before loading when a caller passed `requireBranchLengths`. It has to record `tree_source` and
+ * the reason in provenance, and reading that back out of `notices` alone cannot tell "the upload
+ * carried a topology-only tree" from "the upload carried no tree". And a surface (the MCP, the
+ * diagnostics panel) wants to say what WILL happen before paying for the load.
+ *
+ *   tree with usable branch lengths                     -> the tree path, as the reference runs it
+ *   `options.useTn93`, or treeText 'tn93'/'none'/'skip'  -> tree-free, reason 'requested'
+ *   no tree in the upload or the alignment              -> tree-free, reason 'no_tree'
+ *   a tree without usable branch lengths                -> tree-free, reason 'no_branch_lengths'
+ *   tree TEXT that will not parse                       -> NOT tree-free: the library raises
+ *
+ * `hasNonzeroBranchLengths` is the reference's own predicate (dataset.py:214-222: at least one
+ * non-root branch, and at least half of them present and strictly positive), imported rather than
+ * re-implemented so "usable" means one thing in this repository.
+ *
+ * @param {string} alignmentText
+ * @param {string|null} treeArg the trimmed tree text, or null to look inside the alignment
+ * @param {{useTn93?: boolean}} [options]
+ * @returns {TreePolicy}
+ */
+export function decideTreePolicy(alignmentText, treeArg, options = {}) {
+	const mode = treeArg === null ? null : treeArg.trim().toLowerCase();
+	if (options.useTn93 === true || (mode !== null && TREE_FREE_MODES.includes(mode))) {
+		return { useTn93: true, reason: 'requested', treeSupplied: null, tree: null, branchLengthsMissing: false, treeUnparseable: false };
+	}
+	/** @type {object|null} */
+	let tree = null;
+	/** @type {'user'|'embedded'|null} */
+	let treeSupplied = null;
+	if (treeArg === null) {
+		tree = extractTree(alignmentText);
+		if (tree) treeSupplied = 'embedded';
+	} else {
+		tree = extractTree(treeArg);
+		if (tree) treeSupplied = 'user';
+		else {
+			// Bad tree text is a bad input, not a missing one: let the library raise it, verbatim
+			// (its message is what mcp/src/engine.js classifies on).
+			return { useTn93: false, reason: null, treeSupplied: null, tree: null, branchLengthsMissing: false, treeUnparseable: true };
+		}
+	}
+	if (tree === null) {
+		return { useTn93: true, reason: 'no_tree', treeSupplied: null, tree: null, branchLengthsMissing: false, treeUnparseable: false };
+	}
+	const branchLengthsMissing = !hasNonzeroBranchLengths(tree);
+	return {
+		useTn93: branchLengthsMissing,
+		reason: branchLengthsMissing ? 'no_branch_lengths' : null,
+		treeSupplied,
+		tree,
+		branchLengthsMissing,
+		treeUnparseable: false
+	};
+}
+
+/**
+ * The Newick a UI may draw for this run — the site-tree modal and the phenotype foreground
+ * picker (PLAN.md §4.5, D22). DISPLAY ONLY; see nj.js.
+ *
+ *   the tree path      the user's own tree: the uploaded text verbatim, or the embedded tree
+ *                      serialised back out of the parse (`source: 'user'`)
+ *   tree-free          neighbour joining on the TN93 matrix the model was actually given, over
+ *                      the taxa it actually saw (`source: 'nj'`)
+ *
+ * A tree-free run whose upload DID carry a topology-only tree still gets the NJ tree: the display
+ * tree has to carry branch lengths and has to be over the taxa that survived duplicate collapse
+ * and the PD cap, and the supplied topology is neither. What the upload carried is recorded
+ * separately as `preprocessing.tree_provided`, so a UI that prefers the user's topology can ask.
+ *
+ * @param {object} loaded the library's LoadedAlignment
+ * @param {TreePolicy} policy
+ * @param {string|null} treeArg
+ * @param {{maxTaxa?: number}} [options]
+ * @returns {{newick: string, source: 'user'|'nj', from: 'tree-text'|'alignment'|'tn93', taxa: number,
+ *   clampedBranches?: number}|null}
+ */
+export function displayTreeFor(loaded, policy, treeArg, options = {}) {
+	const treeFree = loaded?.notices?.treeFree ?? null;
+	if (!treeFree) {
+		// The upload's own tree. Its TEXT when the caller handed text over — that is exactly what
+		// the user gave and what the model read — else the embedded tree serialised back out of
+		// the parse, which is the only form of it this runtime ever holds.
+		if (policy.treeSupplied === 'user' && treeArg) {
+			return { newick: treeArg, source: 'user', from: 'tree-text', taxa: loaded.N };
+		}
+		if (loaded.tree) {
+			try {
+				return {
+					newick: newickFromTree(loaded.tree),
+					source: 'user',
+					from: policy.treeSupplied === 'embedded' ? 'alignment' : 'tree-text',
+					taxa: loaded.N
+				};
+			} catch {
+				// A tree that parsed but will not serialise is a decoration that failed, not a run
+				// that failed.
+				return null;
+			}
+		}
+		return null;
+	}
+	const nj = njTreeFromLoaded(loaded, options);
+	if (!nj) return null;
+	return { newick: nj.newick, source: 'nj', from: 'tn93', taxa: nj.n, clampedBranches: nj.clampedBranches };
+}
+
+/**
+ * The shared front half of every analysis: parse (taxon count gate), the D22 tree decision, the
+ * load through the library, the display-only tree, and a description of what happened in
+ * PLAN.md §3.5's `preprocessing` terms.
  *
  * @param {{alignmentText: string, treeText?: string|null, options?: object, progress?: Function,
  *   signal?: AbortSignal, defaultMaxSpecies?: number}} args
+ * @param {boolean} [args.options.useTn93] force the tree-free path even when the tree is usable
+ *   (the reference's `--use-tn93`)
+ * @param {boolean} [args.options.requireBranchLengths] refuse instead of going tree-free
+ * @param {boolean} [args.options.displayTree] build the display tree (default true)
  * @returns {Promise<{loaded: object, names: string[], rawSeqs: Map<string, string>,
- *   treeArg: string|null, treeSource: string, branchLengthsEstimated: boolean,
- *   speciesCap: number|null, warnings: object[], preprocessing: object}>}
+ *   treeArg: string|null, treeSource: string, treeFree: {reason: string, taxaOrder: string}|null,
+ *   useTn93: boolean, displayTree: object|null, tree: object|null,
+ *   branchLengthsEstimated: boolean, speciesCap: number|null, warnings: object[],
+ *   preprocessing: object}>}
  */
 export async function prepareRun({ alignmentText, treeText, options = {}, progress, signal, defaultMaxSpecies = MAX_SPECIES_DEFAULT }) {
 	const warnings = [];
@@ -197,69 +353,120 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 	report(progress, 'parse', 1, 1, `Alignment read: ${names.length} sequences`);
 	throwIfAborted(signal);
 
+	// --- the D22 tree decision, before the load -------------------------------------------------
+	const treeArg = treeArgument(treeText);
+	const policy = decideTreePolicy(alignmentText, treeArg, options);
+	if (policy.useTn93 && options.requireBranchLengths) {
+		// The only two refusals left, and only for a caller that asked for them.
+		throw new Error(policy.reason === 'no_branch_lengths' ? NO_BRANCH_LENGTHS_MESSAGE : NO_TREE_MESSAGE);
+	}
+
 	// --- prepare -------------------------------------------------------------------------------
-	report(progress, 'prepare', 0, 2, 'Computing tree distances and embedding...');
+	report(
+		progress,
+		'prepare',
+		0,
+		2,
+		policy.useTn93
+			? 'Computing TN93 distances and embedding...'
+			: 'Computing tree distances and embedding...'
+	);
 	await yieldToLoop();
-	let treeArg = treeArgument(treeText);
-	let treeSource = options.treeSource ?? (treeArg ? 'user' : 'embedded');
-	const load = (tree) => {
-		try {
-			return loadAlignmentAndTree(alignmentText, tree, {
-				maxSpecies: speciesCap,
-				pruneDuplicates,
-				referenceName: options.referenceSequence
-			});
-		} catch (err) {
-			if (/No tree specified|Could not parse phylogenetic tree/.test(err?.message ?? '')) {
-				throw new Error(NO_TREE_MESSAGE, { cause: err });
-			}
-			throw err;
-		}
-	};
-	let loaded = load(treeArg);
-	let branchLengthsEstimated = false;
-	if (loaded.notices.branchLengthsMissing) {
-		if (typeof options.estimateTree === 'function') {
-			// dataset.py:601-611 shells out to HyPhy here; the runtime's hook is that call.
-			report(progress, 'prepare', 1, 2, 'Estimating branch lengths...');
-			const est = await options.estimateTree(alignmentText, treeArg);
-			const estText = typeof est === 'string' ? est : est?.treeText;
-			if (typeof estText !== 'string' || !estText.trim()) {
-				throw new Error('estimateTree returned no tree text');
-			}
-			treeArg = estText.trim();
-			treeSource = (typeof est === 'object' && est?.source) || 'hyphy-hky85';
-			branchLengthsEstimated = true;
-			loaded = load(treeArg);
-			if (loaded.notices.branchLengthsMissing) {
-				warnings.push(
-					warning(
-						'BRANCH_LENGTHS_MISSING',
-						'warn',
-						'The estimated tree still has no usable branch lengths; dataset.py defaults (1e-3 / 1e-4) were applied.'
-					)
-				);
-			}
-		} else if (options.requireBranchLengths) {
-			throw new Error(NO_BRANCH_LENGTHS_MESSAGE);
-		} else {
-			// dataset.py:609-614, the "HyPhy not found" branch: enforce defaults and continue. The
-			// library did that; the run is recorded as having done so.
-			warnings.push(
-				warning(
-					'BRANCH_LENGTHS_MISSING',
-					'warn',
-					'The tree has no branch lengths and no estimator was available; dataset.py defaults ' +
-						'(1e-3 for missing, 1e-4 minimum) were applied, as the reference does without HyPhy.',
-					{ recoverable: true }
-				)
+	let loaded;
+	try {
+		loaded = loadAlignmentAndTree(alignmentText, treeArg, {
+			maxSpecies: speciesCap,
+			pruneDuplicates,
+			referenceName: options.referenceSequence,
+			// `useTn93` is passed ONLY for a genuine request. The library reaches the same decision
+			// from the same predicates for the other two cases, and it labels the reason more
+			// precisely than the flag can: `useTn93: true` makes `notices.treeFree.reason`
+			// 'requested', which would erase the difference between "the user asked for TN93",
+			// "there was no tree" and "the tree had no usable branch lengths" — the three things
+			// the report has to be able to say. The runtime's own decision is checked against the
+			// library's below, so this is not a silent hand-off.
+			useTn93: policy.reason === 'requested',
+			tn93Options: options.tn93Options
+		});
+	} catch (err) {
+		// The `tn93` package raises where dataset.py expects a sentinel and nothing catches it: a
+		// saturated pair reaches `math.log` of a non-positive number and a pair with no overlapping
+		// unambiguous position divides by zero (../HyphAeon/PHASE3A.md, "Python quirks replicated").
+		// The library reproduces the exception by name; a user meeting it deserves to be told what
+		// it means about their alignment rather than shown `ValueError` from a package they never
+		// invoked. `diagnose` reports the same condition as TN93_SATURATED_PAIRS at refuse level.
+		if (policy.useTn93 && /^tn93:/.test(String(err?.message ?? ''))) {
+			throw new Error(
+				'TN93 distances could not be computed for this alignment: ' +
+					`${err.message} — at least one pair of sequences is saturated (no shared history the ` +
+					'model can read) or shares no overlapping unambiguous position. Supply a tree with ' +
+					'branch lengths, or drop the sequences the diagnostics flag.',
+				{ cause: err }
 			);
 		}
+		throw err;
 	}
 	throwIfAborted(signal);
-	report(progress, 'prepare', 2, 2, `Distances and embedding ready: ${loaded.N} taxa, ${loaded.L} codons`);
 
 	const n = loaded.notices;
+	const treeFree = n.treeFree;
+	if (Boolean(treeFree) !== policy.useTn93) {
+		// The runtime and the library disagreed about the tree. Neither is authoritative over the
+		// other by design — they apply the same predicates to the same input — so a disagreement is
+		// a drift between this repository and the library it is pinned to, and provenance must not
+		// quietly claim the path that was not taken.
+		warnings.push(
+			warning(
+				'TREE_POLICY_MISMATCH',
+				'warn',
+				`The runtime expected the ${policy.useTn93 ? 'tree-free' : 'tree'} path and the library took the ` +
+					`${treeFree ? 'tree-free' : 'tree'} one. The library's decision is what the model saw and is what is recorded.`,
+				{ runtimeReason: policy.reason, libraryReason: treeFree ? treeFree.reason : null }
+			)
+		);
+	}
+	if (treeFree) {
+		// PLAN.md §4.3's row: info, with the reason. `diagnose` raises the same code with its own
+		// data; diagnoseWarnings keeps whichever came first, and this one knows the real load.
+		warnings.push(
+			warning(
+				'TREE_FREE_TN93',
+				'info',
+				treeFree.reason === 'requested'
+					? 'Tree-free mode was requested: pairwise TN93 distances were computed from the alignment and used instead of a tree.'
+					: treeFree.reason === 'no_tree'
+						? 'No tree was supplied or embedded, so pairwise TN93 distances were computed from the alignment and used instead (PLAN.md D22).'
+						: 'The tree has no usable branch lengths, so pairwise TN93 distances were computed from the alignment and used instead (PLAN.md D22).',
+				{
+					// The first five keys are `diagnose`'s own, with the same names and meanings
+					// (diagnostics.js TREE_FREE_TN93): `diagnoseWarnings` keeps whichever version of a
+					// code came first, so a consumer must see the same fields either way. The last
+					// three are what only a completed load knows.
+					reason: treeFree.reason,
+					taxaOrder: treeFree.taxaOrder,
+					distances: 'tn93',
+					matchMode: TN93_MATCH_MODE,
+					treeKeptForDisplay: policy.tree !== null,
+					treeProvided: policy.treeSupplied,
+					saturatedPairs: n.tn93SaturatedPairs ?? 0,
+					recoverable: true
+				}
+			)
+		);
+	}
+	report(
+		progress,
+		'prepare',
+		2,
+		2,
+		`${treeFree ? 'TN93 distances' : 'Distances'} and embedding ready: ${loaded.N} taxa, ${loaded.L} codons`
+	);
+
+	// --- the display-only tree (nj.js) ----------------------------------------------------------
+	const displayTree = options.displayTree === false ? null : displayTreeFor(loaded, policy, treeArg);
+	throwIfAborted(signal);
+
+	const treeSource = treeFree ? 'tn93' : (options.treeSource ?? policy.treeSupplied ?? 'embedded');
 	const usedSet = new Set(loaded.taxa);
 	const preprocessing = {
 		taxa_in_alignment: names.length,
@@ -273,9 +480,16 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		stride_preselected: n.stridePreselected,
 		taxon_cap: speciesCap,
 		reference_sequence: referenceNameFor(loaded, options.referenceSequence),
+		/** PLAN.md §3.5: 'user' | 'embedded' | 'tn93' (D22 removed 'hyphy-hky85'; 'nj' is display only). */
 		tree_source: treeSource,
+		/** What the UPLOAD carried, whether or not the model used it. */
+		tree_provided: policy.treeSupplied,
+		tree_free: treeFree ? { reason: treeFree.reason, taxa_order: treeFree.taxaOrder } : null,
+		tn93_saturated_pairs: n.tn93SaturatedPairs,
 		branch_lengths_missing: n.branchLengthsMissing,
-		branch_lengths_estimated: branchLengthsEstimated,
+		/** D22: nothing estimates branch lengths any more. Kept so the block's shape does not move. */
+		branch_lengths_estimated: false,
+		display_tree_source: displayTree ? displayTree.source : null,
 		distance_rescaled: n.distanceRescaled,
 		raw_dist_max: n.rawDistMax,
 		codons_trimmed: n.codonsTrimmed,
@@ -283,7 +497,21 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		unknown_codon_fraction: n.unknownCodonFraction,
 		in_frame_stops: n.inFrameStops
 	};
-	return { loaded, names, rawSeqs, treeArg, treeSource, branchLengthsEstimated, speciesCap, warnings, preprocessing };
+	return {
+		loaded,
+		names,
+		rawSeqs,
+		treeArg,
+		treeSource,
+		treeFree: treeFree ? { reason: treeFree.reason, taxaOrder: treeFree.taxaOrder } : null,
+		useTn93: policy.useTn93,
+		displayTree,
+		tree: treeFree ? null : loaded.tree,
+		branchLengthsEstimated: false,
+		speciesCap,
+		warnings,
+		preprocessing
+	};
 }
 
 /**
@@ -299,7 +527,7 @@ export function referenceNameFor(loaded, requested) {
  * PLAN.md §4.3 warnings from the library's `diagnose`, merged with the runtime's own (a code the
  * runtime already raised is not repeated). Diagnostics never take a run down.
  */
-export function diagnoseWarnings({ alignmentText, treeArg, loaded, speciesCap, runtimeWarnings, enabled }) {
+export function diagnoseWarnings({ alignmentText, treeArg, loaded, speciesCap, runtimeWarnings, enabled, useTn93 = false }) {
 	const out = [...runtimeWarnings];
 	if (enabled === false) return out;
 	try {
@@ -307,7 +535,10 @@ export function diagnoseWarnings({ alignmentText, treeArg, loaded, speciesCap, r
 			alignmentText,
 			treeText: treeArg,
 			parsed: loaded,
-			maxSpecies: speciesCap ?? MAX_SPECIES_CAP
+			maxSpecies: speciesCap ?? MAX_SPECIES_CAP,
+			// D22: `diagnose` must reach the same tree decision the load did, or it would report a
+			// tree-based depth on a run that used TN93 distances (diagnostics.js `useTn93`).
+			useTn93
 		});
 		const have = new Set(out.map((w) => w.code));
 		for (const w of d.warnings) if (!have.has(w.code)) out.push(w);
@@ -382,11 +613,15 @@ export function provenanceBlock({ surface, session, head = null, surrogateFor, s
  * @param {number} [args.options.attributionMinLrt] cli.py `--attribution-min-lrt`, default 3.84
  * @param {string} [args.options.callMode] one of CALL_MODES; anything else throws
  * @param {object} [args.options.calling] extra buildPredictions gate overrides; `callMode` wins
- * @param {(alignmentText: string, treeText: string|null) => Promise<string|{treeText: string, source?: string}>}
- *   [args.options.estimateTree] called when the tree has no branch lengths (dataset.py:601-611's HyPhy call)
- * @param {boolean} [args.options.requireBranchLengths] refuse (NO_BRANCH_LENGTHS_MESSAGE) instead of
- *   taking the reference's "HyPhy not found" branch when no estimator is given
- * @param {string} [args.options.treeSource] 'user' | 'embedded' | 'hyphy-hky85' | 'nj' | 'tn93' (recorded)
+ * @param {boolean} [args.options.useTn93] force the tree-free TN93 path even when the tree is
+ *   usable (the reference's `--use-tn93`); it is taken automatically without a usable tree (D22)
+ * @param {object} [args.options.tn93Options] `matchMode` / `maxAmbigFraction` / `ignoreGaps` for
+ *   the library's `tn93DistanceMatrix`; the reference's own defaults apply
+ * @param {boolean} [args.options.requireBranchLengths] refuse (NO_TREE_MESSAGE /
+ *   NO_BRANCH_LENGTHS_MESSAGE) instead of going tree-free
+ * @param {boolean} [args.options.displayTree] build the display-only tree (default true)
+ * @param {string} [args.options.treeSource] 'user' | 'embedded' (recorded; a tree-free run is
+ *   always recorded as 'tn93')
  * @param {boolean} [args.options.diagnose] run the library's diagnose() for warnings (default true)
  * @param {string} [args.options.alignmentName] label written as the document's `alignment`
  * @param {string} [args.options.treeName] label written as the document's `tree`
@@ -400,7 +635,7 @@ export function provenanceBlock({ surface, session, head = null, surrogateFor, s
  *   model_variant, artifact_sha256, hyphaeon_js_version, reference_version, seed
  * @returns {Promise<object>} { schema_version, method, is_surrogate, surrogate_for, taxa_count,
  *   codon_count, runtime_sec, filter_enabled, artifacts_masked, attribution_enabled, attributions,
- *   sites, arrays, filter?, attention?, root_repr?, summary, provenance } plus two non-enumerable
+ *   sites, display_tree, arrays, filter?, attention?, root_repr?, summary, provenance } plus two non-enumerable
  *   properties: `loaded` (the library's LoadedAlignment) and `inference` (the raw pass: `lrt`,
  *   `siteIndices`, `batchSize`, `mean_root_attns`, `root_repr`)
  */
@@ -544,7 +779,8 @@ export async function runMeme({
 		loaded,
 		speciesCap,
 		runtimeWarnings,
-		enabled: options.diagnose
+		enabled: options.diagnose,
+		useTn93: prep.useTn93
 	});
 	report(progress, 'postprocess', 1, 1, 'Done');
 
@@ -568,6 +804,13 @@ export async function runMeme({
 		attribution_enabled: Boolean(options.attribute),
 		attributions: attributionsOneIndexed(attributions),
 		sites,
+		/**
+		 * DISPLAY ONLY (nj.js, PLAN.md D22): the user's own tree when the run used one, else a
+		 * neighbour-joining tree on the TN93 distances the model was given. It is here so a site-tree
+		 * modal and the phenotype foreground picker have a topology without asking for one; nothing
+		 * downstream of the graph reads it.
+		 */
+		display_tree: prep.displayTree,
 		/** The typed arrays the writers consume (results.js); `raw` is the pre-filter set. */
 		arrays: {
 			lrt,

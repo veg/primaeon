@@ -147,8 +147,14 @@ describe('sectionStatus', () => {
 		r.status.completed = ['dms'];
 		expect(sectionStatus(r, 'done', 'dms').state).toBe('done');
 	});
-	it('phenotype is always the offer (unavailable)', () => {
-		expect(sectionStatus(report(), 'running', 'phenotype').state).toBe('unavailable');
+	// D22 / Phase 3: the pillar is live, and its shell always renders the panel — a trait to
+	// describe while the rest of the report is still running, a result once it has run. It is
+	// never `pending` (it is not queued behind a phase) and never `unavailable` (it is offered on
+	// every report that carries an alignment); a failed run is shown by the panel itself.
+	it('phenotype always renders its panel, whatever the run is doing', () => {
+		expect(sectionStatus(report(), 'running', 'phenotype').state).toBe('done');
+		expect(sectionStatus(report(), 'interrupted', 'phenotype').state).toBe('done');
+		expect(sectionStatus(report(), 'failed', 'phenotype').state).toBe('done');
 	});
 });
 

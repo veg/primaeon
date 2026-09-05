@@ -10,10 +10,11 @@
  *
  *   models        the manifest as the runtime's reader validates it (src/models.js over
  *                 runtime/src/manifest.js `loadManifest`), with per-variant graph paths;
- *   requirements  per-pillar requirements: tree rules, options with the CLI defaults from
- *                 hyphaeon/cli.py (veg/HyphAeon phase-2a), the caps from src/caps.js, the warning
- *                 codes hyphaeon_validate can emit, and which pillars run in-process — so a client
- *                 can plan a call without trial and error;
+ *   requirements  per-pillar requirements: the tree rule (optional everywhere since D22, with TN93
+ *                 as the fallback), options with the CLI defaults from hyphaeon/cli.py
+ *                 (veg/HyphAeon phase-3a), the caps from src/caps.js, the warning codes
+ *                 hyphaeon_validate can emit, and the fact that every pillar runs in-process — so
+ *                 a client can plan a call without trial and error;
  *   caveats       mcp/caveats.json: the model card facts of PLAN.md 2 and the numbers of
  *                 HyphAeon/model_eval/README.md, keyed by model_version;
  *   examples      the bundled example files from HyphAeon/examples (env HYPHAEON_EXAMPLES_DIR),
@@ -50,17 +51,22 @@ import {
   MIN_TAXA,
   TAXON_CAP
 } from "./caps.js";
-import { CODES, NATIVE_ANALYSES, BRIDGED_ANALYSES } from "./validate.js";
+import { CODES, NATIVE_ANALYSES } from "./validate.js";
 import { listExamples, listGalleryRecords, readExample, readGalleryIndex, readGalleryRecord, readManifest } from "./models.js";
 
 const CAVEATS_URL = new URL("../caveats.json", import.meta.url);
 
 const TREE_RULE =
-  "Optional: a Newick/NEXUS tree in `tree`, or a tree embedded in the alignment. Tips must match " +
-  "sequence names (exact, then quote-stripped, then case-insensitive). Topology-only trees get " +
-  "HKY85 branch lengths from HyPhy when the server has an estimator (list_models reports it), else " +
-  "dataset.py's 1e-3 defaults; max patristic > 10 is rescaled. use_tn93 (TN93 distances instead of " +
-  "a tree) is accepted by the bridged pillar (phenotype) only.";
+  "OPTIONAL (PLAN.md D22). A Newick/NEXUS tree in `tree`, or one embedded in the alignment, is used " +
+  "AS IT IS when it carries branch lengths; tips must match sequence names (exact, then " +
+  "quote-stripped, then case-insensitive), and max patristic > 10 is rescaled by the codon count. " +
+  "With no tree at all, with a tree that has no usable branch lengths, or with use_tn93 / no_tree, " +
+  "the run takes pairwise Tamura-Nei 93 distances from the sequences straight into the MDS - the " +
+  "reference's own --use-tn93 path (dataset.py:493-571, 598-636), which the manuscript measures at " +
+  "rho = 0.9997 against the tree-based one. Nothing estimates branch lengths and nothing infers a " +
+  "tree for the model. `provenance.preprocessing.tree_source` is then 'tn93' with " +
+  "`tree_free.reason` one of 'requested' | 'no_tree' | 'no_branch_lengths'; hyphaeon_validate says " +
+  "the same in advance as TREE_FREE_TN93 (info, never a refusal).";
 
 const MDS_SIGN_OPTION = {
   cli: "--mds-sign",
@@ -79,10 +85,12 @@ export const METHOD_REQUIREMENTS = {
     engine: "in-process",
     cli: "(app-side: runs `hyphaeon meme --attribute --filter`, `hyphaeon busted`, `hyphaeon epistasis`, `hyphaeon dms` over ONE forward pass and one loaded alignment)",
     requires_codon_alignment: true,
-    tree: TREE_RULE + " With no tree at all the report builds a neighbour-joining tree first (tree_source \"nj\").",
+    /** D22: no pillar requires a tree; without a usable one the run uses TN93 distances. */
+    requires_tree: false,
+    tree: TREE_RULE,
     model_outputs: ["lrt", "mean_root_attns", "root_repr"],
     surrogate_for: "MEME (sites), BUSTED (gene); the network, DMS and attribution have no HyPhy counterpart",
-    sections_in_order: ["diagnostics", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype (null: offered, not run)"],
+    sections_in_order: ["diagnostics", "sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype (only with a trait block; null otherwise)"],
     options: {
       variant: { default: "chosen from tree depth by diagnostics (general | viral)", values: ["general", "viral"] },
       max_species: { default: "the manifest's default_taxon_cap (256)", range: [MIN_TAXA, TAXON_CAP] },
@@ -91,11 +99,21 @@ export const METHOD_REQUIREMENTS = {
       seed: { default: 42, note: "the sector permutation null" },
       permutations: { default: 1000, max: MAX_PERMUTATIONS, note: "the report's B; the CLI's default is 10,000 — p_perm at B = 1,000 carries about +/-0.03 (PHASE2A.md)" },
       dms: { default: true, note: "the digital DMS section, last, progressive, capped by dms_work_budget" },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "force the tree-free TN93 path even when a usable tree was given" },
+      phenotype: {
+        default: null,
+        note:
+          "the trait block (preset | foreground | phenotype_file, plus trait_col, species_col, continuous, " +
+          "permulations, n_permutations, alpha, min_taxa, max_perm_p, seed). Given one, the report fills " +
+          "sections.phenotype from its OWN forward pass (provenance.phenotype_source \"report-pass\"); " +
+          "without one the section stays null, because a trait cannot be guessed."
+      },
+      phenotype_file: { cli: "--phenotype-file", default: null, note: "the CSV/TSV text for the phenotype section" },
       dms_work_budget: { default: "the runtime's default", note: "forward passes the DMS section may spend (19 per site); above it the report says the scan is partial" },
       wait_seconds: { default: ANALYZE_WAIT_DEFAULT_SEC, max: ANALYZE_WAIT_MAX_SEC, note: "app-side: how long the call waits for the report before returning the job id with the sections that are ready" },
       section: { values: REPORT_SECTIONS, note: "get_results / the tool: return one section of the report" }
     },
-    result_keys: ["schema_version (2)", "kind (report)", "id", "createdAt", "inputs", "options", "diagnostics", "sections{sites, gene, epistasis, attribution, filter, dms, phenotype: null}", "provenance", "timings{phase: seconds}"],
+    result_keys: ["schema_version (2)", "kind (report)", "id", "createdAt", "inputs", "options", "diagnostics", "sections{sites, gene, epistasis, attribution, filter, dms, phenotype}", "provenance", "timings{phase: seconds}"],
     inline_limit_bytes: ANALYZE_INLINE_MAX_BYTES,
     paging: "Above inline_limit_bytes the tool returns {job_id, summary, sections_ready}; get_results section=<name> [top, fields, summary_only] pages one section; hyphaeon://report/{id} serves the finished record."
   },
@@ -105,13 +123,15 @@ export const METHOD_REQUIREMENTS = {
     engine: "in-process",
     cli: "hyphaeon meme (aliases predict, site-selection)",
     requires_codon_alignment: true,
+    /** D22: no pillar requires a tree; without a usable one the run uses TN93 distances. */
+    requires_tree: false,
     tree: TREE_RULE,
     model_outputs: ["lrt"],
     surrogate_for: "MEME",
     options: {
       model_variant: { cli: "--model-variant", default: "general", values: ["general", "viral"] },
       max_species: { cli: "--max-species", default: null, range: [2, TAXON_CAP] },
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process (no TN93 implementation)" },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "force the tree-free TN93 path even when a usable tree was given (D22)" },
       filter: { cli: "--filter", default: false },
       filter_p_thresh: { cli: "--filter-p-thresh", default: 0.01 },
       min_patch_consec: { cli: "--min-patch-consec", default: 3, note: "recorded; only the default is applied in-process" },
@@ -131,13 +151,15 @@ export const METHOD_REQUIREMENTS = {
     engine: "in-process",
     cli: "hyphaeon busted (aliases omnibus, gene-selection)",
     requires_codon_alignment: true,
+    /** D22: no pillar requires a tree; without a usable one the run uses TN93 distances. */
+    requires_tree: false,
     tree: TREE_RULE,
     model_outputs: ["lrt", "root_repr -> busted_head.onnx"],
     surrogate_for: "BUSTED",
     options: {
       model_variant: { cli: "--model-variant", default: "general", values: ["general", "viral"], note: "the busted head ships for general only; viral gives the statistical fields with null neural fields" },
       max_species: { cli: "--max-species", default: 512, range: [2, TAXON_CAP] },
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "force the tree-free TN93 path even when a usable tree was given (D22)" },
       batch_size: { cli: "--batch-size", default: "adaptive" },
       gene: { default: "the alignment file's stem" },
       mds_sign: MDS_SIGN_OPTION,
@@ -153,11 +175,13 @@ export const METHOD_REQUIREMENTS = {
     engine: "in-process",
     cli: "hyphaeon epistasis (aliases coselection, sector, network)",
     requires_codon_alignment: true,
+    /** D22: no pillar requires a tree; without a usable one the run uses TN93 distances. */
+    requires_tree: false,
     tree: TREE_RULE,
     model_outputs: ["lrt", "mean_root_attns"],
     surrogate_for: "MEME (site signal) — the network itself has no HyPhy counterpart",
     options: {
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "force the tree-free TN93 path even when a usable tree was given (D22)" },
       focal_taxon: { cli: "--focal-taxon", default: "consensus (taxon 0)" },
       min_sim: { cli: "--min-sim", default: 0.3, note: "the CLI's default; the underlying function's is 0.35" },
       min_shared: { cli: "--min-shared", default: 2 },
@@ -185,11 +209,13 @@ export const METHOD_REQUIREMENTS = {
     engine: "in-process",
     cli: "hyphaeon dms (aliases essm, digital-dms)",
     requires_codon_alignment: true,
+    /** D22: no pillar requires a tree; without a usable one the run uses TN93 distances. */
+    requires_tree: false,
     tree: TREE_RULE,
     model_outputs: ["lrt (19 x L passes)"],
     surrogate_for: "no HyPhy counterpart; delta-LRT of the MEME surrogate under substitution",
     options: {
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "refused in-process" },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "force the tree-free TN93 path even when a usable tree was given (D22)" },
       focal_taxon: { cli: "--focal-taxon", default: "consensus (taxon 0)" },
       sites: { cli: "(app-side; the CLI sweeps every site)", default: "all", note: "1-indexed codon sites to sweep; total_mutations stays 19 x codon_count as the reference computes it" },
       mds_sign: MDS_SIGN_OPTION,
@@ -203,13 +229,20 @@ export const METHOD_REQUIREMENTS = {
   phenotype: {
     name: "Phenotype association (PhyloWAS)",
     tool: "hyphaeon_phenotype",
-    engine: "python-reference",
+    engine: "in-process",
     cli: "hyphaeon phenotype (aliases phylowas, trait)",
     requires_codon_alignment: true,
+    /** D22: no pillar requires a tree; without a usable one the run uses TN93 distances. */
+    requires_tree: false,
     tree: TREE_RULE,
     model_outputs: ["lrt", "mean_root_attns"],
     surrogate_for: "no HyPhy counterpart; attention-based trait association",
-    trait: "One of preset, foreground (comma list or regex), or phenotype_file (CSV/TSV) is required.",
+    trait: "One of preset, foreground (comma list or regex), or phenotype_file (CSV/TSV TEXT) is required; `background` is accepted and never read, as upstream.",
+    permulations_need_a_tree:
+      "Brownian-motion permulations (--permulations) need a phylogeny with branch lengths. A tree-free run " +
+      "skips them and records `permulations: {requested, ran: 0, reason: \"tree-free\", detail}`; the " +
+      "association p-values are then the parametric t-test ones, exactly as `--use-tn93` gives upstream. " +
+      "The display-only neighbour-joining tree is deliberately NOT substituted as a null.",
     options: {
       model_variant: { cli: "--model-variant", default: "general", values: ["general", "viral"] },
       preset: { cli: "--preset", values: ["echolocation", "marine", "fossorial", "hibernation", "longevity", "high_altitude", "cardenolide", "dim_light"] },
@@ -225,11 +258,13 @@ export const METHOD_REQUIREMENTS = {
       n_permutations: { cli: "--n-permutations", default: 10000, max: MAX_PERMUTATIONS },
       max_perm_p: { cli: "--max-perm-p", default: null },
       seed: { cli: "--seed", default: 42, note: "permulations and the trait-sector null" },
-      mds_sign: { cli: "--mds-sign", default: "canonical", values: ["canonical", "lapack"], note: "passed to the CLI" },
-      use_tn93: { cli: "--use-tn93 / --no-tree", default: false },
+      mds_sign: MDS_SIGN_OPTION,
+      max_species: { cli: "(not on this subcommand)", default: null, range: [2, TAXON_CAP] },
+      use_tn93: { cli: "--use-tn93 / --no-tree", default: false, note: "force the tree-free TN93 path even when a usable tree was given (D22)" },
       cpu: { cli: "--cpu", default: false }
     },
-    result_keys: ["phenotype_meta", "taxa_count", "codon_count", "significant_sites_count", "spectral_energy", "norm_spectral_ratio", "max_assoc", "p_evd_length_adjusted", "compact_pars_signature", "permulations_count", "gene_p_value_perm", "sites[]", "trait_sectors[]", "coselection_pairs[]"],
+    result_keys: ["alignment", "tree", "taxa_count", "codon_count", "phenotype_meta", "spectral_energy", "norm_spectral_ratio", "max_assoc", "p_evd_length_adjusted", "score_track_a", "score_track_b", "dual_track_composite", "compact_pars_signature", "permulations_count", "gene_p_value_perm", "significant_sites_count", "coselection_pairs_count", "trait_sectors_count", "coselection_pairs[]", "trait_sectors[]", "sites[]", "trait (app)", "permulations (app)", "sector_permutations (app)", "attention_source (app)"],
+    parity: "the 21 top-level keys in phenotype.py:624-646's order; site statistics at the graph class through the model, the p / score tracks at 1e-9 given identical inputs, sector membership exact, p_perm statistical (PLAN.md 5.4)",
     site_keys: ["site", "ref_aa", "derived_aa", "hyphaeon_lrt", "p_lrt", "association_rho", "p_value", "p_assoc", "p_assoc_parametric", "p_assoc_perm", "score", "foreground_freq_pct", "background_freq_pct", "q_value", "fg_mean_attn", "bg_mean_attn"]
   },
   evaluate: {
@@ -238,6 +273,7 @@ export const METHOD_REQUIREMENTS = {
     engine: "in-process",
     cli: "hyphaeon evaluate --prediction --meme-result",
     requires_codon_alignment: false,
+    requires_tree: false,
     tree: "none",
     model_outputs: [],
     surrogate_for: null,
@@ -317,7 +353,7 @@ export function registerResources(server, deps = {}) {
               validation_codes: CODES,
               provenance: {
                 native: { surfaces: ["mcp-stdio", "mcp-http"], analyses: [...NATIVE_ANALYSES], note: "Computed in the MCP process by @veg/hyphaeon-js through @veg/hyphaeon-runtime over onnxruntime-node." },
-                bridged: { surface: "python-reference", analyses: [...BRIDGED_ANALYSES], note: "Run through the Python reference CLI until the port lands (PLAN.md 8, phase 3: phenotype)." }
+                bridged: { surface: null, analyses: [], note: "None. Every pillar runs in this process since Phase 3; no Python and no subprocess anywhere (PLAN.md 8, phase 3's exit criterion; D16)." }
               }
             },
             null,

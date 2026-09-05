@@ -5,9 +5,9 @@ build
 vite.config.ts.timestamp-*
 
 # Written by ../scripts/copy-assets.mjs on every build/dev. Never commit: the ORT binary is 13 MB
-# of third-party output pinned by package.json, the models come from the engine repo's manifest,
-# and the HyPhy WASM bundle is DataMonkey's. See the script header for why each is copied.
+# of third-party output pinned by package.json and the models come from the engine repo's
+# manifest. See the script header for why each is copied. (static/wasm/ was the HyPhy bundle,
+# removed with PLAN.md D22 in Phase 3; nothing writes it any more.)
 static/ort/
 static/models/
-static/wasm/
 static/_headers

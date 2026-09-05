@@ -21,6 +21,7 @@
 	}
 </script>
 <script lang="ts">
+	import { treeFreeLabel, treeSourceLabel } from '$lib/api';
 	import type { MemeRecord } from '$lib/results/types';
 	import { MCP_ADD_LINE, mcpSnippet } from '$lib/results/mcpSnippet';
 	import { downloadText, fileStem, resultCsvText, resultJsonText } from '$lib/results/downloads';
@@ -128,7 +129,18 @@
 			<dl>
 				<div><dt>Taxa</dt><dd>{pre.taxa_used} used of {pre.taxa_in_alignment}{pre.taxon_cap ? ` (cap ${pre.taxon_cap})` : ''}</dd></div>
 				<div><dt>Reference sequence</dt><dd class="mono">{notRecorded(pre.reference_sequence)}</dd></div>
-				<div><dt>Tree source</dt><dd>{pre.tree_source}{pre.branch_lengths_estimated ? ', branch lengths estimated' : ''}</dd></div>
+				<div>
+					<dt>Distances</dt>
+					<dd>
+						{pre.tree_source === 'tn93' ? treeFreeLabel((pre.tree_free as { reason?: string } | null | undefined)?.reason) : treeSourceLabel(pre.tree_source)}
+						{#if typeof pre.tn93_saturated_pairs === 'number' && pre.tn93_saturated_pairs > 0}
+							· {(pre.tn93_saturated_pairs as number).toLocaleString()} pair{pre.tn93_saturated_pairs === 1 ? '' : 's'} at the saturation sentinel
+						{/if}
+					</dd>
+				</div>
+				{#if pre.display_tree_source}
+					<div><dt>Tree drawn</dt><dd>{pre.display_tree_source === 'nj' ? 'neighbour-joining on the TN93 distances (display only)' : 'the tree the model was given'}</dd></div>
+				{/if}
 				<div><dt>Duplicates collapsed</dt><dd>{pre.duplicates_collapsed}</dd></div>
 				<div><dt>PD subsampled</dt><dd>{yesNo(pre.pd_subsampled)}</dd></div>
 				<div><dt>Distances rescaled (&gt; 10)</dt><dd>{yesNo(pre.distance_rescaled)}</dd></div>

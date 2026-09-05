@@ -195,8 +195,128 @@ export function dmsSkipped(dms: DmsSection | null | undefined): { reason: string
 	return dms.skipped;
 }
 
-/** `phenotype` is Phase 3: the report renders the offer, never a result. */
-export type PhenotypeSection = null;
+// ---- phenotype (Phase 3) ------------------------------------------------------------------------
+
+/**
+ * One site row of `hyphaeon phenotype`, in phenotype.py:1085's key order (the 16 keys the library's
+ * `runPhenotypeAssociation` pushes, plus the `q_value` Benjamini-Hochberg adds afterwards). Rows
+ * arrive sorted by `score`, descending — NOT by site — because the reference sorts them that way
+ * before the BH pass, and the PARS bracket reads the first 15 of that order.
+ */
+export interface PhenotypeSiteRecord {
+	site: number;
+	ref_aa: string;
+	derived_aa: string;
+	hyphaeon_lrt: number;
+	p_lrt: number;
+	attribution_norm: number;
+	fg_mean_attn: number;
+	bg_mean_attn: number;
+	association_rho: number;
+	/** ACAT of `p_lrt` and `p_assoc`; the column BH is run on. */
+	p_value: number;
+	p_assoc: number;
+	p_assoc_parametric: number;
+	/** The permulation p when permulations ran, else null on every row. */
+	p_assoc_perm: number | null;
+	score: number;
+	foreground_freq_pct: number;
+	background_freq_pct: number;
+	q_value?: number;
+	[extra: string]: unknown;
+}
+
+/** One trait co-selection pair (phenotype.py:545-600). `site_u` / `site_v` are NOT position-ordered. */
+export interface PhenotypeCoselectionPair {
+	site_u: number;
+	site_v: number;
+	similarity: number;
+	cesi: number;
+	[extra: string]: unknown;
+}
+
+/** `resolve_phenotype_vector`'s meta dict, key for key (phenotype.py:127-215). */
+export interface PhenotypeMeta {
+	mode: string;
+	foreground_count: number;
+	background_count: number;
+	/** The CLI's own sentence; EMPTY when a bare vector was passed instead of the options. */
+	description: string;
+	[extra: string]: unknown;
+}
+
+/**
+ * `hyphaeon phenotype`'s document (phenotype.py:624-646, 21 keys in order), plus the app-side
+ * fields the runtime attaches: what the trait was, whether permulations ran, and how long it took.
+ * Everything not marked app-side is the reference's.
+ */
+export interface PhenotypeSection {
+	alignment: string | null;
+	tree: string | null;
+	taxa_count: number;
+	codon_count: number;
+	phenotype_meta: PhenotypeMeta;
+	spectral_energy: number;
+	norm_spectral_ratio: number;
+	max_assoc: number;
+	p_evd_length_adjusted: number;
+	score_track_a: number;
+	score_track_b: number;
+	dual_track_composite: number;
+	/** `[ D83 - G101 - ... ]`, or `[]` when no site reached rho ≥ 0.40 and score ≥ 0.50. */
+	compact_pars_signature: string;
+	/** The REQUESTED B when the permulations succeeded, 0 when they did not: a "did they run" flag. */
+	permulations_count: number;
+	gene_p_value_perm: number | null;
+	significant_sites_count: number;
+	coselection_pairs_count: number;
+	trait_sectors_count: number;
+	coselection_pairs: PhenotypeCoselectionPair[];
+	/** The sector miner's own records, the same shape the epistasis section carries. */
+	trait_sectors: EpistaticSector[];
+	sites: PhenotypeSiteRecord[];
+	// --- the runtime's own block, appended after the reference's keys (runtime/src/phenotype.js) ---
+	/** `describeTrait`: which of the three sources the trait came from, and what it matched. */
+	trait?: {
+		source: 'table' | 'preset' | 'foreground' | 'vector' | string;
+		preset: string | null;
+		mode: string | null;
+		foreground_count: number;
+		background_count: number;
+		description: string;
+		/** True when a `background` was supplied: phenotype.py:125 declares it and never reads it. */
+		background_ignored: boolean;
+	};
+	/**
+	 * Why the permulations ran or did not. `reason` is one of `PERMULATION_SKIP_REASONS`
+	 * (`not-requested` | `tree-free` | `no-tree` | `failed`) and null when they ran; `detail` is the
+	 * sentence to print where the gene-level empirical p would have been.
+	 */
+	permulations?: { requested: number; ran: number; reason: string | null; detail: string | null; seed: number };
+	/** B and the seed of the trait-sector null, with its Monte Carlo caveat. */
+	sector_permutations?: { n: number; seed: number; rng: string; note: string };
+	/** 'shared-pass' when the report's own forward pass was reused, 'all-sites' for the CLI's loop. */
+	attention_source?: string;
+	thresholds?: Record<string, number>;
+	/** The resolved options: `permulations`, `minTaxa`, `alpha`, `nPermutations`, `maxPermP`, `seed`. */
+	options?: { alpha?: number; seed?: number; permulations?: number; nPermutations?: number; minTaxa?: number; [extra: string]: unknown };
+	elapsed_sec?: number;
+	[extra: string]: unknown;
+}
+
+/** True for a payload that is a finished phenotype record rather than a failure marker or null. */
+export function isPhenotypeRecord(payload: unknown): payload is PhenotypeSection {
+	return Boolean(payload && typeof payload === 'object' && Array.isArray((payload as PhenotypeSection).sites));
+}
+
+/**
+ * The sites the panel calls: `q_value <= alpha` with a POSITIVE association, which is the same
+ * bracket the reference takes into its trait co-selection block (phenotype.py:545). A negative rho
+ * at a small q means the site tracks the BACKGROUND, and the pillar is directional by design.
+ */
+export function phenotypeCalledSites(section: PhenotypeSection, alpha = 0.05): PhenotypeSiteRecord[] {
+	return section.sites.filter((s) => (s.q_value ?? 1) <= alpha && s.association_rho > 0);
+}
 
 export interface ReportSections {
 	sites: SitesSection | null;
@@ -205,7 +325,8 @@ export interface ReportSections {
 	attribution: AttributionSection | null;
 	filter: FilterSection | null;
 	dms: DmsSection | null;
-	phenotype: PhenotypeSection;
+	/** Null until the reader asks for it: the trait is theirs to supply (PLAN.md §4.0 row 8). */
+	phenotype: PhenotypeSection | FailedSection | null;
 }
 
 export function emptySections(): ReportSections {

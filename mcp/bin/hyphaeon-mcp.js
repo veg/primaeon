@@ -10,17 +10,16 @@
  * The shape is datamonkey-js-server lib/mcp/stdio.js. stdout is the transport, so every log line
  * goes to stderr.
  *
- * hyphaeon_analyze (the whole report), hyphaeon_meme, hyphaeon_busted, hyphaeon_epistasis,
- * hyphaeon_dms and hyphaeon_evaluate run in this process (src/engine.js over onnxruntime-node;
- * provenance.surface "mcp-stdio"); ONLY hyphaeon_phenotype runs through the Python reference
- * bridge (src/bridge.js), until its port lands.
+ * EVERY tool runs in this process (src/engine.js over onnxruntime-node; provenance.surface
+ * "mcp-stdio"): hyphaeon_analyze (the whole report), hyphaeon_meme, hyphaeon_busted,
+ * hyphaeon_epistasis, hyphaeon_dms, hyphaeon_phenotype and hyphaeon_evaluate. Since Phase 3
+ * nothing spawns a subprocess — no Python, no WebAssembly tree tool — so the only thing this
+ * process needs on disk is the models directory (PLAN.md 8, phase 3; D16, D22).
  *
  * Environment: HYPHAEON_MODELS_DIR (manifest.json and the graphs; default web/static/models,
- * then the sibling HyphAeon/models), HYPHAEON_VARIANT (default variant, in-process and CLI),
- * HYPHAEON_MCP_THREADS (onnxruntime intra-op threads, default 1), HYPHAEON_PY_BIN (Python CLI
- * for hyphaeon_phenotype; default `hyphaeon` on PATH), HYPHAEON_WEIGHTS, HF_HUB_OFFLINE (passed
- * to the CLI), HYPHAEON_EXAMPLES_DIR, HYPHAEON_GALLERY_DIR, HYPHAEON_MCP_LOG
- * (debug|info|warn|error|silent).
+ * then the sibling HyphAeon/models), HYPHAEON_VARIANT (default model variant),
+ * HYPHAEON_MCP_THREADS (onnxruntime intra-op threads, default 1), HYPHAEON_EXAMPLES_DIR,
+ * HYPHAEON_GALLERY_DIR, HYPHAEON_MCP_LOG (debug|info|warn|error|silent).
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";

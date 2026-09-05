@@ -1,7 +1,8 @@
 /**
  * analyze.worker.ts — every analysis on one dataset, in one Web Worker: manifest, hash-verified
- * ORT sessions (backbone + BUSTED head), the runtime's `runEverything` orchestrator, and one
- * `section` message per finished section (many for the digital DMS as it fills).
+ * ORT sessions (backbone + BUSTED head), the runtime's `runEverything` orchestrator, one
+ * `section` message per finished section (many for the digital DMS as it fills), and — on a
+ * second request kind — the on-demand phenotype run.
  *
  * WHY THIS FILE EXISTS, AND WHY ONE WORKER FOR THE WHOLE ORCHESTRATOR. PLAN.md §4.0 (D21): the
  * user uploads, everything runs, one report streams in. PLAN.md §4.2 allowed two designs for the
@@ -21,9 +22,18 @@
  *     cancel, aborts the one request. A per-phase adapter would re-implement that order in
  *     the app, where the MCP's `hyphaeon_analyze` and the server could not share it.
  *
- *   The tree tools stay in their own worker (tree.worker.ts): HyPhy's Emscripten heap and ORT's
- *   never share one WASM memory, and the page has already fitted branch lengths (or built an NJ
- *   tree) before this worker is asked to run — the same handoff run.ts made for `runMeme`.
+ *   Phase 1 and 2 had a THIRD worker for the tree, because fitting branch lengths meant a second
+ *   WebAssembly engine with its own heap. D22 removed it: a tree with branch lengths is used as
+ *   given, and without one the library takes TN93 distances into the MDS inside
+ *   `loadAlignmentAndTree`. Nothing is prepared before this worker runs any more.
+ *
+ * THE PHENOTYPE REQUEST (Phase 3). The trait belongs to the reader, so the pillar cannot run with
+ * the rest; `kind: 'phenotype'` is a second request on THIS worker rather than a worker of its
+ * own, for the first reason above — it reads the same graph, from the same warm ORT session, over
+ * the same prepared tensors, and a worker of its own would load a second copy of a 7.8 MB model to
+ * answer a question that takes seconds. The runtime's `runPhenotype` (runtime/src/phenotype.js) is
+ * the orchestration, the same contract the MCP's `hyphaeon_phenotype` calls, so the two surfaces
+ * cannot drift; this worker only supplies the session and relays progress.
  *
  * ONE ORCHESTRATOR. Phase 2b's integration removed the interim bridge (runMeme + runBusted posted
  * as the sites/attribution/gene sections with epistasis/filter/dms marked unavailable) once
@@ -38,8 +48,17 @@
 import { runEverything, loadManifest, pickVariant, modelLocation } from '@veg/hyphaeon-runtime';
 import type { Manifest, RuntimeSessionHandle } from '@veg/hyphaeon-runtime';
 import { loadSession, loadBustedHead, isSessionLoaded } from '@veg/hyphaeon-runtime/web';
+import { prepareRun, runPhenotype } from '@veg/hyphaeon-runtime';
 import { serve } from './serve';
-import type { AnalyzeRequest, AnalyzeResponse } from './protocol';
+import {
+	isPhenotypeRequest,
+	type AnalyzeResponse,
+	type AnalyzeWorkerRequest,
+	type AnalyzeWorkerResponse,
+	type PhenotypeRequest,
+	type PhenotypeResponse
+} from './protocol';
+import { traitToPhenotypeOptions } from '$lib/api';
 
 let manifestPromise: Promise<Manifest> | null = null;
 let manifestUrlLoaded: string | null = null;
@@ -61,8 +80,12 @@ function abortError(): Error {
 	return err;
 }
 
-serve<AnalyzeRequest, AnalyzeResponse>(async (req, ctx) => {
-	// --- models ---------------------------------------------------------------------------------
+/** The graph both request kinds need: manifest, variant, verified backbone session, BUSTED head. */
+async function prepareModels(
+	req: AnalyzeWorkerRequest,
+	ctx: { progress: (phase: string, done: number, total: number, message: string) => void; signal: AbortSignal },
+	wantHead: boolean
+) {
 	const manifest = await manifestFor(req.manifestUrl);
 	const variant = pickVariant(manifest, req.options.variant);
 	const modelUrl = modelLocation(req.modelsBase, manifest, variant.name);
@@ -86,7 +109,7 @@ serve<AnalyzeRequest, AnalyzeResponse>(async (req, ctx) => {
 	if (ctx.signal.aborted) throw abortError();
 
 	let head: RuntimeSessionHandle | null = null;
-	if (variant.bustedHeadFile && variant.bustedHeadSha256) {
+	if (wantHead && variant.bustedHeadFile && variant.bustedHeadSha256) {
 		const prefix = req.modelsBase.replace(/\/+$/, '');
 		try {
 			head = await loadBustedHead({
@@ -103,6 +126,12 @@ serve<AnalyzeRequest, AnalyzeResponse>(async (req, ctx) => {
 	}
 	if (ctx.signal.aborted) throw abortError();
 	ctx.progress('prepare', 1, 1, `Model ready (${session.numThreads} thread${session.numThreads === 1 ? '' : 's'})`);
+	return { manifest, variant, session, head, firstLoad };
+}
+
+serve<AnalyzeWorkerRequest, AnalyzeWorkerResponse>(async (req, ctx) => {
+	if (isPhenotypeRequest(req)) return phenotype(req, ctx);
+	const { manifest, variant, session, head, firstLoad } = await prepareModels(req, ctx, true);
 
 	const common = {
 		alignmentText: req.alignmentText,
@@ -127,13 +156,17 @@ serve<AnalyzeRequest, AnalyzeResponse>(async (req, ctx) => {
 		inputs: req.inputs,
 		options: {
 			...req.options,
+			// A HINT only: the library decides inside `loadAlignmentAndTree` whether the tree is
+			// usable and otherwise goes tree-free, and the provenance it writes is authoritative.
+			// (Phase 2 also passed `requireBranchLengths: true` here, which asked the runtime to
+			//  refuse a tree without lengths because the page had fitted them beforehand. D22
+			//  removed both the fit and the refusal.)
 			treeSource: req.treeSource,
-			requireBranchLengths: true,
 			alignmentName: req.inputs.alignmentName,
 			treeName: req.inputs.treeName
 		},
 		onSection: (name, payload, meta) => ctx.section(name, payload, Boolean(meta?.final))
-	})) as AnalyzeResponse['record'];
+	})) as unknown as AnalyzeResponse['record'];
 	return {
 		record,
 		numThreads: session.numThreads,
@@ -142,3 +175,68 @@ serve<AnalyzeRequest, AnalyzeResponse>(async (req, ctx) => {
 		orchestrator: 'runtime'
 	};
 });
+
+/**
+ * One `hyphaeon phenotype` run against the report's own inputs.
+ *
+ * WHY IT PREPARES THE ALIGNMENT AGAIN. `runPhenotypeForReport` (runtime/src/analyze.js) is the
+ * cheap path: it reuses the meme pass's attention off a LIVE record and costs no forward pass. A
+ * record that has been through IndexedDB has lost those handles by design — an [L, N] attention
+ * matrix does not belong in a browser database — and the report page is usually reading exactly
+ * such a record (a reload, a gallery file, another day). So this takes the other path the runtime
+ * documents: `prepareRun` on the same texts with the same options, which reproduces the same
+ * `LoadedAlignment` deterministically, and `runPhenotype` with the session, which runs the
+ * reference's own all-sites attribution loop. That loop is what `hyphaeon phenotype` itself does,
+ * and epistasis.js measures the two attention sources as agreeing on every edge and sector.
+ *
+ * The trait goes to the runtime as the reader's OPTIONS, never as a ready vector: the library
+ * resolves it itself that way and `phenotype_meta.description` comes out identical to the CLI's,
+ * where a bare `y` would produce an empty description (PHASE3A.md, "The two shapes of
+ * runPhenotypeAssociation's trait input are not equivalent, by design").
+ *
+ * Permulations need a tree with branch lengths. The request carries the tree the report used and
+ * the runtime decides; a tree-free report gets `permulations: {reason: 'tree-free', detail}` back
+ * and the panel prints that detail where the gene-level empirical p would have been.
+ */
+async function phenotype(
+	req: PhenotypeRequest,
+	ctx: { progress: (phase: string, done: number, total: number, message: string) => void; section: (name: string, payload: unknown, final: boolean) => void; signal: AbortSignal }
+): Promise<PhenotypeResponse> {
+	const t0 = performance.now();
+	// No BUSTED head: the phenotype pillar reads `lrt` and `mean_root_attns` only.
+	const { session, firstLoad } = await prepareModels(req, ctx, false);
+	const prepared = await prepareRun({
+		alignmentText: req.alignmentText,
+		treeText: req.treeText || null,
+		options: {
+			maxSpecies: req.options.maxSpecies,
+			referenceSequence: req.options.referenceSequence,
+			treeSource: req.treeSource,
+			useTn93: req.treeSource === 'tn93'
+		},
+		progress: ctx.progress,
+		signal: ctx.signal
+	});
+	if (ctx.signal.aborted) throw abortError();
+	const record = (await runPhenotype({
+		prepared,
+		session,
+		phenotype: traitToPhenotypeOptions(req.trait),
+		options: {
+			...req.phenotypeOptions,
+			minTaxa: req.phenotypeOptions.minTaxaPerSite,
+			permutations: req.options.permutations,
+			browser: true
+		},
+		inputs: { alignment: req.inputs?.alignmentName ?? null, tree: req.inputs?.treeName ?? null },
+		progress: ctx.progress,
+		signal: ctx.signal
+	})) as PhenotypeResponse['record'];
+	return {
+		record,
+		numThreads: session.numThreads,
+		crossOriginIsolated: globalThis.crossOriginIsolated === true,
+		firstLoad,
+		elapsedMs: Math.round(performance.now() - t0)
+	};
+}

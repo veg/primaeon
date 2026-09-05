@@ -6,7 +6,7 @@
 	everything. Defaults come from diagnostics." Plus the two Phase 2 knobs: permutations B (the
 	sector null; the CLI's 1,000 vs the 10,000 the parity class wants) and the DMS switch with its
 	work budget. Submitting starts a NEW report on the same inputs (the record keeps the alignment
-	and the tree the model was given, lengths included, so HyPhy is not run again) and navigates to
+	and the tree the model was given, lengths included, or nothing at all when the run was tree-free) and navigates to
 	it; the original report is untouched. A record without input texts (a Phase 1 run, a gallery
 	record, a server job) cannot be re-run here and the disclosure says so.
 -->

@@ -15,23 +15,29 @@ record: `PLAN.md` (draft v5).
   tree anyway, and the root lockfile (`package-lock.json`) is the only lockfile; per-workspace
   lockfiles were removed at Phase 0 integration and must not come back.
 - `npm test` — `vitest run` in every workspace with a test script (`npm -ws run test --if-present`).
-  The MCP's two bridge tests shell to the Python CLI: export `HYPHAEON_PY_BIN=<venv>/bin/hyphaeon`
-  (plus the weights variables below) or `HYPHAEON_MCP_SKIP_BRIDGE=1`.
-- `cd runtime && npx vitest run` — the runtime suite alone; `test/pipeline.test.js` and
-  `test/parity-fixtures.test.js` score the examples through the real general graph under
-  onnxruntime-node, `test/hyphy*.test.js` run HyPhy WASM under Node and in headless Chromium (~8 s).
-- `npm run build` — `web/` static build (adapter-static). Its `prebuild` copies the ORT WASM, the
-  graphs + `manifest.json` and HyPhy WASM into `web/static/` and then prebakes the gallery
-  (`web/scripts/prebake-gallery.mjs`, stamp-cached; `HYPHAEON_PREBAKE=skip` on a machine without
-  `onnxruntime-node` keeps the committed records).
+  Nothing shells out any more (the Python bridge is deleted, Phase 3): the MCP and server suites
+  need only `HYPHAEON_MODELS_DIR=../HyphAeon/models`.
+- `cd runtime && npx vitest run` — the runtime suite alone; `test/pipeline.test.js`,
+  `test/parity-fixtures.test.js`, `test/tree-free.test.js` and `test/phenotype.test.js` score the
+  examples through the real general graph under onnxruntime-node (~45 s), and
+  `test/no-hyphy.test.js` asserts HyPhy stayed removed.
+- `npm run build` — `web/` static build (adapter-static). Its `prebuild` copies the ORT WASM and
+  the graphs + `manifest.json` into `web/static/`, writes `web/static/_headers`, and then prebakes
+  the gallery (`web/scripts/prebake-gallery.mjs`, stamp-cached; `HYPHAEON_PREBAKE=skip` on a
+  machine without `onnxruntime-node` keeps the committed records, `=force` rebakes all five in
+  about 3 min).
 - `npm run e2e` — Playwright from `e2e/` (`npm -w e2e run e2e`; the built site under `vite preview`
   on port 4173, so run `npm run build` first). `e2e/` is a workspace so `@playwright/test` is
   installed once at the root; its script is named `e2e`, not `test`, so `npm test` never starts a
   browser. Do not rebuild `web/build` while the suite runs; the preview serves it live.
-- Parity: `node runtime/scripts/parity-node.mjs --examples all --busted-examples all` writes the
-  `node` surface into `../HyphAeon/parity/node/`, the e2e writes bat_oas1's browser run into
-  `parity/browser/` and `parity/web/`, then `cd ../HyphAeon && python scripts/parity.py --examples
-  all --surfaces python,node,web` compares (`browser` is not a surface name it knows).
+- Parity: `node runtime/scripts/parity-node.mjs --examples all --analyses
+  meme,busted,epistasis,dms,phenotype --busted-examples all` writes the `node` surface into
+  `../HyphAeon/parity/node/` — and a tree-free run (camelid, HIV1_RT under D22) into
+  `parity/node-tn93/`, whose reference is `fixtures/e2e/*_tn93.json`, not `parity/python/`. The e2e
+  writes the browser runs into `parity/browser/` and `parity/web/`. Then `cd ../HyphAeon && python
+  scripts/parity.py --examples all --surfaces python,node,web` compares (`browser` is not a surface
+  name it knows, and neither is `node-tn93`; PHASE3.md's table evaluates those files at PLAN §5.4's
+  classes with a scratch comparator).
 - `node mcp/bin/hyphaeon-mcp.js` — the stdio MCP server; `HYPHAEON_MODELS_DIR` defaults to
   `web/static/models` of the checkout (so build once), `HYPHAEON_MCP_THREADS` to 1.
 - Server (`server/`, PLAN.md §3.5 + the MCP over HTTP behind OAuth at `/mcp`):
@@ -45,10 +51,9 @@ record: `PLAN.md` (draft v5).
   `curl -s localhost:7040/api/v1/health`, then `POST /api/v1/jobs {"analysis":"analyze","alignment":…}`
   → `GET /api/v1/jobs/<id>/events` (SSE) → `GET /api/v1/jobs/<id>/result`. `deploy/README.md` is the
   runbook (Apache vhost, pm2, Docker, `rsync-web.sh`).
-- Parity, Phase 2: `node runtime/scripts/parity-node.mjs --examples all --analyses
-  meme,busted,epistasis,dms --busted-examples all --dms-examples Smc6` also writes the epistasis
-  (B = 10,000, `parity.py`'s default) and Smc6 DMS files; the e2e writes bat_oas1's meme and
-  Smc6's epistasis (B = 1,000) browser files.
+- Parity, Phase 2–3: the same runner writes the epistasis (B = 10,000, `parity.py`'s default), the
+  Smc6 DMS and RHO's phenotype files; the e2e writes bat_oas1's meme, Smc6's epistasis (B = 1,000),
+  camelid's tree-free meme and RHO's phenotype browser files.
 
 Python reference, for parity runs (never at product runtime): a venv with `hyphaeon` installed
 editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_HUB_OFFLINE=1`.
@@ -81,8 +86,9 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   adapter emits `analyze/index.html`, which Apache serves at `/analyze/`; with `paths.base`
   parameterised every in-app URL goes through `$app/paths.base`, so the same build works at `/`
   in dev and under the prefix in production. Same pattern as `datamonkey-metrics`.
-- **No CDNs, anywhere.** ORT's WASM, the ONNX graphs, HyPhy WASM, tn93, fonts: all vendored at
-  build time from npm or from the library package, served from this origin. `session-web.js` sets
+- **No CDNs, anywhere.** ORT's WASM, the ONNX graphs, fonts: all vendored at
+  build time from npm or from the library package, served from this origin. (TN93 distances are
+  pure JavaScript in `@veg/hyphaeon-js`; nothing else fetches a binary.) `session-web.js` sets
   `ort.env.wasm.wasmPaths` to the vendored path and imports `onnxruntime-web/wasm` (the CPU-only
   entry), never the default entry (which reaches for the 26.8 MB WebGPU binary and then a CDN).
   A CDN dependency is a delivery bug, not a convenience; the e2e asserts every origin.
@@ -127,17 +133,22 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   it from the memo (releasing a handle alone hands the next caller a "Session already disposed"
   session); `mcp` `engine.close()` calls it and the bin sets `process.exitCode` afterwards instead
   of `process.exit(0)`.
-- **HyPhy WASM is vendored in `runtime/vendor/hyphy/<version>/`** (DM3's 2.5.98 build, 6.4 MB,
-  hashes in `PROVENANCE.md`) so the repository builds and tests without a DM3 checkout;
-  `copy-assets.mjs` copies it to `web/static/wasm/hyphy/` and `runtime/src/hyphy` reads it under
-  Node. The build is `ENVIRONMENT=web,worker`; the Node loader evaluates the glue with a shimmed
-  `self`/`postMessage` (see `runtime/src/hyphy/index.js`), and in a module worker the glue is
-  loaded by fetch + `new Function`, which needs `'unsafe-eval'` in the CSP (DM3's `_headers` grant it).
-- **The gallery records and inputs under `web/static/gallery/` are tracked** (7.8 MB since Phase 2:
-  6.4 MB of full `ReportRecord`s + 1.4 MB inputs): they are the prebaked demos and let a machine
+- **There is no tree tool and no HyPhy (D22, Phase 3).** A tree with usable branch lengths is used
+  as given; no tree, or a tree without them, takes the library's tree-free path — pairwise TN93
+  distances straight into the MDS, the reference's own `--use-tn93` — and `runtime/src/nj.js`
+  builds a neighbour-joining tree on those same distances for DISPLAY ONLY (site trees, foreground
+  picking); the model never sees a topology in that case. `runtime/src/hyphy/`,
+  `runtime/vendor/hyphy/` (a 6.4 MB tracked WebAssembly build), the `./hyphy` export and
+  `web/static/wasm/` are deleted, `runtime/test/no-hyphy.test.js` and `e2e/smoke.spec.ts` keep them
+  deleted, and the bare `'unsafe-eval'` its glue needed in a module worker is out of both
+  `web/static/_headers` (now written by `copy-assets.mjs` rather than copied from DM3) and
+  `deploy/apache-hyphaeon.conf`.
+- **The gallery records and inputs under `web/static/gallery/` are tracked** (7.9 MB at Phase 3:
+  6.5 MB of full `ReportRecord`s + 1.4 MB inputs): they are the prebaked demos and let a machine
   without `onnxruntime-node` build with `HYPHAEON_PREBAKE=skip`. The prebake is stamp-cached on
-  inputs, graph hash, options, library version and runtime sources, so a no-change build costs
-  ~0.4 s and a runtime change rebakes everything (~6–10 min: the DMS on all five examples).
+  inputs, graph hash, options, library version, runtime sources and the script's own version, so a
+  no-change build costs ~0.4 s and a runtime change rebakes everything (3 min at 8 threads: DMS
+  bat_oas1 3.1 s, Smc6 9.6 s, camelid 19.2 s, HIV1_RT 70.0 s, RHO 71.6 s).
 
 ## Working rules
 
@@ -332,3 +343,51 @@ Carried to Phase 3: the phenotype port and the last bridge, TN93 tree-free + JS 
 WASM (D22), the over-budget DMS → server handoff, `parity.py`'s conventions and a `dms` comparator,
 one caveats file, CI, npm publish, deployment (nothing is deployed; `deploy/` has placeholders).
 
+
+### 2026-09-05 — Phase 3: tree-free by default, phenotype in the browser, no Python and no HyPhy
+
+Three builders' output (runtime tree-free + phenotype, web phenotype UI, MCP/server bridge removal)
+plus the rewritten e2e suite integrated; every check in `PHASE3.md` passes, and the parity table
+there is the one to read. Headlines:
+
+- **D22 is the tree policy.** A tree with usable branch lengths is used as it is; no tree, or a tree
+  without them, takes the library's tree-free path — pairwise TN93 distances straight into the MDS,
+  the reference's own `--use-tn93` — and every record says which happened and why (`tree_source:
+  'user' | 'embedded' | 'tn93'`, `tree_free {reason}`, `tn93_saturated_pairs`). `runtime/src/nj.js`
+  (new, app-side, not a mirror of any Python) builds a neighbour-joining tree on the same distances
+  for DISPLAY ONLY — site trees and foreground picking — and the model never sees it. **HyPhy is
+  gone**: `runtime/src/hyphy/`, `runtime/vendor/hyphy/` (6.4 MB tracked), the `./hyphy` export, the
+  browser's tree worker, the copy-assets step and `web/static/wasm/` are deleted, and
+  `runtime/test/no-hyphy.test.js` + `e2e/smoke.spec.ts` keep them deleted.
+- **The Phase 1–2 parity gap is closed, as D22 predicted.** camelid and HIV1_RT reproduce
+  `hyphaeon meme --use-tn93` at PLAN §5.4's strict graph class on node (0/96 and 0/335 sites beyond
+  it) and in the browser (0/96), where Phase 2 had 44/96 and 149/335 through HyPhy WASM 2.5.98
+  against the fixtures' native 2.5.65. Both sides now compute the same TN93 matrix.
+- **Phenotype runs in the browser.** `runtime/src/phenotype.js` runs the pillar over the meme pass's
+  own attention; the report's Phenotype section takes a trait four ways (matching preset, tips on
+  the tree, pasted list or pattern, trait table) and draws the association plot, PARS, trait sectors
+  and the gene card; permulations are offered only when the run has a real tree and are otherwise
+  skipped with the reason. RHO marine reproduces the reference document key for key (145 sites in
+  order, worst site residual 2.2e-5 on `hyphaeon_lrt`, everything else ≤ 7e-7).
+- **No Python anywhere.** `mcp/src/bridge.js` is deleted with `HYPHAEON_PY_BIN` and
+  `BRIDGED_ANALYSES`; `mcp/` 0.4.0 runs all seven analyses in-process and every per-pillar tool now
+  accepts an alignment with no tree; the server gained a `phenotype` analysis and `phenotype_file`
+  input. `e2e/server.spec.ts` starts the server with an empty PATH and scans the sources for any
+  subprocess route.
+- **Suites**: runtime 22 files / 294 tests, web 11 / 79, mcp 10 / 113, server 5 / 57,
+  `svelte-check` 571 files 0 errors, Playwright 60/60 in 29 s.
+
+Seam fixes at integration (details in `PHASE3.md`): the MCP classified the runtime's new TN93
+refusal as a server fault rather than an input one; `web/static/_headers` was still DataMonkey's
+copied file, granting unpkg.com and the `'unsafe-eval'` only the HyPhy glue needed, and is now
+authored by `copy-assets.mjs` to match the Apache CSP; the diagnostics panel promised to draw a
+supplied topology that `displayTreeFor` replaces with the NJ tree; `/mcp` still advertised the
+Python bridge and 0.2.0, so the tool table was corrected and the transcript re-recorded against
+0.4.0 with a phenotype turn; the `static/wasm` ignore rules and the gallery's permissive
+`BranchLengthMethod` escape hatch were removed.
+
+Carried to Phase 4 (`PHASE3.md`'s gaps): `parity.py` has no `node-tn93` surface, no `phenotype` and
+no `dms` comparator, and still prints FAIL on its 1e-6 absolute tolerance and the unseeded BUSTED
+head fields; the browser's phenotype run cannot be compared element-wise with the RHO fixture while
+the app caps at 256 taxa and the fixture used 655; the over-budget DMS → server handoff; one
+caveats file; permulation cost in the browser; CI, npm publish and deployment.

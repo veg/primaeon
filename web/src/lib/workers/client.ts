@@ -2,11 +2,12 @@
  * client.ts — the main-thread side of a worker conversation: one call, progress callbacks, a
  * promise for the result, cancel through an AbortSignal.
  *
- * WHY THIS FILE EXISTS. Three workers share one envelope (protocol.ts); this is the one place
- * that turns `postMessage` traffic into a typed `call()`. The worker is created lazily on the
- * first call and kept for later ones, because the inference worker memoises its ORT session and
- * the tree worker its HyPhy module: terminating after every run would re-download nothing (the
- * browser caches) but would re-instantiate ~20 MB of WASM each time.
+ * WHY THIS FILE EXISTS. The workers share one envelope (protocol.ts); this is the one place that
+ * turns `postMessage` traffic into a typed `call()`. The worker is created lazily on the first
+ * call and kept for later ones, because the analyze worker memoises its ORT session and the
+ * verified graph: terminating after every run would re-download nothing (the browser caches) but
+ * would re-instantiate ~20 MB of WASM each time — and the on-demand phenotype run is a second
+ * call on that same warm worker.
  *
  * CANCEL IS COOPERATIVE FIRST, DESTRUCTIVE SECOND. An aborted call posts `cancel`; the worker
  * aborts its own AbortController, which `runMeme` checks between batches and the diagnostics
@@ -70,12 +71,17 @@ export class WorkerClient<Req, Res> {
 		return this.worker !== null;
 	}
 
-	call(payload: Req, options: CallOptions = {}): Promise<Res> {
+	/**
+	 * One request, one answer. `R` narrows the result for a worker that accepts more than one
+	 * request kind (the analyze worker: an `analyze` request answers with an AnalyzeResponse, a
+	 * `phenotype` one with a PhenotypeResponse), so the caller does not cast at every call site.
+	 */
+	call<R extends Res = Res>(payload: Req, options: CallOptions = {}): Promise<R> {
 		const { signal, onProgress, onSection, terminateAfterMs = TERMINATE_AFTER_MS } = options;
 		if (signal?.aborted) return Promise.reject(abortError());
 		const worker = this.ensureWorker();
 		const id = this.nextId++;
-		return new Promise<Res>((resolve, reject) => {
+		return new Promise<R>((resolve, reject) => {
 			let terminateTimer: ReturnType<typeof setTimeout> | null = null;
 			const onAbort = () => {
 				try {

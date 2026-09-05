@@ -6,7 +6,11 @@
  * The SDK's InMemoryTransport links a Client to a McpServer without a process boundary, so every
  * tool, prompt and resource is exercised through the real protocol (schema validation included)
  * without spawning the bin. Example inputs come from the sibling HyphAeon checkout (or
- * HYPHAEON_EXAMPLES_DIR), the same files the Python tests and the parity harness use.
+ * HYPHAEON_EXAMPLES_DIR), the same files the reference implementation's tests and the parity
+ * harness use, so a fixture and a tool call are always about the same bytes.
+ *
+ * Nothing in this suite starts a subprocess: since Phase 3 every pillar, phenotype included,
+ * runs in the test process through src/engine.js over onnxruntime-node.
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

@@ -3,47 +3,51 @@
  *
  * WHY THIS FILE EXISTS
  *
- * The server accepts six `analysis` values (PLAN.md 3.5: `analyze`, the product's one action that
- * runs everything, and the per-pillar `meme`, `busted`, `epistasis`, `dms`, `evaluate`) and has
- * two engines to run them with:
+ * The server accepts seven `analysis` values (PLAN.md 3.5: `analyze`, the product's one action
+ * that runs everything, and the per-pillar `meme`, `busted`, `epistasis`, `dms`, `phenotype`,
+ * `evaluate`) and has two entry points to run them with:
  *
  *   - `@veg/hyphaeon-mcp/engine` (mcp/src/engine.js): the in-process engine the MCP already
- *     built for its native pillars. It memoises one ONNX session per variant, maps the CLI-shaped
- *     options, fits branch lengths with the runtime's HyPhy WASM driver, writes the document
- *     `hyphaeon <cmd> -o` writes and stamps a PLAN.md 3.5 provenance block. The server runs the
- *     per-pillar analyses through it so `POST /api/v1/jobs {analysis:"meme"}` and the MCP tool
- *     `hyphaeon_meme` are the same code and the same bytes, only `provenance.surface` differs
+ *     built. It memoises one ONNX session per variant, maps the CLI-shaped options, writes the
+ *     document `hyphaeon <cmd> -o` writes and stamps a PLAN.md 3.5 provenance block. The server
+ *     runs the per-pillar analyses through it so `POST /api/v1/jobs {analysis:"meme"}` and the MCP
+ *     tool `hyphaeon_meme` are the same code and the same bytes, only `provenance.surface` differs
  *     ("node-server" here).
  *   - `runEverything` from `@veg/hyphaeon-runtime` (runtime/src/analyze.js, the orchestrator
  *     contract of this phase): diagnostics -> sites -> gene -> epistasis + sectors -> attribution
  *     -> filter -> DMS, streaming sections through `onSection`, returning the ReportRecord the
- *     report page renders (PLAN.md 4.0, D21). `analyze` jobs run through it.
+ *     report page renders (PLAN.md 4.0, D21). `analyze` jobs run through it, and the engine fills
+ *     `sections.phenotype` from the same pass when the request carried a trait.
  *
- * Two seams are documented as app-side rather than reference behaviour:
+ * NO TREE IS REQUIRED, AND NOTHING IS ESTIMATED (PLAN.md D22). A tree with branch lengths is used
+ * as it is; a job with no tree, with a tree that has no usable branch lengths, or with
+ * `options.use_tn93` takes the library's pairwise TN93 distances instead. This server therefore
+ * has no branch-length estimator and no tree inference of its own, and
+ * `provenance.preprocessing.tree_source` ('user' | 'embedded' | 'tn93') records which path ran.
  *
- *   1. While the runtime does not export `runEverything` (the runtime agent lands it in this
- *      phase), `analyze` degrades to `composeReportFallback`: the same ReportRecord shape with
- *      `sites` and `gene` computed through the engine and the other sections `null`, each absence
- *      recorded as a `SECTION_UNAVAILABLE` warning in the provenance. The report page shows the
- *      sections it has; nothing is invented.
- *   2. A per-pillar `epistasis` or `dms` request is served by the engine when the MCP has ported
- *      it (`NATIVE_ANALYSES`), otherwise by running `runEverything` and returning that section
- *      alone, with the whole run's provenance. The server never shells to Python
- *      (PLAN.md 3.6's bridge belongs to the stdio MCP on the user's machine).
+ * NOTHING SPAWNS A PROCESS. Every pillar, phenotype included, is JavaScript in this worker thread
+ * over onnxruntime-node (PLAN.md 8, phase 3's exit criterion). A deployment needs the model files
+ * and Node, and nothing else.
  *
- * Errors are classified into the two classes the MCP established (mcp/src/bridge.js,
- * engine.js `classifyEngineError`): `kind: "input"` (the alignment has a problem; the job fails
- * with a hint) and `kind: "server"` (the model or the process is broken). `EngineError`
- * instances pass through; anything else is a server error.
+ * One seam is documented as app-side rather than reference behaviour: while the runtime does not
+ * export `runEverything`, `analyze` degrades to `composeReportFallback` — the same ReportRecord
+ * shape with `sites` and `gene` computed through the engine and the other sections `null`, each
+ * absence recorded as a `SECTION_UNAVAILABLE` warning in the provenance. The report page shows the
+ * sections it has; nothing is invented.
+ *
+ * Errors are classified into the two classes the MCP established (engine.js
+ * `classifyEngineError`): `kind: "input"` (the alignment has a problem; the job fails with a hint)
+ * and `kind: "server"` (the model or the process is broken). `EngineError` instances pass through;
+ * anything else is a server error.
  */
 
-import { createEngine, EngineError, fastaFromAlignment, newickTextFrom, stripBranchLengths, NATIVE_ANALYSES } from "@veg/hyphaeon-mcp/engine";
+import { createEngine, EngineError, NATIVE_ANALYSES, mapOptions, runPhenotypeSection, stampTreeSource } from "@veg/hyphaeon-mcp/engine";
 
 export const SURFACE = "node-server";
 /** Surfaces a task may claim (PLAN.md 3.5); anything else is recorded as the server's own. */
 const TASK_SURFACES = new Set(["node-server", "mcp-http"]);
 const surfaceOf = (task) => (task && TASK_SURFACES.has(task.surface) ? task.surface : SURFACE);
-export const ANALYSES = Object.freeze(["analyze", "meme", "busted", "epistasis", "dms", "evaluate"]);
+export const ANALYSES = Object.freeze(["analyze", "meme", "busted", "epistasis", "dms", "phenotype", "evaluate"]);
 export const REPORT_SECTIONS = Object.freeze(["sites", "gene", "epistasis", "attribution", "filter", "dms", "phenotype"]);
 export const REPORT_SCHEMA_VERSION = 2;
 
@@ -53,8 +57,37 @@ const ANALYZE_OPTION_ALIASES = {
   max_species: "maxSpecies",
   reference_sequence: "referenceSequence",
   call_mode: "callMode",
-  n_permutations: "permutations"
+  n_permutations: "permutations",
+  use_tn93: "useTn93",
+  no_tree: "useTn93"
 };
+
+/**
+ * The report's `phenotype` block, as `POST /api/v1/jobs` accepts it (`options.phenotype`, plus the
+ * table's text as the job input `phenotype_file`), turned into the trait and option objects the
+ * runtime's `runPhenotype` takes. Null when the request carried no trait, which is the normal case:
+ * a trait cannot be guessed (PLAN.md 4.0 row 8).
+ *
+ * @param {object} task the job task
+ * @param {object} options the normalised analyze options
+ */
+export function phenotypeRequestFor(task, options = {}) {
+  const block = options.phenotype && typeof options.phenotype === "object" ? options.phenotype : {};
+  const csv = typeof task.phenotype_file === "string" && task.phenotype_file.trim() ? task.phenotype_file : null;
+  if (!block.preset && !block.foreground && !csv) return null;
+  const cli = {};
+  for (const k of ["preset", "foreground", "background", "trait_col", "species_col", "continuous", "permulations", "n_permutations", "alpha", "min_taxa", "max_perm_p", "seed"]) {
+    if (block[k] !== undefined && block[k] !== null) cli[k] = block[k];
+  }
+  if (csv) {
+    cli.phenotype_file = csv;
+    cli.phenotype_file_name = (task.names && task.names.phenotype_file) || block.phenotype_file_name || "phenotype.csv";
+  }
+  // The report's own seed and B are the section's defaults, so one report has one null.
+  if (cli.seed === undefined && options.seed !== undefined) cli.seed = options.seed;
+  if (cli.n_permutations === undefined && options.permutations !== undefined) cli.n_permutations = options.permutations;
+  return mapOptions("phenotype", cli).runtime;
+}
 
 /**
  * Normalise `analyze` options: camelCase per the orchestrator contract, CLI snake_case accepted.
@@ -99,18 +132,6 @@ export function createRunner(opts) {
     return runtimePromise;
   }
 
-  /** `options.estimateTree` for runEverything, through the engine's HyPhy WASM driver. */
-  async function estimateTree(alignmentText, treeText, progress) {
-    const hy = await engine.hyphy();
-    if (!hy) throw new EngineError("server", "The HyPhy WASM driver is not available in this runtime.");
-    const newick = treeText ? newickTextFrom(treeText) : newickTextFrom(alignmentText);
-    if (!newick) throw new EngineError("input", "No tree topology could be read for branch-length estimation.");
-    const r = await hy.estimateBranchLengths(fastaFromAlignment(alignmentText), stripBranchLengths(newick), {
-      progress: (phase, done, total, message) => progress && progress("prepare", 1, 2, "HyPhy HKY85: " + message)
-    });
-    return { treeText: r.result, source: "hyphy-hky85" };
-  }
-
   /**
    * Run everything (PLAN.md 4.0) and return the ReportRecord.
    */
@@ -124,15 +145,11 @@ export function createRunner(opts) {
       treeName: task.tree ? (task.names && task.names.tree) || "tree.nwk" : null
     };
     if (task.names && task.names.demo) inputs.demo = task.names.demo;
-    const caps = await engine.capabilities();
     const common = {
       alignmentText: task.alignment,
       treeText: task.tree || null,
       inputs,
-      options: Object.assign({}, options, {
-        variant,
-        estimateTree: caps.hyphy ? (a, t) => estimateTree(a, t, hooks.progress) : undefined
-      }),
+      options: Object.assign({}, options, { variant }),
       session: handle.backbone,
       head: handle.head || (typeof handle.loadHead === "function" ? await handle.loadHead().catch(() => null) : null),
       surface: surfaceOf(task),
@@ -142,6 +159,26 @@ export function createRunner(opts) {
     };
     if (typeof rt.runEverything === "function") {
       const report = await rt.runEverything(common);
+      // The phenotype section, when the request carried a trait: the SAME helper the MCP's
+      // hyphaeon_analyze uses, over the pass the report already ran (no second forward pass).
+      const phenoOptions = phenotypeRequestFor(task, options);
+      if (phenoOptions) {
+        const filled = await runPhenotypeSection(rt, report, {
+          trait: phenoOptions.phenotype,
+          options: phenoOptions,
+          session: handle.backbone,
+          inputs: { alignment: inputs.alignmentName, tree: inputs.treeName },
+          progress: hooks.progress,
+          signal: hooks.signal
+        });
+        report.sections.phenotype = filled.section;
+        report.provenance = Object.assign({}, report.provenance, { phenotype_source: filled.source });
+        hooks.onSection("phenotype", filled.section, { final: true });
+      }
+      stampTreeSource(report.provenance, (report.sections && report.sections.sites && report.sections.sites.loaded) || null, {
+        treeGiven: Boolean(task.tree && task.tree.trim()),
+        alignmentText: task.alignment
+      });
       return rt.jsonSafe ? rt.jsonSafe(report) : report;
     }
     logger.warn("runtime has no runEverything yet; composing the report from runMeme + runBusted");
@@ -202,7 +239,7 @@ export function createRunner(opts) {
       kind: "report",
       createdAt: new Date().toISOString(),
       inputs: common.inputs,
-      options: Object.assign({}, options, { estimateTree: undefined }),
+      options: Object.assign({}, options),
       diagnostics: { warnings: meme.provenance.warnings || [], preprocessing: meme.provenance.preprocessing || null },
       sections,
       provenance,
@@ -219,12 +256,20 @@ export function createRunner(opts) {
    */
   async function pillar(task, hooks) {
     const analysis = task.analysis;
+    // The REST API nests the trait under `options.phenotype` (so one `analyze` request can carry
+    // it beside the report's own settings); the engine takes the CLI's flat names, as the MCP
+    // tool does. Both spellings are accepted here, the flat one winning.
+    if (analysis === "phenotype" && task.options && task.options.phenotype && typeof task.options.phenotype === "object") {
+      const { phenotype, ...rest } = task.options;
+      task = Object.assign({}, task, { options: Object.assign({}, phenotype, rest) });
+    }
     const request = {
       analysis,
       alignment: task.alignment,
       tree: task.tree || undefined,
       prediction: task.prediction,
       meme_result: task.meme_result,
+      phenotype_file: task.phenotype_file,
       options: Object.assign({}, task.options || {}),
       names: Object.assign({}, task.names || {}),
       surface: surfaceOf(task),
@@ -232,28 +277,14 @@ export function createRunner(opts) {
       progress: hooks.progress
     };
     if (task.seed !== undefined && request.options.seed === undefined) request.options.seed = task.seed;
-    if (NATIVE_ANALYSES.includes(analysis)) {
-      const out = await engine.run(request);
-      return Object.assign({ analysis }, out.result, { provenance: Object.assign({}, out.provenance, { surface: surfaceOf(task) }) });
-    }
-    // Not ported into the engine yet: take the section out of the full run (header, seam 2).
-    const rt = await runtime();
-    if (typeof rt.runEverything !== "function") {
-      throw new EngineError("server", "Analysis '" + analysis + "' is not served in-process by this server build.", {
-        hint: "Run `analyze` (the whole report) once the runtime orchestrator lands, or use the stdio MCP's Python bridge on your own machine.",
+    if (!NATIVE_ANALYSES.includes(analysis)) {
+      throw new EngineError("input", "Analysis '" + analysis + "' is not one this server runs.", {
+        hint: "One of " + ANALYSES.join(", ") + ".",
         code: "ANALYSIS_UNAVAILABLE"
       });
     }
-    const wanted = analysis;
-    const report = await analyze(
-      Object.assign({}, task, { options: Object.assign({}, task.options || {}, { dms: { enabled: wanted === "dms" } }) }),
-      Object.assign({}, hooks, { onSection: (name, payload, meta) => name === wanted && hooks.onSection(name, payload, meta) })
-    );
-    const section = report.sections ? report.sections[wanted] : null;
-    if (!section) {
-      throw new EngineError("server", "The run finished without a `" + wanted + "` section.", { code: "SECTION_MISSING" });
-    }
-    return Object.assign({ analysis }, section, { provenance: report.provenance });
+    const out = await engine.run(request);
+    return Object.assign({ analysis }, out.result, { provenance: Object.assign({}, out.provenance, { surface: surfaceOf(task) }) });
   }
 
   return {
