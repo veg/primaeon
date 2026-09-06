@@ -27,6 +27,12 @@
 	score_track_b), which puts a p_evd of 1e-10 on the same 0..1 scale as a ratio of 1; it is a
 	convenience of the reference's ranking, not a test, so it sits with its two tracks under the
 	numbers that have definitions.
+
+	SETTING (DESIGN.md §3 "Phenotype plot and panel"). The verdict is a sentence at heading size,
+	not a tinted band: the three tones are kept as class hooks and carry no colour, because a
+	verdict is a fact, not an alarm. The numbers sit in a `dl.stats` bounded by two hairlines; the
+	first `dd.num` is p_EVD, printed as the engine prints it (`toExponential` below 1e-4) because
+	the e2e reads it back.
 -->
 <script lang="ts">
 	import type { PhenotypeSection } from '$lib/report/types';
@@ -157,81 +163,86 @@
 		gap: var(--space-4);
 	}
 	.verdict {
-		border-left: 4px solid var(--border-strong);
-		padding: var(--space-2) var(--space-4);
-		background: var(--bg-subtle);
-		border-radius: 0 var(--radius) var(--radius) 0;
-	}
-	.verdict--strong {
-		border-color: var(--tier-strong);
-		background: var(--danger-soft);
-	}
-	.verdict--warn {
-		border-color: var(--warn);
-		background: var(--warn-soft);
+		max-width: var(--measure);
 	}
 	.verdict__label {
 		margin: 0;
-		font-family: var(--font-display);
 		font-size: var(--text-lg);
+		font-weight: 700;
+		line-height: var(--leading-tight);
+		color: var(--text);
 	}
 	.verdict__text {
-		margin: 0.15rem 0 0;
-		font-size: var(--text-sm);
+		margin: var(--space-2) 0 0;
+		font-size: var(--text-base);
+		line-height: var(--leading-normal);
 		color: var(--text-muted);
 	}
 	.stats {
 		margin: 0;
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-		gap: var(--space-3);
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: var(--space-3) var(--space-5);
+		padding: var(--space-3) 0;
+		border-top: 1px solid var(--hair);
+		border-bottom: 1px solid var(--hair);
+	}
+	@media (max-width: 640px) {
+		.stats {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 	.stats div {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-3);
 		display: flex;
 		flex-direction: column;
+		min-width: 0;
 	}
-	.stats div.muted {
-		border-style: dashed;
-		color: var(--text-muted);
+	.stats div.muted .num {
+		color: var(--text-faint);
 	}
 	dt {
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
+		font-size: var(--text-sm);
+		line-height: var(--leading-normal);
 		color: var(--text-muted);
 	}
 	dd {
 		margin: 0;
 	}
 	.num {
-		font-family: var(--font-mono);
-		font-size: var(--text-lg);
+		text-align: left;
+		font-size: var(--text-base);
+		font-weight: 700;
+		line-height: var(--leading-normal);
 		font-variant-numeric: tabular-nums;
+		color: var(--text);
 	}
 	.sub {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
+		line-height: var(--leading-normal);
 		color: var(--text-faint);
 	}
 	.note {
 		margin: 0;
-		font-size: var(--text-sm);
+		max-width: var(--measure);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
 		color: var(--text-muted);
-		border-left: 2px solid var(--border-strong);
-		padding-left: var(--space-3);
 	}
 	.tracks {
-		border: 1px dashed var(--border-strong);
-		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-3);
-		font-size: var(--text-sm);
+		max-width: var(--measure);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
 	}
 	.tracks summary {
 		cursor: pointer;
-		font-weight: 600;
+		color: var(--text-muted);
+	}
+	.tracks summary::marker {
+		color: var(--text-faint);
+	}
+	.tracks summary:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
 	}
 	.hint {
 		margin: var(--space-2) 0 0;
@@ -239,6 +250,7 @@
 	}
 	.mono {
 		font-family: var(--font-mono);
+		font-size: var(--text-sm);
 		font-variant-numeric: tabular-nums;
 	}
 </style>

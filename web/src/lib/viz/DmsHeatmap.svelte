@@ -12,8 +12,16 @@
 	not flatten the picture; the wild-type cell is hatched. Hover reports site, residue, Δ; a click
 	hands the site to the parent for the 19-delta detail. Rows are the 20 standard residues in the
 	reference's REV_AA_MAP order (alphabetical one-letter codes).
+
+	COLOUR (DESIGN.md §3 "DMS heatmap and legend"). The ramp is built from tokens the site already
+	has: --dms-positive (the brand purple) for ΔLRT > 0 through --dms-zero (the page ground) to
+	--dms-negative (the muted grey) for ΔLRT < 0. Purple and grey differ in chroma, not only in
+	lightness, so sign survives at a glance; the tooltip and the per-site table print the signed
+	number, so sign is never carried by colour alone. Every colour is read from the stylesheet at
+	draw time and the canvas redraws when the scheme changes.
 -->
 <script lang="ts">
+	import { interpolateRgb } from 'd3';
 	import type { DmsSiteRecord } from '$lib/report/types';
 	import { token } from './theme';
 
@@ -27,15 +35,18 @@
 	let { plasticity, L, selected = null, onSelect }: Props = $props();
 
 	const AAS = ['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y'];
-	const ROW_H = 11;
+	const ROW_H = 12;
 	const TRACK_H = 44;
 	const GAP = 8;
 	const LEFT = 26;
+	const AXIS_H = 20;
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	let wrap = $state<HTMLDivElement | null>(null);
 	let width = $state(800);
 	let hover = $state<{ x: number; y: number; text: string } | null>(null);
+	/** Bumped when the colour scheme changes so the draw effect re-reads its tokens. */
+	let scheme = $state(0);
 
 	const bySite = $derived(new Map(plasticity.map((p) => [p.site, p])));
 	const limit = $derived.by(() => {
@@ -47,19 +58,22 @@
 		return q > 0 ? q : abs[abs.length - 1] || 1;
 	});
 	const maxPlasticity = $derived(plasticity.reduce((m, p) => Math.max(m, p.intrinsic_plasticity), 0) || 1);
-	const height = TRACK_H + GAP + ROW_H * 20 + 18;
+	const height = TRACK_H + GAP + ROW_H * 20 + AXIS_H;
 	const colW = $derived(Math.max(1, (width - LEFT) / Math.max(1, L)));
 
-	/** Diverging blue (negative) → surface → orange (positive). */
-	function color(v: number): string {
-		const t = Math.max(-1, Math.min(1, v / limit));
-		if (t >= 0) {
-			const k = t;
-			return `rgb(${Math.round(255 - (255 - 217) * k)}, ${Math.round(255 - (255 - 114) * k)}, ${Math.round(255 - (255 - 27) * k)})`;
-		}
-		const k = -t;
-		return `rgb(${Math.round(255 - (255 - 33) * k)}, ${Math.round(255 - (255 - 102) * k)}, ${Math.round(255 - (255 - 172) * k)})`;
-	}
+	/** The diverging ramp, resolved from the stylesheet; `t` in −1..1. */
+	const ramp = $derived.by(() => {
+		void scheme;
+		const zero = token('--dms-zero') || token('--bg');
+		const positive = token('--dms-positive') || token('--brand');
+		const negative = token('--dms-negative') || token('--text-muted');
+		const up = interpolateRgb(zero, positive);
+		const down = interpolateRgb(zero, negative);
+		return (t: number) => (t >= 0 ? up(Math.min(1, t)) : down(Math.min(1, -t)));
+	});
+	const color = (v: number) => ramp(Math.max(-1, Math.min(1, v / limit)));
+	/** Nine steps of the ramp for the legend; a discrete ramp, not a gradient. */
+	const STEPS = [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1];
 
 	$effect(() => {
 		if (!wrap) return;
@@ -71,8 +85,22 @@
 	});
 
 	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(prefers-color-scheme: dark)');
+		const bump = () => scheme++;
+		mq.addEventListener('change', bump);
+		const mo = new MutationObserver(bump);
+		mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+		return () => {
+			mq.removeEventListener('change', bump);
+			mo.disconnect();
+		};
+	});
+
+	$effect(() => {
 		const c = canvas;
 		if (!c) return;
+		void scheme;
 		const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
 		c.width = Math.floor(width * dpr);
 		c.height = Math.floor(height * dpr);
@@ -82,39 +110,48 @@
 		if (!ctx) return;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, width, height);
-		const surface = token('--surface');
-		const faint = token('--text-faint');
-		const text = token('--text-muted');
-		const accent = token('--accent');
-		const brand = token('--brand');
-		// Blank matrix background.
-		ctx.fillStyle = token('--bg-subtle');
+		const bg = token('--bg');
+		const axis = token('--plot-axis') || token('--text-faint');
+		const tick = token('--plot-tick') || token('--text-muted');
+		const hatch = token('--plot-hatch') || token('--text-faint');
+		const bar = token('--plot-uncalled') || token('--text-faint');
+		const ink = token('--text');
+		const blank = token('--plot-null-band') || token('--surface-2');
+		const font = token('--font-text');
+		const paint = color;
+		// Columns not yet swept: a blank band, not a zero.
+		ctx.fillStyle = blank;
 		ctx.fillRect(LEFT, TRACK_H + GAP, width - LEFT, ROW_H * 20);
 		// Row labels.
-		ctx.fillStyle = text;
-		ctx.font = `9px ${token('--font-mono')}`;
+		ctx.fillStyle = tick;
+		ctx.font = `11px ${font}`;
 		ctx.textBaseline = 'middle';
-		for (let r = 0; r < 20; r++) ctx.fillText(AAS[r], 8, TRACK_H + GAP + r * ROW_H + ROW_H / 2);
-		// Track axis.
-		ctx.fillStyle = faint;
+		ctx.textAlign = 'right';
+		for (let r = 0; r < 20; r++) ctx.fillText(AAS[r], LEFT - 6, TRACK_H + GAP + r * ROW_H + ROW_H / 2);
+		ctx.textAlign = 'left';
+		// Plasticity baseline and title.
+		ctx.fillStyle = axis;
 		ctx.fillRect(LEFT, TRACK_H - 0.5, width - LEFT, 1);
-		ctx.fillText('plasticity', 0, 8);
+		ctx.fillStyle = tick;
+		ctx.textBaseline = 'top';
+		ctx.fillText('intrinsic plasticity', LEFT, 0);
+		ctx.textBaseline = 'middle';
 		const cw = colW;
 		for (const p of plasticity) {
 			const x = LEFT + (p.site - 1) * cw;
 			// Plasticity bar.
-			const h = (p.intrinsic_plasticity / maxPlasticity) * (TRACK_H - 12);
-			ctx.fillStyle = p.site === selected ? accent : brand;
+			const h = (p.intrinsic_plasticity / maxPlasticity) * (TRACK_H - 16);
+			ctx.fillStyle = p.site === selected ? ink : bar;
 			ctx.fillRect(x, TRACK_H - h, Math.max(1, cw - (cw > 3 ? 1 : 0)), h);
 			// Cells.
 			for (let r = 0; r < 20; r++) {
 				const aa = AAS[r];
 				const y = TRACK_H + GAP + r * ROW_H;
 				if (aa === p.wt_aa) {
-					ctx.fillStyle = surface;
+					ctx.fillStyle = bg;
 					ctx.fillRect(x, y, Math.max(1, cw), ROW_H);
-					ctx.strokeStyle = faint;
-					ctx.lineWidth = 0.6;
+					ctx.strokeStyle = hatch;
+					ctx.lineWidth = 1;
 					ctx.beginPath();
 					ctx.moveTo(x, y + ROW_H);
 					ctx.lineTo(x + Math.max(1, cw), y);
@@ -123,24 +160,32 @@
 				}
 				const v = p.mutant_deltas[aa];
 				if (v == null || !Number.isFinite(v)) continue;
-				ctx.fillStyle = color(v);
+				ctx.fillStyle = paint(v);
 				ctx.fillRect(x, y, Math.max(1, cw), ROW_H);
 			}
 		}
 		if (selected != null) {
-			ctx.strokeStyle = accent;
-			ctx.lineWidth = 1.5;
+			ctx.strokeStyle = ink;
+			ctx.lineWidth = 1;
 			ctx.strokeRect(LEFT + (selected - 1) * cw - 0.5, TRACK_H + GAP - 0.5, Math.max(2, cw) + 1, ROW_H * 20 + 1);
 		}
-		// Site axis ticks.
-		ctx.fillStyle = text;
+		// Site axis: a hairline and ticks.
+		const axisY = TRACK_H + GAP + ROW_H * 20;
+		ctx.fillStyle = axis;
+		ctx.fillRect(LEFT, axisY, width - LEFT, 1);
+		ctx.fillStyle = tick;
 		ctx.textBaseline = 'top';
 		const step = L <= 60 ? 10 : L <= 400 ? 50 : L <= 1200 ? 100 : 250;
 		for (let s = 1; s <= L; s += step) {
 			const x = LEFT + (s - 1) * cw;
-			ctx.fillRect(x, TRACK_H + GAP + ROW_H * 20, 1, 3);
-			ctx.fillText(String(s), x + 2, TRACK_H + GAP + ROW_H * 20 + 4);
+			ctx.fillStyle = axis;
+			ctx.fillRect(x, axisY, 1, 4);
+			ctx.fillStyle = tick;
+			ctx.fillText(String(s), x + 3, axisY + 6);
 		}
+		ctx.textAlign = 'right';
+		ctx.fillText('codon', width, axisY + 6);
+		ctx.textAlign = 'left';
 	});
 
 	function siteAt(ev: MouseEvent): { site: number; row: number } | null {
@@ -175,22 +220,31 @@
 </script>
 
 <div class="heat" bind:this={wrap}>
-	<canvas
-		bind:this={canvas}
-		aria-label="Digital DMS heatmap: 20 residues by {L} sites, {plasticity.length} sites scored"
-		onpointermove={onMove}
-		onpointerleave={() => (hover = null)}
-		onclick={onClick}
-	></canvas>
-	{#if hover}
-		<div class="tip" style="left: {Math.min(hover.x + 12, width - 260)}px; top: {hover.y + 14}px">{hover.text}</div>
-	{/if}
-	<div class="legend">
-		<span class="swatch" style="background: {color(-limit)}"></span>−{limit.toFixed(2)}
-		<span class="ramp"></span>
-		<span class="swatch" style="background: {color(limit)}"></span>+{limit.toFixed(2)}
-		<span class="key">ΔLRT = mutant − baseline (98th percentile of |Δ| sets the scale) · hatched = wild type · click a site for its 19 deltas</span>
-	</div>
+	<figure>
+		<canvas
+			bind:this={canvas}
+			aria-label="Digital DMS heatmap: 20 residues by {L} sites, {plasticity.length} sites scored"
+			onpointermove={onMove}
+			onpointerleave={() => (hover = null)}
+			onclick={onClick}
+		></canvas>
+		{#if hover}
+			<div class="tip" style="left: {Math.min(hover.x + 12, width - 260)}px; top: {hover.y + 14}px">{hover.text}</div>
+		{/if}
+		<figcaption>
+			<b>Digital deep mutational scan.</b>
+			<span class="legend" aria-label="colour scale from −{limit.toFixed(2)} to +{limit.toFixed(2)}">
+				<span class="num">−{limit.toFixed(2)}</span>
+				<span class="ramp">
+					{#each STEPS as t (t)}<span class="step" style="background: {ramp(t)}"></span>{/each}
+				</span>
+				<span class="num">+{limit.toFixed(2)}</span>
+			</span>
+			ΔLRT = mutant − baseline for each of the 19 substitutions at every swept site, purple above zero
+			and grey below; the 98th percentile of |Δ| sets the scale. The hatched cell is the wild type, the
+			track above is intrinsic plasticity, and columns not yet swept are blank. Click a site for its 19 deltas.
+		</figcaption>
+	</figure>
 </div>
 
 <style>
@@ -198,49 +252,55 @@
 		position: relative;
 		width: 100%;
 	}
+	figure {
+		margin: 0;
+		position: relative;
+	}
 	canvas {
 		display: block;
 		width: 100%;
 		cursor: crosshair;
-		border-radius: var(--radius);
 	}
 	.tip {
 		position: absolute;
 		pointer-events: none;
-		background: var(--text);
-		color: var(--bg);
-		font-size: var(--text-xs);
-		font-family: var(--font-mono);
+		background: var(--bg);
+		color: var(--text);
+		border: 1px solid var(--rule);
+		font-size: var(--text-md);
 		padding: 0.25rem 0.5rem;
-		border-radius: var(--radius-sm);
 		white-space: nowrap;
 		z-index: 2;
 	}
+	figcaption {
+		margin: var(--space-2) 0 0;
+		max-width: var(--measure);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
+		color: var(--text-muted);
+	}
+	figcaption b {
+		color: var(--text);
+		font-weight: 700;
+	}
 	.legend {
-		display: flex;
+		display: inline-flex;
 		align-items: center;
 		gap: var(--space-2);
-		margin-top: var(--space-2);
-		font-size: var(--text-xs);
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		flex-wrap: wrap;
+		margin-right: var(--space-1);
+		font-size: var(--text-sm);
+		vertical-align: -0.1em;
 	}
-	.swatch {
-		display: inline-block;
-		width: 0.9rem;
-		height: 0.9rem;
-		border-radius: 2px;
+	.num {
+		font-variant-numeric: tabular-nums;
 	}
 	.ramp {
-		display: inline-block;
-		width: 6rem;
-		height: 0.6rem;
-		border-radius: 999px;
-		background: linear-gradient(to right, rgb(33, 102, 172), #fff, rgb(217, 114, 27));
+		display: inline-flex;
+		border: 1px solid var(--hair);
 	}
-	.key {
-		font-family: var(--font-text);
-		margin-left: var(--space-2);
+	.step {
+		display: inline-block;
+		width: 0.75rem;
+		height: 0.75rem;
 	}
 </style>

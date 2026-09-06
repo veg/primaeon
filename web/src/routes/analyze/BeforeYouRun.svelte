@@ -9,6 +9,12 @@
 	refuse-severity row that the runtime cannot recover from is shown with the reason the Run
 	button is disabled, and the MEME hit-likelihood prescreen is an ADVISORY band — it says what
 	similar alignments did in full MEME runs and never gates anything (runtime/src/prescreen).
+
+	LOOK. web/DESIGN.md §3 "Diagnostics strip and warnings table": no panel, no fills. The severity
+	badges are plain text — a warning carries the orange square and warning text, a refusal is
+	black, an info row is faint; "handled" rows are muted. The blocking message is a refusal: black
+	with a black left rule. The prescreen is prose with its band label in 700 and no colour, since
+	it is advisory and gates nothing.
 -->
 <script lang="ts">
 	import type { Variant } from '$lib/api';
@@ -60,7 +66,7 @@
 		<p class="plan">
 			<strong>Tree:</strong> {treePlanText(model.treePlan)}
 			{#if model.saturatedPairs}
-				<span class="saturated">{model.saturatedPairs.toLocaleString()} taxon pair{model.saturatedPairs === 1 ? '' : 's'} came back at the TN93 saturation sentinel.</span>
+				<span class="saturated note--warn">{model.saturatedPairs.toLocaleString()} taxon pair{model.saturatedPairs === 1 ? '' : 's'} came back at the TN93 saturation sentinel.</span>
 			{/if}
 		</p>
 
@@ -78,6 +84,7 @@
 		{#if model.rows.length}
 			<div class="tablewrap">
 				<table class="warnings">
+					<caption><b>Checks.</b> Every finding of the diagnostics step, by severity; a handled row is a repair already applied.</caption>
 					<thead>
 						<tr><th>Severity</th><th>Check</th><th>Finding</th></tr>
 					</thead>
@@ -85,7 +92,7 @@
 						{#each model.rows as row (row.code + row.message)}
 							<tr class="row row--{row.severity}" class:row--handled={row.handled}>
 								<td>
-									<span class="badge badge--{row.severity}">{row.handled ? 'Handled' : severityLabel[row.severity]}</span>
+									<span class="badge badge--{row.severity}" class:sev--warn={row.severity === 'warn' && !row.handled}>{row.handled ? 'Handled' : severityLabel[row.severity]}</span>
 								</td>
 								<td><code>{row.code}</code></td>
 								<td>{row.message}</td>
@@ -99,8 +106,8 @@
 		{/if}
 
 		{#if model.blocking.length}
-			<p class="block" role="alert">
-				<strong>Run is disabled:</strong>
+			<p class="block notice--error" role="alert">
+				<strong>Refused.</strong>
 				{model.blocking.map((b) => b.message).join(' ')}
 			</p>
 		{/if}
@@ -112,15 +119,15 @@
 						<strong>{PRESCREEN_BAND[prescreen.level].label}</strong>
 						<span class="muted">(advisory; MEME hit-likelihood {prescreen.hit_probability !== null ? (prescreen.hit_probability * 100).toFixed(0) + '%' : ''})</span>
 					</p>
-					<p class="muted small">{PRESCREEN_BAND[prescreen.level].lead} {prescreen.caveat}</p>
+					<p class="muted">{PRESCREEN_BAND[prescreen.level].lead} {prescreen.caveat}</p>
 					{#if prescreen.tree_source_caveat}
-						<p class="muted small">{prescreen.tree_source_caveat}</p>
+						<p class="muted">{prescreen.tree_source_caveat}</p>
 					{/if}
 				{:else if prescreen.status === 'cannot-assess'}
 					<p class="prescreen__head"><strong>MEME hit-likelihood not assessed</strong></p>
-					<p class="muted small">{prescreen.detail}</p>
+					<p class="muted">{prescreen.detail}</p>
 				{:else if prescreen.status === 'error'}
-					<p class="muted small">The hit-likelihood estimate could not be computed.</p>
+					<p class="muted">The hit-likelihood estimate could not be computed.</p>
 				{/if}
 			</div>
 		{/if}
@@ -132,7 +139,7 @@
 				{formatSeconds(model.cost.secondsLow)}–{formatSeconds(model.cost.secondsHigh)} of scoring in this browser,
 				plus {bytesMb(model.cost.firstRunDownloadBytes)} of model and runtime on the first run.
 				{#if model.cost.exceedsCaps.codons || model.cost.exceedsCaps.work}
-					<span class="over">This exceeds the browser caps (codons ≤ 30,000; L·N² ≤ 2.5×10⁹); a server run is not available yet.</span>
+					<span class="over note--warn">This exceeds the browser caps (codons ≤ 30,000; L·N² ≤ 2.5×10⁹); a server run is not available yet.</span>
 				{/if}
 			</p>
 		{/if}
@@ -141,10 +148,8 @@
 
 <style>
 	.panel {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface-raised);
-		padding: var(--space-4) var(--space-5);
+		border-top: 1px solid var(--rule);
+		padding-top: var(--space-4);
 		display: grid;
 		gap: var(--space-3);
 	}
@@ -157,18 +162,15 @@
 		margin: 0;
 	}
 	.pending {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		color: var(--text-faint);
 	}
 	p {
 		margin: 0;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
 	.muted {
 		color: var(--text-muted);
-	}
-	.small {
-		font-size: var(--text-xs);
 	}
 	.linkbutton {
 		background: none;
@@ -176,80 +178,50 @@
 		padding: 0;
 		color: var(--link);
 		text-decoration: underline;
+		text-underline-offset: 0.16em;
 		cursor: pointer;
 		font-size: inherit;
 	}
 	.tablewrap {
 		overflow-x: auto;
 	}
-	.warnings {
-		font-size: var(--text-xs);
-	}
-	.warnings th,
-	.warnings td {
-		padding: var(--space-1) var(--space-2);
+	.warnings td:first-child {
+		white-space: nowrap;
 	}
 	.row--handled {
 		color: var(--text-muted);
 	}
 	.badge {
 		display: inline-block;
-		padding: 0.05rem 0.45rem;
-		border-radius: 999px;
-		font-weight: 600;
-		font-size: 0.7rem;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
 		white-space: nowrap;
+		font-size: var(--text-sm);
 	}
 	.badge--refuse {
-		background: var(--danger-soft);
-		color: var(--danger);
-	}
-	.badge--warn {
-		background: var(--warn-soft);
-		color: var(--warn);
+		color: var(--text);
+		font-weight: 700;
 	}
 	.badge--info {
-		background: var(--bg-subtle);
-		color: var(--text-muted);
+		color: var(--text-faint);
 	}
 	.row--handled .badge {
-		background: var(--ok-soft);
-		color: var(--ok);
+		color: var(--text-muted);
+		font-weight: 400;
 	}
 	.block {
-		color: var(--danger);
-		background: var(--danger-soft);
-		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-3);
+		margin: 0;
 	}
 	.prescreen {
-		border-left: 3px solid var(--border-strong);
-		padding-left: var(--space-3);
 		display: grid;
 		gap: var(--space-1);
-	}
-	.prescreen--likely {
-		border-color: var(--ok);
-	}
-	.prescreen--uncertain {
-		border-color: var(--warn);
-	}
-	.prescreen--unlikely {
-		border-color: var(--danger);
 	}
 	.prescreen__head {
 		display: flex;
 		gap: var(--space-2);
 		flex-wrap: wrap;
 	}
-	.over {
-		display: block;
-		color: var(--warn);
-	}
+	.over,
 	.saturated {
 		display: block;
-		color: var(--warn);
+		margin-top: var(--space-1);
 	}
 </style>

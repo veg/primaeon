@@ -104,40 +104,6 @@ export function siteCompositions(sequences: readonly string[], totalCodons: numb
 	}
 	return out;
 }
-
-/**
- * Amino-acid colours, verbatim from axomeme3/index.html `AA_COLORS` (line 1486), so the spark
- * bars and the tree modal's composition bar read the same as the site they were ported from.
- */
-export const AA_COLORS: Readonly<Record<string, string>> = {
-	A: '#10b981',
-	R: '#3b82f6',
-	N: '#8b5cf6',
-	D: '#ec4899',
-	C: '#f59e0b',
-	E: '#ef4444',
-	Q: '#14b8a6',
-	G: '#64748b',
-	H: '#a855f7',
-	I: '#06b6d4',
-	L: '#3b82f6',
-	K: '#d946ef',
-	M: '#06b6d4',
-	F: '#6366f1',
-	P: '#f43f5e',
-	S: '#f59e0b',
-	T: '#10b981',
-	W: '#8b5cf6',
-	Y: '#6366f1',
-	V: '#14b8a6',
-	'*': '#ef4444',
-	'?': '#94a3b8'
-};
-
-export function aaColor(aa: string): string {
-	return AA_COLORS[aa] ?? '#64748b';
-}
-
 /** Counts sorted descending, as axomeme3 orders both bars. */
 export function sortedComposition(aaCounts: ReadonlyMap<string, number>): [string, number][] {
 	return [...aaCounts.entries()].sort((a, b) => b[1] - a[1]);

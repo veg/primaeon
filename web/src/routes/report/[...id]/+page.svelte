@@ -71,12 +71,12 @@
 
 <div class="container">
 	{#if loading}
-		<p class="status" aria-live="polite">Loading report…</p>
+		<p class="status" aria-live="polite"><span class="mark--run" aria-hidden="true"></span>Loading the report.</p>
 	{:else if error}
 		<div class="missing" role="alert">
 			<p class="eyebrow">Report</p>
 			<h1>No report to show</h1>
-			<p>{error.message}</p>
+			<p class="notice notice--error"><strong>Not found.</strong> {error.message}</p>
 			{#if error.source === 'local'}
 				<p class="hint">
 					Reports from a browser run are stored only in the browser that ran them and never uploaded, so a
@@ -97,17 +97,17 @@
 <style>
 	.status {
 		color: var(--text-muted);
+		font-size: var(--text-md);
 	}
 	.missing {
 		max-width: var(--container-narrow);
 	}
-	.hint {
-		color: var(--text-muted);
-		font-size: var(--text-sm);
+	.missing h1 {
+		margin-bottom: var(--space-4);
 	}
 	.actions {
 		display: flex;
-		gap: var(--space-2);
+		gap: var(--space-3);
 		flex-wrap: wrap;
 	}
 </style>

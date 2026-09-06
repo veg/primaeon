@@ -6,7 +6,8 @@
 	component renders them so both places agree on what a caveat looks like: a plain statement
 	with its numbers, an expandable table when the source has one, the action when there is one,
 	and the source line. This is documentation of measured behaviour, not a warning banner, so it
-	uses the text tokens, a hairline, and no warning colour.
+	uses the text tokens, hairlines, and no signal colour (web/DESIGN.md §5: caveats are facts, in
+	the same voice as the results).
 
 	Props: `pillar` selects the caveats; `set` defaults to the newest model version in the file
 	(the report passes caveatsForModel(provenance.model_version) when it has one); `heading`
@@ -106,28 +107,45 @@
 {/if}
 
 <style>
+	.caveats {
+		margin-top: var(--space-5);
+	}
 	.caveats h3 {
-		font-family: var(--font-text);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-muted);
+		font-size: var(--text-base);
+		font-weight: 700;
 		margin: 0 0 var(--space-3);
 	}
 	ol {
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		display: grid;
-		gap: var(--space-4);
+		counter-reset: caveat;
 	}
 	li {
-		border-left: 2px solid var(--border-strong);
-		padding-left: var(--space-4);
+		position: relative;
+		border-top: 1px solid var(--hair);
+		padding: var(--space-3) 0 var(--space-3) 2rem;
+		counter-increment: caveat;
+	}
+	li:last-child {
+		border-bottom: 1px solid var(--hair);
+	}
+	li::before {
+		content: counter(caveat);
+		position: absolute;
+		left: 0;
+		top: var(--space-3);
+		color: var(--text-muted);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
+	}
+	.caveats p {
+		margin: 0;
+		font-size: var(--text-md);
 	}
 	.headline {
-		font-weight: 600;
+		font-weight: 700;
+		color: var(--text);
 		margin: 0 0 var(--space-1);
 	}
 	.detail {
@@ -139,7 +157,8 @@
 		grid-template-columns: minmax(0, 1fr) auto;
 		gap: var(--space-1) var(--space-4);
 		margin: 0 0 var(--space-2);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
+		max-width: var(--measure);
 	}
 	.numbers dt {
 		color: var(--text-muted);
@@ -147,21 +166,21 @@
 	.numbers dd {
 		margin: 0;
 		font-family: var(--font-mono);
+		font-size: var(--text-sm);
 		text-align: right;
 		white-space: nowrap;
 	}
 	.action {
 		margin: 0 0 var(--space-2);
-		font-size: var(--text-sm);
+		color: var(--text);
 	}
 	.action::before {
 		content: 'Do: ';
-		font-weight: 600;
-		color: var(--accent-strong);
+		font-weight: 700;
 	}
 	.source {
 		margin: 0;
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		color: var(--text-faint);
 	}
 	details {
@@ -169,13 +188,12 @@
 	}
 	summary {
 		cursor: pointer;
-		font-size: var(--text-sm);
-		color: var(--link);
+		font-size: var(--text-md);
+		color: var(--text-muted);
 	}
 	.caveats--compact summary {
 		color: var(--text);
-		font-weight: 600;
-		font-size: var(--text-base);
+		font-weight: 700;
 	}
 	.caveats--compact details > :not(summary) {
 		margin-top: var(--space-2);
@@ -185,7 +203,7 @@
 		margin-top: var(--space-2);
 	}
 	table {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		min-width: 32rem;
 	}
 	td,
@@ -194,21 +212,19 @@
 	}
 	td {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 	}
 	td:first-child {
 		font-family: var(--font-text);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
-	.cell--pass {
-		color: var(--ok);
-	}
+	/* PASSED / FAILED are words; they carry the outcome without a colour. */
 	.cell--fail {
-		color: var(--danger);
+		font-weight: 700;
 	}
 	.note {
 		margin: var(--space-2) 0 0;
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		color: var(--text-muted);
 	}
 </style>

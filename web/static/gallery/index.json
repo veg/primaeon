@@ -1,8 +1,8 @@
 {
 	"schema_version": 3,
-	"generated_at": "2026-09-05T21:19:11.457Z",
+	"generated_at": "2026-09-06T20:15:36.486Z",
 	"engine": {
-		"commit": "61d681a",
+		"commit": "2078867",
 		"reference_version": "1.0.0",
 		"hyphaeon_js_version": "1.0.0"
 	},

@@ -1,12 +1,18 @@
 <!--
-	ManhattanPlot.svelte — the per-site canvas plot with entropy overlays, tooltip and click.
+	ManhattanPlot.svelte — Figure "Predicted LRT by codon site": the per-site canvas with its
+	caption, the opt-in entropy overlays, a tooltip and a click.
 
 	WHY THIS FILE EXISTS. The DOM half of axomeme3's Manhattan plot (index.html section 6): it owns
 	the <canvas>, sizes it to its container at devicePixelRatio, resolves the app's colour tokens
-	for manhattan.ts's draw function, hit-tests the mouse against the plotted points (12 px), shows
-	the tooltip axomeme3 showed (site, reference state, LRT, z / percentile, entropies, call) with
-	the same edge-flipping placement, and reports a click as `onSelect(site)` so the page can open
-	the site tree. Redraws on resize (ResizeObserver) and on colour-scheme change.
+	for manhattan.ts's draw function, hit-tests the mouse against the plotted stems, shows the
+	tooltip (site, reference state, LRT, z / percentile, p / q, entropies, call) with the same
+	edge-flipping placement, and reports a click as `onSelect(site)` so the page can open the site
+	tree. Redraws on resize (ResizeObserver) and on a colour-scheme change (theme.ts).
+
+	The figure is captioned below (DESIGN.md §3): what the stems are, what purple means, that
+	invariable sites are left blank rather than drawn at zero, and that clicking a stem opens the
+	site tree. The threshold rule is the ACTIVE call cut — the lowest LRT the mode called — derived
+	from the rows so the plot explains the cut the table used, whichever mode the reader picked.
 
 	The tooltip shows "not scored" for an invariable site instead of 0.00000: those zeros were set
 	before the model was consulted (runtime/src/postprocess.js header).
@@ -16,7 +22,8 @@
 	import type { SiteRow } from '$lib/results/derive';
 	import type { SiteComposition } from '$lib/results/entropy';
 	import { drawManhattan, nearestPoint, type PlotColours, type PlotPoint } from './manhattan';
-	import { token } from './theme';
+	import { activeCut } from './callCut';
+	import { formatCount, onSchemeChange, siteLabel, token } from './theme';
 
 	interface Props {
 		rows: SiteRow[];
@@ -24,28 +31,54 @@
 		onSelect?: (site: number) => void;
 		height?: number;
 	}
-	let { rows, compositions, onSelect, height = 360 }: Props = $props();
+	let { rows, compositions, onSelect, height = 260 }: Props = $props();
 
 	let container = $state<HTMLDivElement | null>(null);
 	let canvas = $state<HTMLCanvasElement | null>(null);
-	let showEntropy = $state(true);
+	let showEntropy = $state(false);
 	let hovered = $state<PlotPoint | null>(null);
 	let tooltipPos = $state({ left: 0, top: 0 });
 	let points: PlotPoint[] = [];
 	let tooltipEl = $state<HTMLDivElement | null>(null);
 
+	const variable = $derived(rows.filter((r) => r.isVariable));
+	const called = $derived(variable.filter((r) => r.tier > 0));
+	const invariable = $derived(rows.length - variable.length);
+
+	const threshold = $derived(activeCut(rows));
+
+	const caption = $derived.by(() => {
+		const parts: string[] = [];
+		if (called.length === 0) {
+			parts.push(
+				`Grey stems are the ${formatCount(variable.length)} variable sites; none is called under the active mode, so no stem is purple and no threshold rule is drawn.`
+			);
+		} else {
+			parts.push(
+				`Grey stems are the ${formatCount(variable.length - called.length)} variable sites that were not called; purple stems mark the ${formatCount(called.length)} called ${called.length === 1 ? 'site' : 'sites'}, labelled with residue and codon number.`
+			);
+			if (threshold) parts.push(`The dashed rule is the active call threshold (${threshold.label}).`);
+		}
+		if (showEntropy && compositions)
+			parts.push('The solid grey line is codon Shannon entropy and the dashed one amino-acid entropy, in bits on the right axis.');
+		parts.push(
+			invariable > 0
+				? `Invariable sites (${formatCount(invariable)} of ${formatCount(rows.length)}) are not scored and are not drawn.`
+				: 'Every site is variable, so every site is drawn.'
+		);
+		parts.push('Click a stem to open the site tree.');
+		return parts.join(' ');
+	});
+
 	function colours(): PlotColours {
 		return {
-			background: token('--surface', container),
-			grid: token('--border', container),
-			axisText: token('--text-muted', container),
-			tier1: token('--tier-strong', container),
-			tier2: token('--tier-moderate', container),
-			variable: token('--brand', container),
-			invariable: token('--tier-none', container),
-			codonEntropy: token('--brand', container),
-			aaEntropy: token('--ok', container),
-			label: token('--text', container)
+			axis: token('--plot-axis', container),
+			tick: token('--plot-tick', container),
+			called: token('--plot-called', container),
+			uncalled: token('--plot-uncalled', container),
+			threshold: token('--plot-threshold', container),
+			entropy: token('--text-muted', container),
+			highlight: token('--text', container)
 		};
 	}
 
@@ -64,8 +97,9 @@
 			height,
 			dpr,
 			colours: colours(),
-			fontFamily: token('--font-mono', container) || 'monospace',
+			fontFamily: token('--font-text', container) || 'sans-serif',
 			showEntropy: showEntropy && compositions !== null,
+			threshold,
 			highlight: hovered?.row.site ?? null
 		});
 	}
@@ -83,7 +117,7 @@
 			draw();
 		}
 		if (hit && container) {
-			// Placement as in axomeme3: right of the point, flipped left when it would overflow.
+			// Placement as in axomeme3: right of the stem, flipped left when it would overflow.
 			const w = tooltipEl?.offsetWidth ?? 220;
 			const h = tooltipEl?.offsetHeight ?? 150;
 			const cw = container.clientWidth;
@@ -121,13 +155,11 @@
 	onMount(() => {
 		const ro = new ResizeObserver(() => draw());
 		if (container) ro.observe(container);
-		const mq = window.matchMedia('(prefers-color-scheme: dark)');
-		const onScheme = () => draw();
-		mq.addEventListener('change', onScheme);
+		const offScheme = onSchemeChange(draw);
 		draw();
 		return () => {
 			ro.disconnect();
-			mq.removeEventListener('change', onScheme);
+			offScheme();
 		};
 	});
 
@@ -142,29 +174,19 @@
 	const fmt = (v: number, dp: number) => (Number.isFinite(v) ? v.toFixed(dp) : '—');
 </script>
 
-<div class="plot">
-	<div class="plot__bar">
-		<div class="legend" aria-label="Legend">
-			<span class="legend__item"><i class="dot dot--tier1"></i> Tier 1</span>
-			<span class="legend__item"><i class="dot dot--tier2"></i> Tier 2</span>
-			<span class="legend__item"><i class="dot dot--variable"></i> Scored, neutral</span>
-			<span class="legend__item"><i class="dot dot--invariable"></i> Not scored (invariable)</span>
-			{#if compositions}
-				<span class="legend__item"><i class="swatch swatch--codon"></i> Codon entropy</span>
-				<span class="legend__item"><i class="swatch swatch--aa"></i> Amino-acid entropy</span>
-			{/if}
-		</div>
-		{#if compositions}
+<figure class="plot">
+	{#if compositions}
+		<div class="toggles">
 			<label class="toggle">
 				<input type="checkbox" bind:checked={showEntropy} />
 				Entropy overlays
 			</label>
-		{/if}
-	</div>
+		</div>
+	{/if}
 	<div class="plot__canvas" bind:this={container} style:height="{height}px">
 		<canvas
 			bind:this={canvas}
-			aria-label="Predicted LRT by codon site; click a point to open the site tree"
+			aria-label="Predicted LRT by codon site; click a stem to open the site tree"
 			tabindex="0"
 			onmousemove={onMove}
 			onmouseleave={onLeave}
@@ -182,93 +204,49 @@
 				style:top="{tooltipPos.top}px"
 				role="tooltip"
 			>
-				<div class="row"><span>Codon site</span><strong class="mono site">{r.site}</strong></div>
+				<div class="row"><span>Codon site</span><strong class="num">{siteLabel(r.refAa, r.site)}</strong></div>
 				<div class="row">
-					<span>Reference</span><span class="mono">{r.refCodon || '—'} ({r.refAa || '?'})</span>
+					<span>Reference</span><span class="mono">{r.refCodon || '—'} {r.refAa || '?'}</span>
 				</div>
 				{#if r.isVariable}
-					<div class="row"><span>Predicted LRT</span><span class="mono">{fmt(r.lrt, 5)}</span></div>
+					<div class="row"><span>Predicted LRT</span><span class="num">{fmt(r.lrt, 4)}</span></div>
 					<div class="row">
-						<span>Z / percentile</span>
-						<span class="mono">{fmt(r.zScore, 2)} / {fmt(r.percentile, 1)}%</span>
+						<span>z / percentile</span>
+						<span class="num">{fmt(r.zScore, 2)} / {fmt(r.percentile, 1)}</span>
 					</div>
-					<div class="row"><span>p / q</span><span class="mono">{fmt(r.p, 4)} / {fmt(r.q, 4)}</span></div>
+					<div class="row"><span>p / q</span><span class="num">{fmt(r.p, 4)} / {fmt(r.q, 4)}</span></div>
 				{:else}
-					<div class="row"><span>Predicted LRT</span><span class="muted">not scored</span></div>
+					<div class="row"><span>Predicted LRT</span><span class="faint">not scored</span></div>
 				{/if}
 				{#if c}
 					<div class="row">
 						<span>Codon / AA entropy</span>
-						<span class="mono">{fmt(c.codonEntropy, 3)} / {fmt(c.aaEntropy, 3)} bits</span>
+						<span class="num">{fmt(c.codonEntropy, 3)} / {fmt(c.aaEntropy, 3)} bits</span>
 					</div>
 				{/if}
 				<div class="row row--call">
 					<span>Call</span>
-					<span class="badge badge--tier{r.tier}">{r.call}</span>
+					<span class="call" class:call--on={r.tier > 0}>{r.tier > 0 ? r.call : r.isVariable ? '—' : 'not scored'}</span>
 				</div>
-				<div class="hint">Click to view the site tree</div>
+				<div class="hint">Click to open the site tree</div>
 			</div>
 		{/if}
 	</div>
-</div>
+	<figcaption><b>Predicted LRT by codon site.</b> {caption}</figcaption>
+</figure>
 
 <style>
 	.plot {
+		margin: 0;
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
 	}
-	.plot__bar {
+	.toggles {
 		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		gap: var(--space-3);
-		flex-wrap: wrap;
-		font-size: var(--text-xs);
+		gap: var(--space-4);
+		font-size: var(--text-md);
 		color: var(--text-muted);
-	}
-	.legend {
-		display: flex;
-		gap: var(--space-3);
-		flex-wrap: wrap;
-	}
-	.legend__item {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-	}
-	.dot {
-		width: 0.6rem;
-		height: 0.6rem;
-		border-radius: 50%;
-		display: inline-block;
-	}
-	.dot--tier1 {
-		background: var(--tier-strong);
-	}
-	.dot--tier2 {
-		background: var(--tier-moderate);
-	}
-	.dot--variable {
-		background: var(--brand);
-	}
-	.dot--invariable {
-		background: var(--tier-none);
-		opacity: 0.6;
-	}
-	.swatch {
-		width: 0.9rem;
-		height: 0.5rem;
-		display: inline-block;
-		border-radius: 2px;
-	}
-	.swatch--codon {
-		background: color-mix(in srgb, var(--brand) 35%, transparent);
-		border-bottom: 2px solid var(--brand);
-	}
-	.swatch--aa {
-		background: color-mix(in srgb, var(--ok) 35%, transparent);
-		border-bottom: 2px solid var(--ok);
 	}
 	.toggle {
 		display: inline-flex;
@@ -276,79 +254,81 @@
 		gap: 0.4rem;
 		cursor: pointer;
 	}
+	.toggle input {
+		accent-color: var(--brand);
+		margin: 0;
+	}
 	.plot__canvas {
 		position: relative;
 		width: 100%;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-		background: var(--surface);
 	}
 	canvas {
 		display: block;
 		outline: none;
 	}
 	canvas:focus-visible {
-		box-shadow: inset 0 0 0 2px var(--focus);
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
+	}
+	figcaption {
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
+		color: var(--text-muted);
+		max-width: var(--measure);
+	}
+	figcaption b {
+		color: var(--text);
+		font-weight: 700;
 	}
 	.tooltip {
 		position: absolute;
 		z-index: 2;
 		pointer-events: none;
 		min-width: 15rem;
-		background: var(--surface-raised);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius);
-		box-shadow: var(--shadow);
+		background: var(--bg);
+		border: 1px solid var(--rule);
 		padding: var(--space-2) var(--space-3);
-		font-size: var(--text-xs);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
 		color: var(--text);
 	}
 	.row {
 		display: flex;
 		justify-content: space-between;
 		gap: var(--space-3);
-		padding: 0.1rem 0;
 	}
 	.row > span:first-child {
 		color: var(--text-muted);
 	}
 	.row--call {
 		margin-top: 0.3rem;
-		border-top: 1px solid var(--border);
+		border-top: 1px solid var(--hair);
 		padding-top: 0.3rem;
 	}
 	.mono {
 		font-family: var(--font-mono);
+		font-size: var(--text-sm);
 	}
-	.site {
-		color: var(--brand);
+	.num {
+		font-variant-numeric: tabular-nums;
 	}
-	.muted {
+	.faint {
 		color: var(--text-faint);
-		font-style: italic;
+	}
+	.call--on::before {
+		content: '';
+		display: inline-block;
+		width: 0.5em;
+		height: 0.5em;
+		background: var(--brand);
+		margin-right: 0.4em;
+		vertical-align: 0.05em;
 	}
 	.hint {
 		margin-top: 0.3rem;
 		padding-top: 0.2rem;
-		border-top: 1px dotted var(--border);
-		text-align: center;
+		border-top: 1px solid var(--hair);
 		color: var(--text-faint);
-		font-style: italic;
-	}
-	.badge {
-		border-radius: 999px;
-		padding: 0.05rem 0.5rem;
-		font-weight: 600;
-		background: var(--bg-subtle);
-		color: var(--text-muted);
-	}
-	.badge--tier1 {
-		background: var(--danger-soft);
-		color: var(--tier-strong);
-	}
-	.badge--tier2 {
-		background: var(--accent-soft);
-		color: var(--accent-strong);
+		font-size: var(--text-sm);
 	}
 </style>

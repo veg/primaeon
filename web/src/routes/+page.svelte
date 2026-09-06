@@ -3,23 +3,26 @@
 
 	WHY THIS FILE EXISTS. PLAN.md §4.0 / D21 (2026-09-05): the only thing the interface asks for is a
 	dataset. Dropping or pasting an alignment (optionally with a Newick tree) starts every analysis;
-	there is no picker and no options form. The caveats about the model (surrogate for MEME, regime
-	dependence) belong in the report and on the methods page, next to the numbers they qualify, not
-	in the hero. This page therefore carries one sentence and the inputs.
+	there is no picker and no options form. The caveats about the model (its relation to MEME,
+	regime dependence) belong in the report and on the methods page, next to the numbers they
+	qualify, not here. This page therefore carries one sentence and the inputs.
 
 	HANDOFF. The pipeline, workers and diagnostics live on the analyze route. This page reads the
 	dropped files as text, parks them in sessionStorage under HANDOFF_KEY, and navigates to
 	/analyze/?autorun=1, which loads the handoff and runs as soon as diagnostics allow (see
 	analyze/+page.svelte).
 
-	EXAMPLES. The five chips are the README's bundled datasets (lib/gallery/examples.json). Each
+	EXAMPLES. The five links are the README's bundled datasets (lib/gallery/examples.json). Each
 	opens its PREBAKED report at /report/gallery/<id>/ — every analysis already run at build time by
 	web/scripts/prebake-gallery.mjs — so an example is instant and costs no model download; the
-	chip's title is the README table's one-line description of the dataset. PLAN.md §4.1 folds the
-	Phase 1 /gallery cards into these chips; /gallery/ now redirects here.
+	link's title is the README table's one-line description of the dataset. PLAN.md §4.1 folds the
+	Phase 1 /gallery cards into these links; /gallery/ now redirects here.
 
 	DELIVERY. This route must request nothing beyond its own HTML, CSS, JS and favicon: no model, no
 	ORT WASM, no workers (PLAN.md §4.4). ../../e2e/smoke.spec.ts asserts it.
+
+	LOOK. web/DESIGN.md §3 "Landing": h1, one sentence, a dashed hairline rectangle, a disclosure for
+	pasting, and the examples as one sentence of links. Nothing is centred and nothing is filled.
 -->
 <script lang="ts">
 	import { base } from '$app/paths';
@@ -137,7 +140,7 @@
 	</details>
 
 	{#if error}
-		<p class="error" role="alert">{error}</p>
+		<p class="error notice--error" role="alert"><strong>Not accepted.</strong> {error}</p>
 	{/if}
 
 	<p class="examples">
@@ -150,39 +153,33 @@
 
 <style>
 	.hero {
-		padding-top: var(--space-8);
 		margin-bottom: var(--space-8);
 	}
 	h1 {
 		margin-bottom: var(--space-2);
 	}
 	.lede {
-		font-size: var(--text-lg);
+		font-size: var(--text-base);
 		color: var(--text-muted);
-		margin-bottom: var(--space-5);
-		max-width: 40ch;
+		margin-bottom: var(--space-6);
 	}
 
 	.dropzone {
 		position: relative;
 		display: grid;
 		gap: var(--space-2);
-		justify-items: center;
-		text-align: center;
-		padding: var(--space-8) var(--space-5);
-		border: 2px dashed var(--border-strong, var(--border));
-		border-radius: var(--radius-lg);
-		background: var(--surface);
+		justify-items: start;
+		text-align: left;
+		padding: var(--space-6) var(--space-5);
+		border: 1px dashed var(--rule);
 		cursor: pointer;
-		transition: border-color 0.15s, background 0.15s;
 	}
 	.dropzone:hover,
 	.dropzone--active {
-		border-color: var(--brand);
-		background: var(--brand-soft, var(--surface-2, var(--surface)));
+		border-color: var(--text);
 	}
 	.dropzone--busy {
-		opacity: 0.7;
+		opacity: 0.45;
 		cursor: progress;
 	}
 	.dropzone input {
@@ -192,61 +189,51 @@
 		cursor: pointer;
 	}
 	.dropzone__title {
-		font-family: var(--font-display);
-		font-size: var(--text-xl);
+		font-size: var(--text-lg);
+		font-weight: 700;
+		line-height: var(--leading-tight);
 	}
 	.dropzone__hint {
+		font-size: var(--text-md);
 		color: var(--text-muted);
-		max-width: 44ch;
+		max-width: var(--measure);
+	}
+	.dropzone__hint u {
+		color: var(--text);
+		text-underline-offset: 0.16em;
 	}
 
 	.paste {
 		margin-top: var(--space-4);
 	}
-	.paste summary {
-		cursor: pointer;
-		color: var(--text-muted);
-	}
 	.paste textarea {
 		display: block;
 		width: 100%;
 		margin: var(--space-3) 0;
-		font-family: var(--font-mono);
-		font-size: var(--text-sm);
-		padding: var(--space-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		color: inherit;
+		resize: vertical;
 	}
 
 	.error {
-		color: var(--danger, #b3261e);
-		margin-top: var(--space-3);
+		margin-top: var(--space-4);
+		font-size: var(--text-md);
 	}
 
 	.examples {
 		margin-top: var(--space-6);
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-2);
-		align-items: center;
+		font-size: var(--text-md);
 		color: var(--text-muted);
 	}
 	.examples__label {
 		margin-right: var(--space-1);
 	}
 	.chip {
-		display: inline-block;
-		padding: 0.2rem 0.7rem;
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		text-decoration: none;
-		color: inherit;
-		background: var(--surface);
+		white-space: nowrap;
 	}
-	.chip:hover {
-		border-color: var(--brand);
-		color: var(--brand);
+	.chip + .chip::before {
+		content: '·';
+		color: var(--text-faint);
+		margin: 0 var(--space-2);
+		text-decoration: none;
+		display: inline-block;
 	}
 </style>

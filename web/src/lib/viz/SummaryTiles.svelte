@@ -7,6 +7,9 @@
 	that produced the numbers, and the surface. The pattern is DM3's AxomemeVisualization summary
 	strip (hyphy-scope, `.axomeme-summary`), with the two provenance tiles added because a surrogate
 	result without its graph hash and surface cannot be reproduced (PLAN.md §3.5).
+
+	Set as one line closed by a hairline, like the report's overview (web/DESIGN.md §3): no cards,
+	no fills; the called count is the one purple value.
 -->
 <script lang="ts">
 	import type { MemeRecord } from '$lib/results/types';
@@ -70,47 +73,44 @@
 
 <style>
 	.tiles {
-		margin: 0;
+		margin: 0 0 var(--space-4);
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-		gap: var(--space-3);
+		grid-template-columns: repeat(5, minmax(0, auto));
+		gap: var(--space-5);
+		padding-bottom: var(--space-4);
+		border-bottom: 1px solid var(--hair);
 	}
 	.tile {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface);
-		padding: var(--space-3) var(--space-4);
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-	}
-	.tile--accent {
-		border-color: var(--accent);
-		background: var(--accent-soft);
+		min-width: 0;
 	}
 	dt {
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
+		font-size: var(--text-sm);
 		color: var(--text-muted);
+		margin-bottom: 0.1rem;
 	}
 	dd {
 		margin: 0;
-		display: flex;
-		flex-direction: column;
+		font-size: var(--text-base);
+		line-height: 1.3;
 	}
 	dd strong {
-		font-family: var(--font-display);
-		font-weight: 400;
-		font-size: var(--text-xl);
-		line-height: 1.1;
+		font-weight: 700;
 	}
 	dd span {
-		font-size: var(--text-xs);
-		color: var(--text-muted);
+		display: block;
+		font-size: var(--text-sm);
+		color: var(--text-faint);
+		overflow-wrap: anywhere;
+	}
+	.tile--accent dd strong {
+		color: var(--brand);
 	}
 	.mono {
 		font-family: var(--font-mono);
+	}
+	@media (max-width: 48em) {
+		.tiles {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
 	}
 </style>

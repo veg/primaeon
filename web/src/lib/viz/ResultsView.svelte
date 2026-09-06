@@ -3,15 +3,20 @@
 
 	WHY THIS FILE EXISTS. PLAN.md §4.1: "/results/[local-id], /jobs/[id] — same results component";
 	§4.5 lists what that component shows for `meme`. This is the composition: the summary tiles,
-	the call-mode toggle that drives every tier colour and count on the page, the Manhattan canvas
-	with entropy overlays, the ranked-sites Observable Plot, the site table, the filter and
-	attribution panels when the run had them, the provenance panel with downloads and the MCP
-	snippet, and the site tree modal any site can open. The record's source (IndexedDB, gallery,
-	server) is the route's concern; this component only ever sees a MemeRecord.
+	the call-mode control that drives every call on the page, the Manhattan canvas with entropy
+	overlays, the ranked-sites Observable Plot, the site table, the filter and attribution panels
+	when the run had them, the provenance panel with downloads and the MCP snippet, and the site
+	tree modal any site can open. The record's source (IndexedDB, gallery, server) is the route's
+	concern; this component only ever sees a MemeRecord. The report (lib/report/ReportView.svelte)
+	has since taken over the routes; this view keeps the Phase 1 composition for a bare record.
 
 	Per-site compositions (entropy, spark bars) exist only when the record carries the selected
 	taxa's sequences (`record.alignment`); without them the overlays and the composition column are
 	absent and a note says why, rather than the plot pretending the entropy is zero.
+
+	Set per DESIGN.md §3: no cards, numbered sections by CSS counter, a segmented call-mode control
+	whose pressed item carries a 2 px underline, and the "what the model was given" caveats as one
+	warning (orange square, lead phrase in the warning colour) rather than a tinted panel.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -79,28 +84,26 @@
 
 <div class="results">
 	<header class="head">
-		<div>
-			<p class="eyebrow">Site selection · surrogate for {record.surrogate_for}</p>
-			<h1>{record.name ?? 'Results'}</h1>
-			<p class="lede">
-				A neural model ranks the sites of this alignment by how MEME-like their signal looks. MEME was not
-				run. The predicted LRT orders sites <em>within this alignment</em> and is not calibrated to MEME's
-				scale; the p and q columns are that LRT pushed through MEME's mixture null and are conservative.
-			</p>
-		</div>
+		<p class="eyebrow">Site selection · <code>hyphaeon meme</code>, surrogate for {record.surrogate_for}</p>
+		<h1>{record.name ?? 'Results'}</h1>
+		<p class="lede">
+			A neural model ranks the sites of this alignment by how MEME-like their signal looks; MEME was not
+			run. The predicted LRT orders sites <em>within this alignment</em> and is not calibrated to MEME's
+			scale; the p and q columns are that LRT pushed through MEME's mixture null and are conservative.
+		</p>
 	</header>
 
 	{#if caveats.length}
 		<aside class="caveats" aria-label="What the model was given">
-			<strong>What the model was given</strong>
+			<strong>What the model was given.</strong>
 			<ul>{#each caveats as c, i (i)}<li>{c}</li>{/each}</ul>
 		</aside>
 	{/if}
 
 	<SummaryTiles {record} {rows} modeLabel={modeOption.label} />
 
-	<section class="card">
-		<div class="card__head">
+	<section class="section">
+		<div class="section__head">
 			<h2>Calls</h2>
 			<div class="modes" role="radiogroup" aria-label="Call mode">
 				{#each modes as m (m.id)}
@@ -121,40 +124,40 @@
 		</p>
 	</section>
 
-	<section class="card">
-		<h2>Along the sequence</h2>
+	<section class="section">
+		<div class="section__head"><h2>Along the sequence</h2></div>
 		{#if !compositions}
 			<p class="note">This record does not carry the aligned sequences, so the entropy overlays are not available.</p>
 		{/if}
 		<ManhattanPlot {rows} {compositions} onSelect={select} />
 	</section>
 
-	<section class="card">
-		<h2>Ranked sites</h2>
+	<section class="section">
+		<div class="section__head"><h2>Ranked sites</h2></div>
 		<RankedSitesPlot {rows} />
 	</section>
 
-	<section class="card">
-		<h2>Sites</h2>
+	<section class="section">
+		<div class="section__head"><h2>Sites</h2></div>
 		<SiteTable {rows} compositions={compositionMap} {hasAttribution} onSelect={select} />
 	</section>
 
 	{#if record.filter}
-		<section class="card">
-			<h2>Artefact filter</h2>
+		<section class="section">
+			<div class="section__head"><h2>Artefact filter</h2></div>
 			<FilterPanel {record} filter={record.filter} />
 		</section>
 	{/if}
 
 	{#if hasAttribution}
-		<section class="card">
-			<h2>Attribution</h2>
+		<section class="section">
+			<div class="section__head"><h2>Attribution</h2></div>
 			<AttributionPanel {attributions} onSelect={select} />
 		</section>
 	{/if}
 
-	<section class="card">
-		<h2>Provenance</h2>
+	<section class="section">
+		<div class="section__head"><h2>Provenance</h2></div>
 		<ProvenancePanel {record} />
 	</section>
 </div>
@@ -167,83 +170,133 @@
 	.results {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-5);
+		gap: var(--space-8);
+		counter-reset: section figure table;
+	}
+	.head {
+		padding-bottom: var(--space-4);
+		border-bottom: 1px solid var(--text);
+	}
+	.head .eyebrow {
+		margin: 0 0 var(--space-2);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+	}
+	.head .eyebrow code {
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		background: none;
+		padding: 0;
 	}
 	.head h1 {
-		margin-bottom: var(--space-2);
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-xl);
+		font-weight: 700;
+		line-height: var(--leading-tight);
 		overflow-wrap: anywhere;
 	}
 	.lede {
-		max-width: var(--container-narrow);
+		max-width: var(--measure);
 		color: var(--text-muted);
 		margin: 0;
 	}
 	.caveats {
-		border: 1px solid var(--warn);
-		background: var(--warn-soft);
-		color: var(--text);
-		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-4);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		max-width: var(--measure);
 	}
 	.caveats strong {
 		color: var(--warn);
+		font-weight: 700;
+	}
+	.caveats strong::before {
+		content: '';
+		display: inline-block;
+		width: 0.5em;
+		height: 0.5em;
+		background: var(--warn-mark);
+		margin-right: 0.45em;
+		vertical-align: 0.05em;
 	}
 	.caveats ul {
 		margin: var(--space-1) 0 0;
 		padding-left: 1.2rem;
 	}
-	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-		box-shadow: var(--shadow);
-		padding: var(--space-5);
+	.section {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-3);
+		gap: var(--space-4);
+		position: relative;
+		padding-left: 2.5rem;
 	}
-	.card h2 {
-		margin: 0;
-	}
-	.card__head {
+	.section__head {
 		display: flex;
 		justify-content: space-between;
-		align-items: center;
+		align-items: baseline;
 		gap: var(--space-3);
 		flex-wrap: wrap;
+		padding-bottom: var(--space-2);
+		border-bottom: 1px solid var(--rule);
+	}
+	.section__head h2 {
+		margin: 0;
+		font-size: var(--text-lg);
+		font-weight: 700;
+		line-height: var(--leading-tight);
+	}
+	.section__head h2::before {
+		counter-increment: section;
+		content: counter(section);
+		position: absolute;
+		left: 0;
+		color: var(--text-muted);
+		font-weight: 400;
 	}
 	.modes {
 		display: inline-flex;
-		gap: 2px;
-		background: var(--border);
-		padding: 2px;
-		border-radius: var(--radius);
+		border: 1px solid var(--rule);
 	}
 	.modes button {
-		border: none;
+		height: 32px;
+		padding: 0 0.75rem;
+		border: 0;
+		border-bottom: 2px solid transparent;
 		background: transparent;
-		border-radius: 6px;
-		padding: 0.35rem 0.8rem;
-		font-size: var(--text-sm);
-		font-weight: 600;
+		font-size: var(--text-md);
 		color: var(--text-muted);
 		cursor: pointer;
 	}
 	.modes button.active {
-		background: var(--surface);
-		color: var(--brand);
-		box-shadow: var(--shadow);
+		color: var(--text);
+		border-bottom-color: var(--text);
+	}
+	.modes button:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: -2px;
 	}
 	.mode-description {
 		margin: 0;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
+		max-width: var(--measure);
+	}
+	.mode-description strong {
+		color: var(--text);
+		font-weight: 700;
 	}
 	.note {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-faint);
-		font-style: italic;
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		max-width: var(--measure);
+	}
+	@media (max-width: 640px) {
+		.section {
+			padding-left: 0;
+		}
+		.section__head h2::before {
+			position: static;
+			margin-right: 0.5em;
+		}
 	}
 </style>

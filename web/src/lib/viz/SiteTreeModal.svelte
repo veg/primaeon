@@ -25,6 +25,12 @@
 	Parsimony substitutions on such a tree are still worth showing — the states are the alignment's
 	and the topology is a faithful summary of the distances the model did see — but the caption says
 	which tree it is every time, so no reader takes an inferred topology for a supplied one.
+
+	SETTING (DESIGN.md §3 "Site-tree modal"). The one floating layer on the site, so the one
+	element allowed a shadow. Branches are the text colour at 1 px; a branch carrying a parsimony
+	substitution, the node where the state changes and the substitution count are the purple — the
+	one signal in the dialog. A refusal ("the tree could not be drawn") is black with a black rule,
+	not orange: it has already stopped and needs no alarm.
 -->
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
@@ -123,7 +129,11 @@
 		}
 	}
 
-	/** axomeme3's post-render pass: style what phylotree drew, by the parsimony states. */
+	/**
+	 * axomeme3's post-render pass: style what phylotree drew, by the parsimony states. phylotree v2
+	 * classes a tip `g.node` and an ancestor `g.internal-node`, so both are selected: the node where
+	 * the state changes is always an ancestor.
+	 */
 	function restyle() {
 		if (!container) return;
 		d3.select(container)
@@ -133,7 +143,7 @@
 				d3.select(this).classed('branch--substitution', isSubstitution(edge.source.state, edge.target.state));
 			});
 		d3.select(container)
-			.selectAll<SVGGElement, FitchNode>('g.node')
+			.selectAll<SVGGElement, FitchNode>('g.node, g.internal-node')
 			.each(function (node) {
 				if (!node) return;
 				const leaf = !node.children || node.children.length === 0;
@@ -175,48 +185,56 @@
 			<button type="button" class="close" aria-label="Close" onclick={onClose}>×</button>
 		</header>
 
-		<div class="facts">
-			<div class="facts__row">
-				<span><strong>Codon site</strong> <span class="mono brand">{row.site}</span></span>
-				<span><strong>Reference</strong> <span class="mono">{row.refCodon || '—'} ({row.refAa || '?'})</span></span>
-				{#if row.isVariable}
-					<span><strong>Predicted LRT</strong> <span class="mono">{row.lrt.toFixed(4)}</span></span>
-				{:else}
-					<span><strong>Predicted LRT</strong> <span class="muted">not scored (invariable)</span></span>
-				{/if}
-				<span>
-					<strong>Parsimony substitutions</strong>
-					<span class="mono danger">{substitutions ?? '—'}</span>
-				</span>
-			</div>
-			{#if treeLabel}
-				<p class="treesource">{treeLabel}</p>
+		<dl class="facts">
+			<dt>Codon site</dt>
+			<dd class="num">{row.site}</dd>
+			<dt>Reference</dt>
+			<dd><span class="mono">{row.refCodon || '—'}</span> ({row.refAa || '?'})</dd>
+			<dt>Predicted LRT</dt>
+			{#if row.isVariable}
+				<dd class="num">{row.lrt.toFixed(4)}</dd>
+			{:else}
+				<dd class="muted">not scored (invariable)</dd>
 			{/if}
+			<dt>Parsimony substitutions</dt>
+			<dd class="num signal">{substitutions ?? '—'}</dd>
 			{#if composition}
-				<div class="facts__row facts__row--composition">
-					<span class="eyebrow-sm">Amino-acid composition at site</span>
-					<SparkBar counts={composition.aaCounts} total={composition.total} wide />
-				</div>
+				<dt>Amino-acid composition</dt>
+				<dd><SparkBar counts={composition.aaCounts} total={composition.total} wide /></dd>
 			{/if}
-			<div class="toggles">
-				<span class="toggle-group" role="group" aria-label="Labels">
-					<span class="toggle-label">Labels</span>
-					<button type="button" class:active={labelType === 'codon'} onclick={() => (labelType = 'codon')}>Codons</button>
-					<button type="button" class:active={labelType === 'aa'} onclick={() => (labelType = 'aa')}>Amino acids</button>
-				</span>
-				<span class="toggle-group" role="group" aria-label="Layout">
-					<span class="toggle-label">Layout</span>
-					<button type="button" class:active={layout === 'linear'} onclick={() => (layout = 'linear')}>Linear</button>
-					<button type="button" class:active={layout === 'radial'} onclick={() => (layout = 'radial')}>Radial</button>
-				</span>
-				<button type="button" class="toggle-single" class:active={alignTips} onclick={() => (alignTips = !alignTips)}>
+		</dl>
+		{#if treeLabel}
+			<p class="treesource">{treeLabel}</p>
+		{/if}
+
+		<div class="toggles">
+			<span class="toggle-group" role="group" aria-label="Labels">
+				<span class="toggle-label">Labels</span>
+				<button type="button" aria-pressed={labelType === 'codon'} class:active={labelType === 'codon'} onclick={() => (labelType = 'codon')}>Codons</button>
+				<button type="button" aria-pressed={labelType === 'aa'} class:active={labelType === 'aa'} onclick={() => (labelType = 'aa')}>Amino acids</button>
+			</span>
+			<span class="toggle-group" role="group" aria-label="Layout">
+				<span class="toggle-label">Layout</span>
+				<button type="button" aria-pressed={layout === 'linear'} class:active={layout === 'linear'} onclick={() => (layout = 'linear')}>Linear</button>
+				<button type="button" aria-pressed={layout === 'radial'} class:active={layout === 'radial'} onclick={() => (layout = 'radial')}>Radial</button>
+			</span>
+			<span class="toggle-group">
+				<button type="button" class="toggle-single" aria-pressed={alignTips} class:active={alignTips} onclick={() => (alignTips = !alignTips)}>
 					Align tips
 				</button>
-				<button type="button" class="toggle-single" class:active={collapse} onclick={() => (collapse = !collapse)}
-					title="Collapse clades with no parsimony substitution below them">
+			</span>
+			<span class="toggle-group">
+				<button
+					type="button"
+					class="toggle-single"
+					aria-pressed={collapse}
+					class:active={collapse}
+					onclick={() => (collapse = !collapse)}
+					title="Collapse clades with no parsimony substitution below them"
+				>
 					Collapse unchanged clades
 				</button>
-			</div>
+			</span>
 		</div>
 
 		{#if !canDraw}
@@ -225,12 +243,12 @@
 				drawn. Results stored by a browser run include both; a bare CLI document does not.
 			</p>
 		{:else if error}
-			<p class="notice notice--error">Could not render the tree: {error}</p>
+			<p class="notice notice--error"><strong>The tree could not be drawn.</strong> {error}</p>
 		{/if}
 		<div class="tree" bind:this={container}></div>
 		<p class="legend">
 			<span><i class="swatch swatch--sub"></i> branch with a parsimony substitution</span>
-			<span><i class="swatch swatch--node"></i> node where the state changes</span>
+			<span><svg class="swatch--node" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4" /></svg> node where the state changes</span>
 			{#if collapse}<span>Clades without a change are collapsed.</span>{/if}
 		</p>
 	</div>
@@ -241,17 +259,19 @@
 		position: fixed;
 		inset: 0;
 		z-index: 50;
-		background: rgb(20 17 31 / 0.55);
+		background: rgb(0 0 0 / 0.4);
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		padding: var(--space-4);
 	}
 	.modal {
-		background: var(--surface);
+		background: var(--bg);
 		color: var(--text);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow);
+		border: 1px solid var(--rule);
+		box-shadow:
+			0 0 0 1px var(--rule),
+			0 12px 32px rgb(0 0 0 / 0.28);
 		width: min(100%, 64rem);
 		max-height: calc(100dvh - 2 * var(--space-4));
 		overflow: auto;
@@ -261,188 +281,194 @@
 		padding: var(--space-5);
 		outline: none;
 	}
+	.modal:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
+	}
 	.modal__header {
 		display: flex;
 		justify-content: space-between;
-		align-items: center;
+		align-items: baseline;
+		border-bottom: 1px solid var(--rule);
+		padding-bottom: var(--space-2);
 	}
 	.modal__header h2 {
 		margin: 0;
+		font-size: var(--text-lg);
+		font-weight: 700;
+		line-height: var(--leading-tight);
 	}
 	.close {
 		all: unset;
 		cursor: pointer;
-		font-size: 1.6rem;
+		font-size: var(--text-lg);
 		line-height: 1;
-		padding: 0.2rem 0.5rem;
-		border-radius: var(--radius-sm);
+		padding: 0.2rem 0.4rem;
 		color: var(--text-muted);
 	}
 	.close:hover {
-		background: var(--bg-subtle);
 		color: var(--text);
 	}
+	.close:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
+	}
 	.facts {
-		background: var(--bg-subtle);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-4);
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-		font-size: var(--text-sm);
+		margin: 0;
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		column-gap: var(--space-4);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
 	}
-	.facts__row {
-		display: flex;
-		gap: var(--space-4);
-		flex-wrap: wrap;
-	}
-	.facts__row--composition {
-		flex-direction: column;
-		gap: 0.2rem;
-		padding-top: var(--space-2);
-		border-top: 1px dotted var(--border);
-	}
-	.eyebrow-sm {
-		font-size: 0.7rem;
-		font-weight: 700;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
+	.facts dt {
 		color: var(--text-muted);
+		padding: 0.15rem 0;
+	}
+	.facts dd {
+		margin: 0;
+		padding: 0.15rem 0;
+		text-align: left;
+		color: var(--text);
 	}
 	.mono {
 		font-family: var(--font-mono);
+		font-size: var(--text-sm);
 	}
-	.brand {
+	.num {
+		font-variant-numeric: tabular-nums;
+	}
+	.signal {
 		color: var(--brand);
-		font-weight: 700;
-	}
-	.danger {
-		color: var(--tier-strong);
 		font-weight: 700;
 	}
 	.muted {
 		color: var(--text-faint);
-		font-style: italic;
+	}
+	.treesource {
+		margin: 0;
+		max-width: var(--measure);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
+		color: var(--text-muted);
 	}
 	.toggles {
 		display: flex;
 		gap: var(--space-4);
 		flex-wrap: wrap;
 		align-items: center;
-		padding-top: var(--space-2);
-		border-top: 1px dotted var(--border);
 	}
 	.toggle-group {
 		display: inline-flex;
-		align-items: center;
-		gap: 2px;
-		background: var(--border);
-		padding: 2px;
-		border-radius: 6px;
+		align-items: stretch;
+		border: 1px solid var(--rule);
+		height: 2rem;
 	}
 	.toggle-label {
-		font-size: var(--text-xs);
-		font-weight: 600;
+		display: inline-flex;
+		align-items: center;
+		padding: 0 0.6rem;
+		font-size: var(--text-sm);
 		color: var(--text-muted);
-		padding-inline: 0.4rem;
+		border-right: 1px solid var(--rule);
 	}
 	.toggles button {
-		border: none;
-		background: transparent;
-		border-radius: 4px;
-		padding: 0.25rem 0.55rem;
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-muted);
+		all: unset;
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		padding: 0 0.75rem;
+		font-family: var(--font-text);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		text-decoration: underline transparent;
+		text-decoration-thickness: 2px;
+		text-underline-offset: 0.3em;
+	}
+	.toggles button + button {
+		border-left: 1px solid var(--rule);
+	}
+	.toggles button:hover {
+		color: var(--text);
 	}
 	.toggles button.active {
-		background: var(--surface);
-		color: var(--brand);
-		box-shadow: var(--shadow);
+		color: var(--text);
+		text-decoration-color: var(--text);
 	}
-	.toggle-single {
-		border: 1px solid var(--border-strong) !important;
+	.toggles button:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: -2px;
 	}
 	.notice {
 		margin: 0;
-		padding: var(--space-3);
-		border-radius: var(--radius);
-		background: var(--warn-soft);
-		color: var(--warn);
-		font-size: var(--text-sm);
+		max-width: var(--measure);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
+		color: var(--text-muted);
 	}
 	.notice--error {
-		background: var(--danger-soft);
-		color: var(--danger);
+		border-left: 2px solid var(--text);
+		padding-left: var(--space-3);
+	}
+	.notice--error strong {
+		color: var(--text);
+		font-weight: 700;
 	}
 	.tree {
 		min-height: 24rem;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+		border: 1px solid var(--rule);
 		padding: var(--space-3);
 		overflow: auto;
-		background: var(--surface);
+		background: var(--bg);
 	}
 	.tree :global(svg) {
 		max-width: none;
 	}
 	.tree :global(.branch) {
-		stroke: var(--text-muted);
-		stroke-width: 1.5px;
+		stroke: var(--text);
+		stroke-width: 1px;
 		fill: none;
 	}
 	.tree :global(.branch--substitution) {
-		stroke: var(--tier-strong);
-		stroke-width: 3.5px;
+		stroke: var(--brand);
+		stroke-width: 2px;
 	}
 	.tree :global(.node text) {
-		font-family: var(--font-mono);
+		font-family: var(--font-text);
 		font-size: 11px;
 		fill: var(--text);
 	}
-	.tree :global(.node circle) {
+	.tree :global(.node circle),
+	.tree :global(.internal-node circle) {
 		display: none;
-	}
-	.tree :global(.node--leaf circle) {
-		display: inline;
-		fill: var(--brand);
-		stroke: var(--surface);
-		stroke-width: 1px;
-		r: 3.5px;
 	}
 	.tree :global(.node--substitution circle) {
 		display: inline;
-		fill: var(--tier-strong);
-		stroke: var(--surface);
+		fill: var(--brand);
+		stroke: var(--bg);
 		stroke-width: 1px;
-		r: 5px;
+		r: 4px;
 	}
 	.tree :global(.node-collapsed path),
 	.tree :global(.node-collapsed polygon) {
-		fill: var(--tier-none);
-		opacity: 0.5;
+		fill: var(--plot-uncalled);
+		stroke: none;
 	}
 	.tree :global(.tree-scale-bar text) {
-		fill: var(--text-muted);
-		font-size: 10px;
+		fill: var(--plot-tick);
+		font-family: var(--font-text);
+		font-size: 11px;
 	}
 	.tree :global(.tree-scale-bar line),
 	.tree :global(.tree-scale-bar path) {
-		stroke: var(--text-muted);
-	}
-	.treesource {
-		margin: 0;
-		font-size: var(--text-xs);
-		color: var(--text-muted);
+		stroke: var(--plot-axis);
 	}
 	.legend {
 		margin: 0;
 		display: flex;
 		gap: var(--space-4);
 		flex-wrap: wrap;
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		color: var(--text-muted);
 	}
 	.legend span {
@@ -453,12 +479,11 @@
 	.swatch {
 		display: inline-block;
 		width: 1rem;
-		height: 3px;
-		background: var(--tier-strong);
+		height: 2px;
+		background: var(--brand);
 	}
 	.swatch--node {
-		width: 9px;
-		height: 9px;
-		border-radius: 50%;
+		display: inline-block;
+		fill: var(--brand);
 	}
 </style>

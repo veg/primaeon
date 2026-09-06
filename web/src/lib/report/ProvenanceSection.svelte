@@ -10,7 +10,7 @@
 	own provenance merged over it when the orchestrator wrote one, replaces its per-analysis
 	downloads with the report's (lib/report/downloads.ts), and replaces the `hyphaeon_meme`
 	snippet with the `hyphaeon_analyze` one (lib/report/mcp.ts). Timings per phase are the
-	report's own and are listed here.
+	report's own and are printed here as one line of small print (web/DESIGN.md §3, Progress).
 -->
 <script lang="ts">
 	import type { ReportRecord } from '$lib/api';
@@ -18,7 +18,7 @@
 	import ProvenancePanel, { type ExtraDownload } from '$lib/viz/ProvenancePanel.svelte';
 	import { analyzeSnippet } from './mcp';
 	import { downloadText, graphmlText, newickText, reportJsonText, reportStem, sitesCsvText, sitesJsonText } from './downloads';
-	import { PHASE_LABEL } from './status';
+	import { PHASE_LABEL, formatSeconds } from './status';
 
 	interface Props {
 		record: ReportRecord;
@@ -84,14 +84,17 @@
 	]);
 	const snippet = $derived(analyzeSnippet(record));
 	const timings = $derived(Object.entries(record.timings).filter(([, v]) => v != null && Number.isFinite(v as number)));
+	const sectionsRun = $derived(record.status.completed?.length ? record.status.completed.join(', ') : null);
 </script>
 
-{#if timings.length}
-	<dl class="timings" aria-label="Phase timings">
-		{#each timings as [phase, sec] (phase)}
-			<div><dt>{PHASE_LABEL[phase] ?? phase}</dt><dd class="mono">{(sec as number).toFixed(sec! < 10 ? 2 : 1)} s</dd></div>
-		{/each}
-	</dl>
+{#if timings.length || sectionsRun}
+	<p class="timings" aria-label="Phase timings">
+		{#if sectionsRun}Sections run: {sectionsRun}.{/if}
+		{#if timings.length}
+			Wall time by phase:
+			{#each timings as [phase, sec], i (phase)}{i ? '; ' : ' '}{PHASE_LABEL[phase] ?? phase} {formatSeconds(sec as number)}{/each}.
+		{/if}
+	</p>
 {/if}
 
 {#if panelRecord}
@@ -103,29 +106,11 @@
 <style>
 	.timings {
 		margin: 0;
-		display: flex;
-		gap: var(--space-4);
-		flex-wrap: wrap;
 		font-size: var(--text-sm);
-	}
-	.timings div {
-		display: flex;
-		gap: var(--space-2);
-		align-items: baseline;
-	}
-	.timings dt {
 		color: var(--text-faint);
-	}
-	.timings dd {
-		margin: 0;
-	}
-	.mono {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		max-width: none;
 	}
 	.note {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-muted);
 	}
 </style>

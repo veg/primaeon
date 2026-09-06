@@ -10,6 +10,11 @@
 	passed down because two components read them (this section and OverviewStrip). The modal opens
 	from this section, the epistasis network and the DMS heatmap alike, so `openSite` is also the
 	parent's.
+
+	THE LEDE STATES THE FINDING (web/DESIGN.md §5): how many codons vary, what the active cut is,
+	and which sites it called, as links to their trees. The surrogate caveat follows as a plain
+	note in the same voice; a fact about the input the model was given (no name matched the tree,
+	negative branch lengths) is a warning and is set as one.
 -->
 <script lang="ts">
 	import type { SitesSection } from '$lib/report/types';
@@ -32,8 +37,12 @@
 	}
 	let { sites, rows, modes, mode, onMode, compositions, compositionMap, hasAttribution, onSelect }: Props = $props();
 
+	const LISTED = 12;
 	const modeOption = $derived(modes.find((m) => m.id === mode) ?? modes[0]);
 	const summary = $derived(sites.summary);
+	const variable = $derived(rows.filter((r) => r.isVariable).length);
+	const called = $derived(rows.filter((r) => r.tier > 0).sort((a, b) => a.site - b.site));
+	const taxa = $derived(summary.speciesUsed ?? sites.alignment?.names.length ?? null);
 	const caveats = $derived.by(() => {
 		const out: string[] = [];
 		if (summary.matchedFromTree === false)
@@ -48,17 +57,26 @@
 </script>
 
 <p class="lede">
-	The model ranks the sites of this alignment by how MEME-like their signal looks; MEME was not run.
-	The predicted LRT orders sites <em>within this alignment</em> and is not calibrated to MEME's
-	scale; p and q are that LRT pushed through MEME's mixture null and are conservative.
+	{variable.toLocaleString()} of {rows.length.toLocaleString()} codons vary{taxa ? ` across the ${taxa.toLocaleString()} taxa` : ''}; the model scores
+	those and leaves the rest unscored. Calls follow the “{modeOption.label}” rule: {modeOption.tier1} is tier 1, {modeOption.tier2} tier 2.
+	{#if called.length === 0}
+		No site is called at this cut.
+	{:else}
+		{called.length === 1 ? 'Site' : 'Sites'}
+		{#each called.slice(0, LISTED) as r, i (r.site)}{i === 0 ? '' : i === called.length - 1 ? ' and ' : ', '}<button type="button" class="sitelink" onclick={() => onSelect(r.site)}>{r.refAa}{r.site}</button>{/each}{called.length > LISTED ? ` and ${(called.length - LISTED).toLocaleString()} more` : ''}
+		{called.length === 1 ? 'is' : 'are'} called.
+	{/if}
 </p>
 
-{#if caveats.length}
-	<aside class="caveats" aria-label="What the model was given">
-		<strong>What the model was given</strong>
-		<ul>{#each caveats as c, i (i)}<li>{c}</li>{/each}</ul>
-	</aside>
-{/if}
+<p class="note">
+	The predicted LRT ranks the sites of this alignment by how MEME-like their signal looks; MEME was not run. It orders
+	sites within this alignment and is not calibrated to MEME's scale; p and q are that LRT pushed through MEME's mixture
+	null and are conservative.
+</p>
+
+{#each caveats as c, i (i)}
+	<p class="note note--warn"><strong>What the model was given.</strong> {c}</p>
+{/each}
 
 <div class="modes-row">
 	<div class="modes" role="radiogroup" aria-label="Call mode">
@@ -66,84 +84,76 @@
 			<button type="button" role="radio" aria-checked={mode === m.id} class:active={mode === m.id} onclick={() => onMode(m.id)}>{m.label}</button>
 		{/each}
 	</div>
-	<p class="mode-description"><strong>{modeOption.tier1}</strong> is tier 1, <strong>{modeOption.tier2}</strong> tier 2. {modeOption.description}</p>
+	<p class="note mode-description">{modeOption.description}</p>
 </div>
 
-<h3>Along the sequence</h3>
 {#if !compositions}
 	<p class="note">This record does not carry the aligned sequences, so the entropy overlays are not available.</p>
 {/if}
 <ManhattanPlot {rows} {compositions} {onSelect} />
 
-<h3>Ranked sites</h3>
 <RankedSitesPlot {rows} />
 
-<h3>Site table</h3>
 <SiteTable {rows} compositions={compositionMap} {hasAttribution} {onSelect} />
 
 <style>
-	.lede {
+	.lede,
+	.note {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-muted);
-		max-width: var(--container-narrow);
 	}
-	.caveats {
-		border: 1px solid var(--warn);
-		background: var(--warn-soft);
-		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-4);
-		font-size: var(--text-sm);
+	.sitelink {
+		all: unset;
+		cursor: pointer;
+		color: var(--brand);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
 	}
-	.caveats strong {
-		color: var(--warn);
+	.sitelink:hover {
+		text-decoration-thickness: 2px;
 	}
-	.caveats ul {
-		margin: var(--space-1) 0 0;
-		padding-left: 1.2rem;
+	.sitelink:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
 	}
 	.modes-row {
 		display: flex;
-		gap: var(--space-3);
-		align-items: center;
+		gap: var(--space-4);
+		align-items: flex-start;
 		flex-wrap: wrap;
 	}
 	.modes {
 		display: inline-flex;
-		gap: 2px;
-		background: var(--border);
-		padding: 2px;
-		border-radius: var(--radius);
+		border: 1px solid var(--rule);
+		height: 2rem;
+		flex: none;
 	}
 	.modes button {
-		border: none;
+		border: 0;
 		background: transparent;
-		border-radius: 6px;
-		padding: 0.35rem 0.8rem;
-		font-size: var(--text-sm);
-		font-weight: 600;
+		padding: 0 0.8rem;
+		font-size: var(--text-md);
 		color: var(--text-muted);
 		cursor: pointer;
+		position: relative;
+	}
+	.modes button + button {
+		border-left: 1px solid var(--rule);
 	}
 	.modes button.active {
-		background: var(--surface);
-		color: var(--brand);
-		box-shadow: var(--shadow);
+		color: var(--text);
+	}
+	.modes button.active::after {
+		content: '';
+		position: absolute;
+		left: 0.8rem;
+		right: 0.8rem;
+		bottom: 0.3rem;
+		height: 2px;
+		background: var(--text);
 	}
 	.mode-description {
-		margin: 0;
-		font-size: var(--text-xs);
-		color: var(--text-muted);
 		flex: 1 1 20rem;
-	}
-	h3 {
-		margin: var(--space-2) 0 0;
-		font-size: var(--text-lg);
-	}
-	.note {
-		margin: 0;
 		font-size: var(--text-sm);
-		color: var(--text-faint);
-		font-style: italic;
 	}
 </style>

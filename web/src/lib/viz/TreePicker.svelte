@@ -18,10 +18,18 @@
 	mistake it for the tree the numbers came from, so the source is stated above the canvas
 	whenever it is not the reader's own tree.
 
+	phylotree v2 classes a tip `g.node` and an ancestor `g.internal-node`; both are selected below,
+	since the ancestor is the clade's handle.
+
 	THE SELECTION IS RESTYLED IN PLACE, NOT RE-RENDERED. phylotree lays out a 256-tip tree in tens
 	of milliseconds and re-rendering on every click would throw away the reader's zoom and pan; the
 	effect that follows `selected` only toggles classes, exactly as SiteTreeModal's post-render pass
 	styles what phylotree drew.
+
+	SETTING (DESIGN.md §3). Branches are the text colour at 1 px; a chosen tip is the one thing in
+	purple (a filled marker and a bold label), a partly chosen clade's ancestor a hollow purple
+	marker; a tip the model did not see is faint. The layout switch is a segmented control: text
+	buttons in one hairline box, the pressed one underlined.
 -->
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
@@ -105,7 +113,7 @@
 			display.nodeLabel((node: PickerNode) => (!node.children || node.children.length === 0 ? node.data.name : ''));
 			container.appendChild(display.show());
 			d3.select(container)
-				.selectAll<SVGGElement, PickerNode>('g.node')
+				.selectAll<SVGGElement, PickerNode>('g.node, g.internal-node')
 				.each(function (node) {
 					if (!node) return;
 					const leaf = !node.children || node.children.length === 0;
@@ -137,7 +145,7 @@
 		const names = chosen;
 		if (!container) return;
 		d3.select(container)
-			.selectAll<SVGGElement, PickerNode>('g.node')
+			.selectAll<SVGGElement, PickerNode>('g.node, g.internal-node')
 			.each(function (node) {
 				if (!node) return;
 				const leaves = leavesOf(node).filter((n) => known.has(n));
@@ -158,8 +166,8 @@
 	<div class="picker__bar">
 		<span class="count"><strong>{selected.length}</strong> of {taxa.length} taxa in the foreground</span>
 		<span class="toggle-group" role="group" aria-label="Layout">
-			<button type="button" class:active={layout === 'linear'} onclick={() => (layout = 'linear')}>Linear</button>
-			<button type="button" class:active={layout === 'radial'} onclick={() => (layout = 'radial')}>Radial</button>
+			<button type="button" aria-pressed={layout === 'linear'} class:active={layout === 'linear'} onclick={() => (layout = 'linear')}>Linear</button>
+			<button type="button" aria-pressed={layout === 'radial'} class:active={layout === 'radial'} onclick={() => (layout = 'radial')}>Radial</button>
 		</span>
 		<button type="button" class="clear" onclick={() => onChange([])} disabled={selected.length === 0}>Clear</button>
 	</div>
@@ -174,7 +182,7 @@
 		{/if}
 	</p>
 	{#if error}
-		<p class="error">Could not draw the tree: {error}</p>
+		<p class="error"><strong>The tree could not be drawn.</strong> {error}</p>
 	{/if}
 	<div class="picker__canvas" bind:this={container}></div>
 </div>
@@ -188,117 +196,159 @@
 	.picker__bar {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		gap: var(--space-4);
 		flex-wrap: wrap;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
 	.count {
 		color: var(--text-muted);
 	}
+	.count strong {
+		color: var(--text);
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+	}
 	.toggle-group {
 		display: inline-flex;
-		gap: 2px;
-		background: var(--border);
-		padding: 2px;
-		border-radius: 6px;
+		border: 1px solid var(--rule);
+		height: 2rem;
 	}
 	.toggle-group button {
-		border: none;
-		background: transparent;
-		border-radius: 4px;
-		padding: 0.2rem 0.55rem;
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-muted);
+		all: unset;
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		padding: 0 0.75rem;
+		font-family: var(--font-text);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		text-decoration: underline transparent;
+		text-decoration-thickness: 2px;
+		text-underline-offset: 0.3em;
+	}
+	.toggle-group button + button {
+		border-left: 1px solid var(--rule);
+	}
+	.toggle-group button:hover {
+		color: var(--text);
 	}
 	.toggle-group button.active {
-		background: var(--surface);
-		color: var(--brand);
+		color: var(--text);
+		text-decoration-color: var(--text);
+	}
+	.toggle-group button:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: -2px;
 	}
 	.clear {
+		all: unset;
 		margin-left: auto;
-		background: none;
-		border: 0;
-		color: var(--link);
-		text-decoration: underline;
 		cursor: pointer;
-		font-size: var(--text-sm);
-		padding: 0;
+		color: var(--brand);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
+		font-size: var(--text-md);
+	}
+	.clear:hover {
+		text-decoration-thickness: 2px;
+	}
+	.clear:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
 	}
 	.clear:disabled {
-		color: var(--text-faint);
-		text-decoration: none;
+		opacity: 0.45;
 		cursor: default;
 	}
 	.hint {
 		margin: 0;
-		font-size: var(--text-xs);
+		max-width: var(--measure);
+		font-size: var(--text-md);
+		line-height: var(--leading-normal);
 		color: var(--text-muted);
+	}
+	.hint strong {
+		color: var(--text);
+		font-weight: 700;
 	}
 	.error {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--danger);
+		max-width: var(--measure);
+		border-left: 2px solid var(--text);
+		padding-left: var(--space-3);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+	}
+	.error strong {
+		color: var(--text);
+		font-weight: 700;
 	}
 	.picker__canvas {
 		min-height: 18rem;
 		max-height: 32rem;
 		overflow: auto;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+		border: 1px solid var(--rule);
 		padding: var(--space-2);
-		background: var(--surface);
+		background: var(--bg);
 	}
 	.picker__canvas :global(svg) {
 		max-width: none;
 	}
 	.picker__canvas :global(.branch) {
-		stroke: var(--text-muted);
-		stroke-width: 1.4px;
+		stroke: var(--text);
+		stroke-width: 1px;
 		fill: none;
 	}
 	.picker__canvas :global(.node text) {
-		font-family: var(--font-mono);
-		font-size: 10px;
+		font-family: var(--font-text);
+		font-size: 11px;
 		fill: var(--text);
 	}
 	.picker__canvas :global(.node circle) {
 		display: none;
+	}
+	/* An ancestor's circle is the handle for its clade: a small hollow grey mark. */
+	.picker__canvas :global(.internal-node circle) {
+		fill: var(--bg);
+		stroke: var(--plot-uncalled);
+		stroke-width: 1px;
+		r: 2.5px;
+	}
+	.picker__canvas :global(.internal-node.pick:hover circle) {
+		stroke: var(--text);
 	}
 	.picker__canvas :global(.pick) {
 		cursor: pointer;
 	}
 	.picker__canvas :global(.pick--leaf circle) {
 		display: inline;
-		fill: var(--surface);
-		stroke: var(--text-faint);
-		stroke-width: 1.2px;
-		r: 3.5px;
+		fill: var(--bg);
+		stroke: var(--plot-uncalled);
+		stroke-width: 1px;
+		r: 3px;
 	}
 	.picker__canvas :global(.pick:hover text) {
-		fill: var(--brand);
-		font-weight: 700;
+		text-decoration: underline;
 	}
 	.picker__canvas :global(.pick--on circle) {
 		display: inline;
-		fill: var(--tier-strong);
-		stroke: var(--surface);
-		r: 4.5px;
+		fill: var(--brand);
+		stroke: var(--brand);
+		r: 3.5px;
 	}
 	.picker__canvas :global(.pick--on text) {
-		fill: var(--tier-strong);
+		fill: var(--brand);
 		font-weight: 700;
 	}
 	.picker__canvas :global(.pick--partial circle) {
 		display: inline;
-		fill: var(--surface);
-		stroke: var(--tier-strong);
-		stroke-width: 2px;
-		r: 4px;
+		fill: var(--bg);
+		stroke: var(--brand);
+		stroke-width: 1.5px;
+		r: 3.5px;
 	}
 	.picker__canvas :global(.pick--absent text) {
 		fill: var(--text-faint);
-		font-style: italic;
 	}
 </style>

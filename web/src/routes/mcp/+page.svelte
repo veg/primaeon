@@ -17,6 +17,10 @@
 	snippet convention is the one web/src/lib/results/mcpSnippet.ts implements for the report's
 	"Reproduce" panel: the install line, then {tool, arguments} with file:// placeholders and the
 	CLI's option names in snake_case.
+
+	LOOK. web/DESIGN.md §3 "/mcp": h1, a metadata line, numbered h2 by CSS counter, install lines
+	as <pre> on --surface-2, the tool table under the table rule with group rows in muted 700, and
+	the transcript as a hairline-ruled list rather than a stack of cards.
 -->
 <script lang="ts">
 	import { base } from '$app/paths';
@@ -60,9 +64,11 @@
 	/>
 </svelte:head>
 
-<div class="container container--narrow">
-	<p class="eyebrow">MCP</p>
-	<h1>Use HyphAeon from Claude</h1>
+<div class="container container--narrow mcp">
+	<h1>HyphAeon from Claude</h1>
+	<p class="meta">
+		Model Context Protocol server · <code>@veg/hyphaeon-mcp</code> · stdio and remote
+	</p>
 	<p class="intro">
 		The same analyses as a Model Context Protocol server. Locally it runs on your machine with the
 		vendored model, reads files by path, and sends nothing anywhere; remotely it is a claude.ai
@@ -126,7 +132,7 @@
 	<section>
 		<h2>Tools</h2>
 		<p>
-			Every analysis tool runs <strong>in-process</strong>: the JavaScript port runs inside the MCP
+			Every analysis tool runs in-process: the JavaScript port runs inside the MCP
 			process and the result matches the reference at the published parity classes. That has been
 			true of all eight since Phase 3 — <code>hyphaeon_phenotype</code> included, which was the last
 			tool to answer through a Python subprocess — so nothing here is marked "bridged" and no tool
@@ -135,12 +141,13 @@
 		</p>
 		<div class="scroll">
 			<table class="tools">
+				<caption><b>Tools.</b> One row per tool the server registers, <code>hyphaeon_analyze</code> first; what each returns.</caption>
 				<thead>
 					<tr><th>Tool</th><th>Returns</th></tr>
 				</thead>
 				<tbody>
 					{#each analysisTools as t (t.name)}
-						<tr class:tools--first={t.name === 'hyphaeon_analyze'}>
+						<tr>
 							<td><code>{t.name}</code></td>
 							<td>
 								{t.returns}
@@ -234,20 +241,45 @@
 </div>
 
 <style>
-	.intro {
+	.mcp {
+		counter-reset: section;
+	}
+	h1 {
+		margin-bottom: var(--space-1);
+	}
+	.meta {
+		font-size: var(--text-md);
 		color: var(--text-muted);
-		margin-bottom: var(--space-5);
+		margin: 0 0 var(--space-5);
+		padding-bottom: var(--space-3);
+		border-bottom: 1px solid var(--text);
+		max-width: none;
+	}
+	.intro {
+		margin-bottom: var(--space-8);
 	}
 	section {
-		border-top: 1px solid var(--border);
-		padding-top: var(--space-5);
-		margin-bottom: var(--space-6);
+		margin-bottom: var(--space-10);
+	}
+	section h2 {
+		position: relative;
+		padding: 0 0 var(--space-2) 2.5rem;
+		margin-bottom: var(--space-4);
+		border-bottom: 1px solid var(--rule);
+	}
+	section h2::before {
+		counter-increment: section;
+		content: counter(section);
+		position: absolute;
+		left: 0;
+		color: var(--text-muted);
+		font-weight: 400;
 	}
 	.env {
 		display: grid;
 		grid-template-columns: max-content 1fr;
 		gap: var(--space-1) var(--space-4);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		margin: 0 0 var(--space-4);
 	}
 	.env dd {
@@ -256,97 +288,100 @@
 	}
 	.scroll {
 		overflow-x: auto;
-		margin-bottom: var(--space-4);
+		margin-bottom: var(--space-5);
 	}
 	.tools {
 		min-width: 36rem;
-		font-size: var(--text-sm);
 	}
 	.tools td:first-child {
 		white-space: nowrap;
 	}
-	.tools--first td {
-		background: var(--brand-soft);
-	}
 	.note {
 		display: block;
 		color: var(--text-muted);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		margin-top: var(--space-1);
 	}
 	.tools__group th {
 		text-align: left;
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
+		font-weight: 700;
 		color: var(--text-muted);
-		padding-top: var(--space-3);
+		padding-top: var(--space-4);
+		border-bottom: 1px solid var(--hair);
 	}
 	.version {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 	}
 	.recorded {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 	}
 	.transcript {
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		display: grid;
-		gap: var(--space-3);
+		border-top: 1px solid var(--hair);
 	}
 	.turn {
-		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-4);
-		border: 1px solid var(--border);
-		background: var(--surface);
+		display: grid;
+		grid-template-columns: 10rem minmax(0, 1fr);
+		gap: var(--space-1) var(--space-4);
+		padding: var(--space-3) 0;
+		border-bottom: 1px solid var(--hair);
 	}
 	.turn p {
 		margin: 0;
 	}
 	.turn__who {
-		display: block;
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
+		font-size: var(--text-sm);
+		font-weight: 700;
 		color: var(--text-muted);
-		margin-bottom: var(--space-1);
+		line-height: var(--leading-normal);
 	}
-	.turn--user {
-		background: var(--bg-subtle);
-	}
-	.turn--assistant {
-		border-color: var(--brand);
+	.turn--assistant .turn__who {
+		color: var(--text);
 	}
 	.turn--tool {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
 	.turn--tool .turn__who {
-		text-transform: none;
-		letter-spacing: 0;
+		font-weight: 400;
+	}
+	.turn--tool .turn__who code {
+		font-size: var(--text-sm);
+		overflow-wrap: anywhere;
 	}
 	.turn--tool pre {
 		margin: 0;
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 	}
 	.turn--tool .args {
 		margin-bottom: var(--space-2);
 	}
+	.turn--tool details {
+		grid-column: 2;
+	}
 	.turn--tool summary {
 		cursor: pointer;
-		font-size: var(--text-xs);
-		color: var(--link);
+		font-size: var(--text-sm);
+		color: var(--text-muted);
 		margin-bottom: var(--space-2);
 	}
 	.convention {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		padding-left: 1.2rem;
+		max-width: var(--measure);
 	}
 	.convention li {
 		margin-bottom: var(--space-1);
+	}
+	@media (max-width: 40em) {
+		.turn {
+			grid-template-columns: 1fr;
+		}
+		.turn--tool details {
+			grid-column: 1;
+		}
 	}
 </style>

@@ -2,52 +2,46 @@
  * app.css — design tokens and base element styles for the HyphAeon web app.
  *
  * WHY THIS FILE EXISTS. PLAN.md D8: scoped CSS carrying DataMonkey's tokens as CSS variables, no
- * Tailwind, no CDNs. This is the only global stylesheet. It defines the tokens, a small reset, and
- * the base typography; every component styles itself in its own scoped <style> block using these
- * variables. Shared classes are kept to the handful below (.button, .container, .eyebrow) that
- * would otherwise be copied verbatim into every route.
+ * Tailwind, no CDNs. This is the only global stylesheet. It defines the tokens (web/DESIGN.md §2),
+ * a small reset, the base typography, and the handful of shared classes every route uses verbatim
+ * (.container, .button, .eyebrow, .note, .banner, .notice, .hint, .lede, .mono, .num, .table).
+ * Every component styles itself in its own scoped <style> block using these variables.
  *
- * TYPEFACES. DM Serif Display (display), Source Sans 3 (text), JetBrains Mono (code and numbers),
- * the same three that DataMonkey 3 and axomeme3 use, so the family of tools reads as one. Both of
- * those load them from fonts.googleapis.com; this app must not (D8, and the e2e asserts that the
- * landing page makes no cross-origin request). Until the woff2 files are vendored under
- * static/fonts/ and declared with @font-face here, the stacks fall through to system faces:
+ * TYPEFACES. System stacks only (DESIGN.md §2.1): Helvetica Neue / Helvetica / Arial / Liberation
+ * Sans for text, the platform monospace for code and hashes. Nothing is vendored and nothing is
+ * fetched: the e2e asserts that no route makes an off-origin request, and zero font bytes is the
+ * environmentally honest choice (Rams 9). Weights are 400 and 700 only, because Arial ships no
+ * other weight and a synthesised 600 would make the page differ by platform (§2.4). Tabular
+ * numerals are set once on <body> so every digit on the site aligns.
  *
- *   TODO(fonts): vendor DM Serif Display, Source Sans 3 (300–700) and JetBrains Mono (400–600) as
- *   woff2 under static/fonts/ with their OFL licence files, add @font-face rules here with
- *   `font-display: swap`, and preload the two text faces from +layout.svelte.
- *
- * COLOUR. Brand purple #5B3FA0 and accent orange #D9721B are the HyphAeon identity colours. The
- * rest of each palette is derived so that text on surface meets WCAG AA (4.5:1) in both schemes:
- * measured with the light text #1F1B2E on #FFFFFF (16.3:1) and the dark text #EDEAF5 on #14111F
- * (15.2:1); the muted text colours sit at 5.6:1 (light) and 6.1:1 (dark). The purple is lightened
- * to #A48BE0 for text and links in the dark scheme because #5B3FA0 on #14111F is only 2.4:1.
- * Dark mode follows the OS (`prefers-color-scheme`); there is no in-app toggle in Phase 0.
- *
- * TIERS. --tier-* are the four colours the Manhattan plot and site table will use for call tiers
- * in Phase 1; they are declared now so both schemes get them from the same place.
+ * COLOUR. Seven greys, two signal colours, nothing else. The DataMonkey purple #5B3FA0 (lightened
+ * to #A48BE0 on dark grounds, where the raw purple is only 2.4:1) is the one signal: the brand
+ * mark, links, the primary action, and the sites the model called. The DataMonkey orange #D9721B
+ * keeps its DataMonkey role as the attention colour and marks warnings only; as text it is
+ * darkened to #A85200 (light) / lightened to #E5A15A (dark) because the raw orange fails AA on
+ * white. Every text token clears WCAG AA on both --bg and --surface-2 in both schemes; the
+ * measured ratios are tabulated in DESIGN.md §2.3. There is no green, no red, no tier ramp: a
+ * refusal is black with a black rule, and called / not called is the only distinction the score
+ * supports. Dark mode follows the OS; `data-theme="light|dark"` on <html> overrides it so
+ * screenshots and the e2e are reproducible.
  */
 
 :root {
-	/* Typography */
-	--font-display: 'DM Serif Display', 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua',
-		Palatino, Georgia, serif;
-	--font-text: 'Source Sans 3', 'Source Sans Pro', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-		Roboto, 'Helvetica Neue', Arial, sans-serif;
-	--font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono',
-		monospace;
+	/* Typefaces. System stacks; nothing is vendored; zero font bytes are shipped. */
+	--font-text: 'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', sans-serif;
+	--font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
-	--text-xs: 0.8125rem;
-	--text-sm: 0.9375rem;
-	--text-base: 1.0625rem;
-	--text-lg: 1.25rem;
-	--text-xl: 1.625rem;
-	--text-2xl: 2.25rem;
-	--text-3xl: 3rem;
-	--leading-tight: 1.15;
-	--leading-normal: 1.55;
+	/* Type scale. Six steps. Weights 400 and 700 only. */
+	--text-xs: 0.75rem; /* 12 — plot tick labels only */
+	--text-sm: 0.8125rem; /* 13 — small print, table foot, mono in tables, section run-in */
+	--text-md: 0.875rem; /* 14 — tables, captions, metadata, controls, nav, notes */
+	--text-base: 1rem; /* 16 — body, overview values, stat values */
+	--text-lg: 1.25rem; /* 20 — h2, verdict, drop-zone title */
+	--text-xl: 1.75rem; /* 28 — h1 */
+	--leading-tight: 1.2;
+	--leading-normal: 1.5;
 
-	/* Spacing and shape */
+	/* Spacing */
 	--space-1: 0.25rem;
 	--space-2: 0.5rem;
 	--space-3: 0.75rem;
@@ -56,75 +50,71 @@
 	--space-6: 2rem;
 	--space-8: 3rem;
 	--space-10: 4rem;
-	--radius-sm: 4px;
-	--radius: 8px;
-	--radius-lg: 14px;
-	--container: 68rem;
-	--container-narrow: 46rem;
 
-	/* Brand */
-	--brand: #5b3fa0;
-	--brand-strong: #46307d;
-	--brand-soft: #ede8f8;
-	--accent: #d9721b;
-	--accent-strong: #b35b12;
-	--accent-soft: #fbeadb;
+	/* Shape and measure */
+	--radius: 0;
+	--container: 60rem; /* 960px: the report column */
+	--container-narrow: 44rem; /* 704px: landing, methods, mcp, evaluate prose */
+	--measure: 68ch; /* every p, figcaption, caption */
 
-	/* Light palette */
+	/* Light palette. Seven greys, two signal colours, nothing else. */
 	--bg: #ffffff;
-	--bg-subtle: #f7f5fb;
-	--surface: #ffffff;
-	--surface-raised: #fbfaff;
-	--border: #dcd7e8;
-	--border-strong: #b9b1cf;
-	--text: #1f1b2e;
-	--text-muted: #5c5670;
-	--text-faint: #8a839c;
+	--surface-2: #f4f4f4; /* code blocks, hovered clickable row, null band */
+	--hair: #e6e6e6; /* table row rules, overview underline */
+	--rule: #d0d0d0; /* section rules, borders, inputs, plot axes, network edges */
+	--text-faint: #6e6e6e; /* tertiary: qualifiers, severity labels, disabled */
+	--text-muted: #555555; /* captions, metadata, labels, nav, tick labels */
+	--text: #111111; /* body, headings, table head rules */
+	--brand: #5b3fa0; /* DataMonkey purple: mark, links, primary action, called sites */
+	--on-brand: #ffffff;
+	--warn: #a85200; /* warning TEXT (the raw orange fails AA on white) */
+	--warn-mark: #d9721b; /* DataMonkey orange: the warning square, marks only */
+	--plot-neutral: #b4b4b4; /* uncalled marks */
+	--focus: var(--brand);
 	--link: var(--brand);
-	--focus: #7a5fd1;
-	--ok: #2f7d4f;
-	--ok-soft: #e3f3e8;
-	--warn: #a3670c;
-	--warn-soft: #fbf1dc;
-	--danger: #b3261e;
-	--danger-soft: #fae4e2;
-	--shadow: 0 1px 2px rgb(31 27 46 / 0.06), 0 4px 16px rgb(31 27 46 / 0.06);
 
-	/* Call tiers (Phase 1 plots) */
-	--tier-strong: #b3261e;
-	--tier-moderate: var(--accent);
-	--tier-weak: #c9a227;
-	--tier-none: #8a839c;
+	/* Plot tokens. viz/theme.ts resolves these; no plot may hard-code a colour. */
+	--plot-axis: var(--rule);
+	--plot-tick: var(--text-muted);
+	--plot-called: var(--brand);
+	--plot-uncalled: var(--plot-neutral);
+	--plot-threshold: var(--text-faint);
+	--plot-null-band: var(--surface-2);
+	--plot-hatch: var(--rule);
+	--dms-positive: var(--brand);
+	--dms-zero: var(--bg);
+	--dms-negative: var(--text-muted);
 }
 
 @media (prefers-color-scheme: dark) {
-	:root {
-		--brand-soft: #2a2145;
-		--accent-soft: #3a2712;
-
-		--bg: #14111f;
-		--bg-subtle: #1b1729;
-		--surface: #1b1729;
-		--surface-raised: #221d33;
-		--border: #332c4a;
-		--border-strong: #4c4266;
-		--text: #edeaf5;
-		--text-muted: #b3acc8;
-		--text-faint: #7f7795;
-		--link: #a48be0;
-		--focus: #b9a4ec;
-		--ok: #7fce9d;
-		--ok-soft: #17301f;
-		--warn: #e5b45a;
-		--warn-soft: #33270d;
-		--danger: #f08a83;
-		--danger-soft: #3b1815;
-		--shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.35);
-
-		--tier-strong: #f08a83;
-		--tier-weak: #e0c25a;
-		--tier-none: #7f7795;
+	:root:not([data-theme='light']) {
+		--bg: #111111;
+		--surface-2: #1b1b1b;
+		--hair: #2a2a2a;
+		--rule: #3a3a3a;
+		--text-faint: #8a8a8a;
+		--text-muted: #b0b0b0;
+		--text: #ededed;
+		--brand: #a48be0;
+		--on-brand: #111111;
+		--warn: #e5a15a;
+		--warn-mark: #d9721b;
+		--plot-neutral: #5a5a5a;
 	}
+}
+:root[data-theme='dark'] {
+	--bg: #111111;
+	--surface-2: #1b1b1b;
+	--hair: #2a2a2a;
+	--rule: #3a3a3a;
+	--text-faint: #8a8a8a;
+	--text-muted: #b0b0b0;
+	--text: #ededed;
+	--brand: #a48be0;
+	--on-brand: #111111;
+	--warn: #e5a15a;
+	--warn-mark: #d9721b;
+	--plot-neutral: #5a5a5a;
 }
 
 /* Reset — the minimum needed for predictable layout. */
@@ -135,8 +125,15 @@
 }
 
 html {
+	color-scheme: light dark;
 	-webkit-text-size-adjust: 100%;
 	text-size-adjust: 100%;
+}
+:root[data-theme='light'] {
+	color-scheme: light;
+}
+:root[data-theme='dark'] {
+	color-scheme: dark;
 }
 
 body {
@@ -146,6 +143,10 @@ body {
 	font-family: var(--font-text);
 	font-size: var(--text-base);
 	line-height: var(--leading-normal);
+	font-variant-numeric: tabular-nums;
+	font-feature-settings:
+		'tnum' 1,
+		'kern' 1;
 	-webkit-font-smoothing: antialiased;
 }
 
@@ -153,36 +154,43 @@ h1,
 h2,
 h3,
 h4 {
-	font-family: var(--font-display);
-	font-weight: 400;
+	font-family: var(--font-text);
+	font-weight: 700;
 	line-height: var(--leading-tight);
-	letter-spacing: -0.01em;
+	letter-spacing: 0;
 	margin: 0 0 var(--space-3);
 	color: var(--text);
 }
 
 h1 {
-	font-size: var(--text-3xl);
-}
-h2 {
 	font-size: var(--text-xl);
 }
-h3 {
+h2 {
 	font-size: var(--text-lg);
+}
+h3,
+h4 {
+	font-size: var(--text-base);
 }
 
 p {
 	margin: 0 0 var(--space-4);
+	max-width: var(--measure);
+}
+
+strong,
+b {
+	font-weight: 700;
 }
 
 a {
 	color: var(--link);
 	text-decoration: underline;
 	text-decoration-thickness: 1px;
-	text-underline-offset: 0.15em;
+	text-underline-offset: 0.16em;
 }
 a:hover {
-	color: var(--brand-strong);
+	text-decoration-thickness: 2px;
 }
 
 code,
@@ -190,26 +198,32 @@ pre,
 kbd,
 samp {
 	font-family: var(--font-mono);
-	font-size: 0.92em;
+	font-size: 0.875em;
 }
 
 pre {
-	background: var(--bg-subtle);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
+	background: var(--surface-2);
+	border: 0;
+	border-radius: 0;
 	padding: var(--space-3) var(--space-4);
 	overflow-x: auto;
 	line-height: 1.5;
+	font-size: var(--text-sm);
+	margin: 0 0 var(--space-4);
 }
 
 code {
-	background: var(--bg-subtle);
-	border-radius: var(--radius-sm);
-	padding: 0.1em 0.35em;
-}
-pre code {
 	background: none;
 	padding: 0;
+}
+pre code {
+	font-size: inherit;
+}
+
+sub,
+sup {
+	font-size: 0.75em;
+	line-height: 0;
 }
 
 button,
@@ -220,26 +234,112 @@ textarea {
 	color: inherit;
 }
 
+input,
+select,
+textarea,
+progress {
+	border-radius: 0;
+}
+input:not([type='checkbox']):not([type='radio']):not([type='file']),
+select,
+textarea {
+	border: 1px solid var(--rule);
+	background: var(--bg);
+	color: var(--text);
+	font-size: var(--text-md);
+	padding: 0.35rem 0.5rem;
+}
+textarea {
+	font-family: var(--font-mono);
+	font-size: var(--text-sm);
+}
+input[type='checkbox'],
+input[type='radio'],
+progress {
+	accent-color: var(--brand);
+}
+
 :focus-visible {
 	outline: 2px solid var(--focus);
 	outline-offset: 2px;
 }
 
+summary {
+	cursor: pointer;
+	color: var(--text-muted);
+	font-size: var(--text-md);
+}
+summary::marker {
+	color: var(--text-faint);
+}
+
+hr {
+	border: 0;
+	border-top: 1px solid var(--rule);
+	margin: var(--space-6) 0;
+}
+
+/* Tables (DESIGN.md §3, Tables). Head between two black rules, body on hairlines, last row closed. */
 table {
 	border-collapse: collapse;
 	width: 100%;
+	font-size: var(--text-md);
+	border-top: 1px solid var(--text);
+	border-bottom: 1px solid var(--text);
+}
+caption {
+	caption-side: top;
+	text-align: left;
+	font-size: var(--text-md);
+	color: var(--text-muted);
+	max-width: var(--measure);
+	padding: 0 0 var(--space-2);
+}
+caption b {
+	color: var(--text);
+	font-weight: 700;
 }
 th,
 td {
 	text-align: left;
-	padding: var(--space-2) var(--space-3);
-	border-bottom: 1px solid var(--border);
+	padding: 0.4rem 0.75rem 0.4rem 0;
+	border-bottom: 1px solid var(--hair);
 	vertical-align: top;
 }
 th {
-	font-weight: 600;
-	color: var(--text-muted);
+	font-weight: 700;
+	color: var(--text);
+}
+thead th {
+	border-bottom: 1px solid var(--text);
+}
+tbody tr:last-child > td,
+tbody tr:last-child > th {
+	border-bottom: 0;
+}
+th.num,
+td.num,
+.num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+.mono {
+	font-family: var(--font-mono);
 	font-size: var(--text-sm);
+}
+
+figure {
+	margin: 0 0 var(--space-5);
+}
+figcaption {
+	font-size: var(--text-md);
+	color: var(--text-muted);
+	max-width: var(--measure);
+	margin-top: var(--space-2);
+}
+figcaption b {
+	color: var(--text);
+	font-weight: 700;
 }
 
 /* Shared classes — the few that every route needs verbatim. */
@@ -247,59 +347,156 @@ th {
 	width: min(100% - 2 * var(--space-5), var(--container));
 	margin-inline: auto;
 }
+/* The prose column (landing, methods, mcp, evaluate): 704 px, sharing the report column's left
+   edge rather than centred on its own, so the masthead, the report and the prose all align. */
 .container--narrow {
-	max-width: var(--container-narrow);
+	width: min(100% - 2 * var(--space-5), var(--container-narrow));
+	margin-inline: max(var(--space-5), (100% - var(--container)) / 2) auto;
+}
+@media (max-width: 40em) {
+	.container {
+		width: calc(100% - 2 * var(--space-4));
+	}
+	.container--narrow {
+		width: calc(100% - 2 * var(--space-4));
+		margin-inline: var(--space-4);
+	}
 }
 
+/* A plain sentence-case line. The class name stays because the e2e reads it; the treatment
+   (uppercase, tracking, orange) is gone. */
 .eyebrow {
-	font-size: var(--text-xs);
-	font-weight: 600;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: var(--accent-strong);
+	font-size: var(--text-md);
+	font-weight: 400;
+	letter-spacing: 0;
+	color: var(--text-muted);
 	margin: 0 0 var(--space-2);
 }
 
+.lede {
+	font-size: var(--text-base);
+	max-width: var(--measure);
+}
+
+.hint {
+	font-size: var(--text-md);
+	color: var(--text-muted);
+	max-width: var(--measure);
+}
+
+/* Buttons. One primary per view; secondary is a hairline box. */
 .button {
 	display: inline-flex;
 	align-items: center;
 	gap: var(--space-2);
-	padding: 0.55rem 1.1rem;
-	border-radius: var(--radius);
+	padding: 0.4rem 0.9rem;
+	border-radius: 0;
 	border: 1px solid var(--brand);
 	background: var(--brand);
-	color: #fff;
-	font-weight: 600;
-	font-size: var(--text-sm);
+	color: var(--on-brand);
+	font-weight: 700;
+	font-size: var(--text-md);
+	line-height: var(--leading-normal);
 	text-decoration: none;
 	cursor: pointer;
-	transition:
-		background 120ms ease,
-		border-color 120ms ease;
 }
 .button:hover {
-	background: var(--brand-strong);
-	border-color: var(--brand-strong);
-	color: #fff;
+	text-decoration: underline;
+	text-underline-offset: 0.16em;
+	color: var(--on-brand);
 }
 .button--secondary {
 	background: transparent;
-	color: var(--link);
+	border-color: var(--rule);
+	color: var(--text);
+	font-weight: 400;
 }
 .button--secondary:hover {
-	background: var(--brand-soft);
-	color: var(--link);
-}
-.button--accent {
-	background: var(--accent);
-	border-color: var(--accent);
-}
-.button--accent:hover {
-	background: var(--accent-strong);
-	border-color: var(--accent-strong);
+	border-color: var(--text);
+	color: var(--text);
+	text-decoration: none;
 }
 .button:disabled,
 .button[aria-disabled='true'] {
-	opacity: 0.55;
+	opacity: 0.45;
 	cursor: not-allowed;
+	text-decoration: none;
+}
+
+/* Notes, warnings, refusals (DESIGN.md §3, Warnings and refusals). */
+.note {
+	font-size: var(--text-md);
+	color: var(--text-muted);
+	max-width: var(--measure);
+	margin: 0 0 var(--space-4);
+}
+.note--warn,
+.banner--warn,
+.sev--warn {
+	color: var(--text-muted);
+}
+.note--warn::before,
+.banner--warn::before,
+.sev--warn::before {
+	content: '';
+	display: inline-block;
+	width: 0.5em;
+	height: 0.5em;
+	background: var(--warn-mark);
+	margin-right: 0.5em;
+	vertical-align: 0.05em;
+}
+.note--warn strong,
+.banner--warn strong,
+.sev--warn {
+	color: var(--warn);
+	font-weight: 700;
+}
+.note--danger,
+.banner--danger,
+.notice--error {
+	color: var(--text-muted);
+	border-left: 2px solid var(--text);
+	padding: 0 0 0 var(--space-3);
+}
+.note--danger strong,
+.banner--danger strong,
+.notice--error strong {
+	color: var(--text);
+	font-weight: 700;
+}
+.banner {
+	font-size: var(--text-md);
+	color: var(--text-muted);
+	max-width: var(--measure);
+	margin: 0 0 var(--space-5);
+}
+.notice {
+	font-size: var(--text-md);
+	color: var(--text-muted);
+	max-width: var(--measure);
+}
+
+/* Running-state square (DESIGN.md §3, Progress). */
+.mark--wait,
+.mark--run {
+	display: inline-block;
+	width: 0.5em;
+	height: 0.5em;
+	margin-right: 0.5em;
+	vertical-align: 0.05em;
+	background: var(--plot-neutral);
+}
+.mark--run {
+	background: var(--brand);
+}
+
+/* The one permitted animation: a section's payload replacing its running line. */
+@keyframes fade {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
 }

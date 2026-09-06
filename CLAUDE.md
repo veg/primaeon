@@ -514,3 +514,40 @@ passes and its parity table is the one to read. Headlines:
 - Carried (details in `PHASE4.md` and `HANDOFF.md`): `ENGINE_REF` must be bumped past `phase-3a`
   once the engine tags the Phase 4a rewrite; `ENGINE_TOKEN` and the `veg/hyphaeon-app` repository
   do not exist yet; nothing is published or deployed; the packages do not carry the models.
+
+### 2026-09-06 — Redesign: the lab notebook (`web/DESIGN.md`)
+
+The product owner's brief: the site "looks like an AI wrote it"; it should read as academic and
+simple, judged against Dieter Rams' ten principles, and stay recognisably DataMonkey. The logic is
+untouched — no store, worker, prop contract or number changed except the two named below.
+
+- **Spec**: `web/DESIGN.md` is the authority. One system sans (Helvetica Neue / Arial stack, zero
+  font bytes shipped), weights 400 and 700 only, tabular numerals on `<body>`, seven greys plus two
+  signal colours: the DataMonkey purple `#5B3FA0` (`#A48BE0` on dark) for the mark, links, the one
+  primary action and the called sites; the DataMonkey orange `#D9721B` for warnings only (as text
+  darkened to `#A85200` / lightened to `#E5A15A` for AA). No cards, shadows, radii, eyebrows, pills,
+  tints, gradients or third hue; a refusal is black with a black rule. Light and dark are the same
+  page with twelve tokens swapped; `data-theme="light|dark"` on `<html>` overrides the OS.
+- **Report as a paper**: title, middle-dotted metadata line closed by a black rule, the overview as a
+  six-column line, `details.strip` as a sentence opening "What we did to your data.", sections
+  numbered 1–8 by a CSS counter on `h2::before` (the `h2` text stays exactly `SECTION_TITLE`),
+  every plot a `<figure>` with a numbered caption and every table a `<caption>` above, three black
+  rules and hairline rows. Figure 1 draws a labelled rule at the *active* call cut and
+  residue-prefixed labels on called sites; the call column is a purple square plus the tier's own
+  words; the network fills called nodes and never colours a sector; the DMS ramp runs purple – white
+  – grey; the sector track draws the null at mean ± 2 s.d.
+- **Two logic-adjacent changes, both flagged**: `TreePicker` and `SiteTreeModal` selected `g.node`
+  where phylotree v2 uses `g.internal-node`, so clade handles and substitution markers had never
+  rendered — both now select both; and `ReportView` passes the active-cut called set to
+  `EpistasisSection` → `EpistasisNetwork` as an optional `called` prop so the network marks the
+  same sites the track does.
+- **Removed**: the DM Serif display face and the `TODO(fonts)` block, the tier ramp, `--ok`/`--danger`,
+  `SECTOR_PALETTE`, `AA_COLORS`, the §2.6 alias block and `.button--accent`, `BeforeYouRun` mounted
+  inside the report strip, the duplicate filter lede. Deviations from the spec and why are in
+  `DESIGN.md §8`.
+- **Verified at integration**: `svelte-check` 578 files 0 errors 0 warnings; vitest 13 / 93; full
+  `npm run build` clean; Playwright **62 / 62 in 28.6 s with no spec edited**; every text token
+  ≥ 4.5:1 on both `--bg` and `--surface-2` in both schemes (table in `DESIGN.md §8`); the
+  radius/shadow/transform/tracking grep returns only `--radius: 0`, explicit `border-radius: 0`
+  on inputs, `letter-spacing: 0` and the modal's shadow; no hex literal outside `app.css`,
+  `viz/theme.ts` and `app.html`'s `theme-color`; no off-origin request on any route.

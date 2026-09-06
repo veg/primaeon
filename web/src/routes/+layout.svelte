@@ -1,5 +1,5 @@
 <!--
-	+layout.svelte — the app shell: header with navigation, the page, and a footer that carries the
+	+layout.svelte — the app shell: masthead with navigation, the page, and a footer that carries the
 	one promise every page makes (sequences stay in this browser).
 
 	WHY THIS FILE EXISTS. Every route in PLAN.md §4.1 shares this frame. Phase 2 (D21) folds
@@ -8,6 +8,11 @@
 	from $app/paths so the same build works at the origin root and under a sub-path (see
 	svelte.config.js). Route hrefs end in '/' to match `trailingSlash = 'always'` in +layout.ts;
 	a link without the slash would cost a redirect on the static host.
+
+	LOOK. web/DESIGN.md §3 "Page frame": one left-aligned column; the masthead is a single row under
+	a hairline — a 10 px purple square (the DataMonkey mark reduced to its colour) beside the
+	wordmark, then the three links with the current page underlined. The footer is a hairline above
+	one sentence and four links. The mark is the only purple on a page with nothing to signal.
 -->
 <script lang="ts">
 	import '../app.css';
@@ -80,15 +85,13 @@
 	}
 
 	.header {
-		border-bottom: 1px solid var(--border);
-		background: var(--surface);
+		border-bottom: 1px solid var(--rule);
 	}
 	.header__inner {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-4);
-		padding-block: var(--space-3);
+		align-items: baseline;
+		gap: var(--space-5);
+		padding-block: var(--space-4);
 		flex-wrap: wrap;
 	}
 
@@ -98,25 +101,21 @@
 		gap: var(--space-2);
 		text-decoration: none;
 		color: var(--text);
+		margin-right: var(--space-4);
+	}
+	.brand:hover {
+		text-decoration: none;
 	}
 	.brand__mark {
-		width: 1.4rem;
-		height: 1.4rem;
-		border-radius: 6px;
+		width: 10px;
+		height: 10px;
 		background: var(--brand);
-		position: relative;
-	}
-	.brand__mark::after {
-		content: '';
-		position: absolute;
-		inset: 35%;
-		border-radius: 50%;
-		background: var(--accent);
+		flex: none;
 	}
 	.brand__name {
-		font-family: var(--font-display);
-		font-size: var(--text-lg);
-		letter-spacing: -0.01em;
+		font-size: var(--text-base);
+		font-weight: 700;
+		line-height: var(--leading-tight);
 	}
 
 	nav ul {
@@ -124,25 +123,28 @@
 		margin: 0;
 		padding: 0;
 		display: flex;
-		gap: var(--space-1);
+		gap: var(--space-5);
 		flex-wrap: wrap;
 	}
 	nav a {
 		display: inline-block;
-		padding: 0.35rem 0.7rem;
-		border-radius: var(--radius-sm);
 		text-decoration: none;
 		color: var(--text-muted);
-		font-weight: 600;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
+		line-height: var(--leading-tight);
+		padding-bottom: 1px;
 	}
 	nav a:hover {
 		color: var(--text);
-		background: var(--bg-subtle);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
 	}
 	nav a[aria-current='page'] {
-		color: var(--brand);
-		background: var(--brand-soft);
+		color: var(--text);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
 	}
 
 	.main {
@@ -151,14 +153,14 @@
 	}
 
 	.footer {
-		border-top: 1px solid var(--border);
-		background: var(--bg-subtle);
-		font-size: var(--text-sm);
+		border-top: 1px solid var(--rule);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 	}
 	.footer__inner {
 		display: flex;
 		justify-content: space-between;
+		align-items: baseline;
 		gap: var(--space-5);
 		padding-block: var(--space-5);
 		flex-wrap: wrap;
@@ -166,6 +168,10 @@
 	.footer__promise {
 		margin: 0;
 		max-width: 38rem;
+		flex: 1 1 24rem;
+	}
+	.footer__promise strong {
+		color: var(--text);
 	}
 	.footer__links {
 		list-style: none;
@@ -174,5 +180,6 @@
 		display: flex;
 		gap: var(--space-4);
 		flex-wrap: wrap;
+		flex: none;
 	}
 </style>

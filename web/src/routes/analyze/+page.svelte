@@ -327,11 +327,11 @@
 		{#if model && !diagnosisPending}
 			<p class="treeplan" aria-live="polite">{treePlanText(model.treePlan)}</p>
 		{/if}
-		<div class="live">
-			<span class="dot" aria-hidden="true"></span>
+		<p class="live">
+			<span class="mark--run" aria-hidden="true"></span>
 			<span>Every analysis runs in this browser; the report opens as soon as the inputs are ready and fills in section by section.</span>
 			{#if starting}<button type="button" class="button button--secondary" onclick={cancel}>Cancel</button>{/if}
-		</div>
+		</p>
 		{#if hasAlignment && diagnosis}
 			<BeforeYouRun {model} {prescreen} pending={diagnosisPending} {variant} onVariant={(v) => { variant = v; variantTouched = true; }} />
 		{/if}
@@ -348,14 +348,14 @@
 			{/if}
 		</p>
 
-		<div class="demos" aria-label="Bundled examples">
-			<span class="demos__label">Try an example:</span>
+		<p class="demos" aria-label="Bundled examples">
+			<span class="demos__label">Or try an example:</span>
 			{#each DEMOS as demo (demo.id)}
 				<button type="button" class="chip" class:chip--active={demoId === demo.id} title={demo.note} disabled={starting} onclick={() => useDemo(demo.id)}>{demo.label}</button>
 			{/each}
-		</div>
+		</p>
 
-		{#if loadError}<p class="error" role="alert">{loadError}</p>{/if}
+		{#if loadError}<p class="error notice--error" role="alert"><strong>Not accepted.</strong> {loadError}</p>{/if}
 
 		<form class="card" onsubmit={(e) => { e.preventDefault(); void run(); }}>
 			<fieldset disabled={starting}>
@@ -382,7 +382,7 @@
 			</fieldset>
 
 			<fieldset disabled={starting}>
-				<legend>Tree <span class="optional">optional</span></legend>
+				<legend>Tree <span class="optional">(optional)</span></legend>
 				{#if embeddedTree || embeddedSniffed}<p class="hint">The alignment carries a tree; a file here overrides it.</p>{/if}
 				<p class="pick">
 					<label class="filelabel">Choose a Newick file<input type="file" accept=".nwk,.newick,.tre,.tree,.txt,.gz" onchange={(e) => onPick(e, 'tree')} /></label>
@@ -396,7 +396,7 @@
 
 			{#if hasAlignment}
 				<BeforeYouRun {model} {prescreen} pending={diagnosisPending} {variant} onVariant={(v) => { variant = v; variantTouched = true; }} />
-				{#if diagnosisError}<p class="error" role="alert">Diagnostics failed: {diagnosisError}</p>{/if}
+				{#if diagnosisError}<p class="error notice--error" role="alert"><strong>Diagnostics failed.</strong> {diagnosisError}</p>{/if}
 			{/if}
 
 			<fieldset class="options" disabled={starting}>
@@ -416,7 +416,7 @@
 					<span id="variant-label">Model variant</span>
 					<label class="radio"><input type="radio" name="variant" value="general" bind:group={variant} onchange={() => (variantTouched = true)} /> <span><strong>General</strong> — deep, cross-species trees</span></label>
 					<label class="radio"><input type="radio" name="variant" value="viral" bind:group={variant} onchange={() => (variantTouched = true)} /> <span><strong>Viral</strong> — shallow trees</span></label>
-					<small>{#if model}Suggested from the tree depth: <strong>{model.suggestedVariant}</strong>{#if !variantTouched} (followed until you choose){/if}.{:else}Suggested from the tree depth once an alignment is loaded.{/if}</small>
+					<small>{#if model}Suggested from the tree depth: <strong>{model.suggestedVariant}</strong>{#if !variantTouched}&nbsp;(followed until you choose){/if}.{:else}Suggested from the tree depth once an alignment is loaded.{/if}</small>
 				</div>
 				<p class="hint">Seed, permutations, call mode and the digital DMS budget are set on the report's "Re-run with…" disclosure.</p>
 			</fieldset>
@@ -428,7 +428,7 @@
 				</p>
 				{#if starting}<button type="button" class="button button--secondary" onclick={cancel}>Cancel</button>{/if}
 			</div>
-			{#if startError}<p class="error" role="alert">{startError}</p>{/if}
+			{#if startError}<p class="error notice--error" role="alert"><strong>The run did not start.</strong> {startError}</p>{/if}
 		</form>
 	{/if}
 </div>
@@ -440,72 +440,65 @@
 	}
 	.treeplan {
 		color: var(--text-muted);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		margin: calc(-1 * var(--space-3)) 0 var(--space-4);
 	}
 	.live {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
-		border: 1px solid var(--brand);
-		background: var(--brand-soft);
-		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-4);
-		font-size: var(--text-sm);
-		margin-bottom: var(--space-4);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		margin-bottom: var(--space-6);
+		max-width: none;
 	}
-	.dot {
-		width: 0.7rem;
-		height: 0.7rem;
-		border-radius: 50%;
-		background: var(--brand);
+	.live .mark--run {
 		flex: none;
-		animation: pulse 1.2s ease-in-out infinite;
+		margin: 0;
 	}
 	.demos {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--space-2);
-		margin-bottom: var(--space-5);
-		font-size: var(--text-sm);
-	}
-	.demos__label {
+		margin-bottom: var(--space-6);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 	}
 	.chip {
-		border: 1px solid var(--border-strong);
-		background: var(--surface);
-		color: var(--text);
-		border-radius: 999px;
-		padding: 0.25rem 0.8rem;
-		font-size: var(--text-xs);
-		font-weight: 600;
+		background: none;
+		border: 0;
+		padding: 0;
+		color: var(--link);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
+		font-size: inherit;
 		cursor: pointer;
+		white-space: nowrap;
 	}
 	.chip:hover {
-		border-color: var(--brand);
-		color: var(--brand);
+		text-decoration-thickness: 2px;
+	}
+	.chip + .chip::before {
+		content: '·';
+		color: var(--text-faint);
+		margin: 0 var(--space-2);
+		display: inline-block;
+		text-decoration: none;
 	}
 	.chip--active {
-		background: var(--brand-soft);
-		border-color: var(--brand);
-		color: var(--brand);
+		color: var(--text);
+		font-weight: 700;
+		text-decoration: none;
+	}
+	.chip:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
 	}
 	.error {
-		color: var(--danger);
-		background: var(--danger-soft);
-		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-3);
+		font-size: var(--text-md);
+		margin: 0 0 var(--space-4);
 	}
 	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-		box-shadow: var(--shadow);
-		padding: var(--space-5);
 		display: grid;
-		gap: var(--space-5);
+		gap: var(--space-6);
 	}
 	fieldset {
 		border: 0;
@@ -516,30 +509,30 @@
 		gap: var(--space-3);
 	}
 	legend {
-		font-family: var(--font-display);
-		font-size: var(--text-lg);
-		padding: 0;
-		margin-bottom: var(--space-2);
+		width: 100%;
+		font-size: var(--text-base);
+		font-weight: 700;
+		padding: 0 0 var(--space-2);
+		margin-bottom: var(--space-3);
+		border-bottom: 1px solid var(--rule);
 	}
 	.optional {
-		font-family: var(--font-text);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
+		font-size: var(--text-sm);
+		font-weight: 400;
 		color: var(--text-faint);
-		margin-left: var(--space-2);
+		margin-left: var(--space-1);
 	}
 	.pick {
 		margin: 0;
 		display: flex;
 		gap: var(--space-3);
 		align-items: center;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
 	.filelabel {
 		color: var(--link);
 		text-decoration: underline;
+		text-underline-offset: 0.16em;
 		cursor: pointer;
 	}
 	.filelabel input {
@@ -554,25 +547,19 @@
 		gap: var(--space-1);
 	}
 	.field > span {
-		font-weight: 600;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
+		color: var(--text-muted);
 	}
 	.field small {
 		color: var(--text-faint);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 	}
 	textarea,
 	select,
 	input[type='number'] {
 		width: 100%;
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		background: var(--surface);
-		padding: var(--space-2) var(--space-3);
 	}
 	textarea {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
 		resize: vertical;
 	}
 	input[type='number'] {
@@ -585,12 +572,12 @@
 		display: flex;
 		gap: var(--space-2);
 		align-items: flex-start;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		font-weight: 400;
 	}
 	.summary,
 	.hint {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 		margin: 0;
 	}
@@ -599,19 +586,10 @@
 		gap: var(--space-4);
 		align-items: center;
 		flex-wrap: wrap;
-		border-top: 1px solid var(--border);
+		border-top: 1px solid var(--rule);
 		padding-top: var(--space-4);
 	}
 	.run .hint {
 		flex: 1 1 18rem;
-	}
-	@keyframes pulse {
-		0%,
-		100% {
-			opacity: 1;
-		}
-		50% {
-			opacity: 0.4;
-		}
 	}
 </style>

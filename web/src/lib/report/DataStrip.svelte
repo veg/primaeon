@@ -1,16 +1,16 @@
 <!--
-	DataStrip.svelte — the compact "what we did to your data" line under the overview: diagnostics
-	counted by severity, the automatic repairs named, expandable to Phase 1's full "Before you run"
-	table.
+	DataStrip.svelte — the "what we did to your data" line under the overview: diagnostics counted
+	by severity in words, the automatic repairs named, the tree source, expandable to the full
+	warnings table.
 
 	WHY THIS FILE EXISTS. PLAN.md §4.0: "The pre-run 'Before you run' panel becomes a compact 'what
 	we did to your data' strip at the top of the report, expandable to the full warnings table."
 	The diagnosis stored with the record is the library's `diagnose()` output the run started from;
-	lib/diagnostics/panel.ts turns it into the same PanelModel the pre-run panel showed, and
-	BeforeYouRun.svelte (routes/analyze) renders it unchanged inside the disclosure — one
-	implementation of the table, two places it appears. The strip itself is derived here: counts
-	by severity (handled codes counted as repairs), plus the preprocessing facts the provenance
-	block records (duplicates collapsed, PD cap, tree source, rescaling), which are the "did".
+	lib/diagnostics/panel.ts turns it into the same PanelModel the pre-run panel shows, and the
+	strip prints its rows: counts by severity (handled codes counted as repairs) in the one-line
+	summary, and the rows themselves — severity, code, message — in the table the disclosure opens.
+	The preprocessing facts the provenance block records (duplicates collapsed, PD cap, tree
+	source, rescaling) are the "did".
 
 	THE TREE SOURCE IS ALWAYS ON THE STRIP (D22), not only when something was done to it. Whether the
 	model was given a tree's branch lengths or pairwise TN93 distances is the single fact that most
@@ -18,24 +18,26 @@
 	whether the input had usable lengths — so it is stated in the line the reader sees first, with
 	the library's own reason and, when the distances were computed, how many taxon pairs came back
 	at the saturation sentinel.
+
+	SET AS A SENTENCE (web/DESIGN.md §3): a `details.strip` whose summary is the sentence, no panel,
+	no badges; counts take the warning colour only when warnings exist, and a refusal is black.
+	`.strip .tree` keeps its exact text — the e2e asserts it verbatim.
 -->
 <script lang="ts">
 	import type { DiagnosisSnapshot, ReportRecord } from '$lib/api';
 	import { treeFreeLabel, treeSourceLabel } from '$lib/api';
 	import { panelModel, saturatedPairs } from '$lib/diagnostics/panel';
-	import BeforeYouRun from '../../routes/analyze/BeforeYouRun.svelte';
 
 	interface Props {
 		record: ReportRecord;
 	}
 	let { record }: Props = $props();
 
-	let open = $state(false);
 	/**
 	 * The page stores the library's `diagnose()` snapshot ({ok, warnings, summary}); the runtime's
 	 * orchestrator (gallery / server records) writes {taxa_in_alignment, taxa_used, codon_count,
 	 * preprocessing, warnings, refused}. Both carry the same `warnings[]`; the second is lifted into
-	 * the first's shape so BeforeYouRun renders either.
+	 * the first's shape so the panel model reads either.
 	 */
 	function toSnapshot(d: unknown): DiagnosisSnapshot | null {
 		if (!d || typeof d !== 'object') return null;
@@ -90,115 +92,104 @@
 		return out;
 	});
 	const hasDiagnosis = $derived(snapshot != null);
+	const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+	const SEVERITY_LABEL: Record<string, string> = { refuse: 'refused', warn: 'warning', info: 'note' };
 </script>
 
-<div class="strip" class:strip--open={open}>
-	<div class="line">
-		<span class="label">What we did to your data</span>
+<details class="strip">
+	<summary>
+		<strong>What we did to your data.</strong>
 		{#if hasDiagnosis}
-			<span class="counts">
-				{#if counts.refuse}<span class="badge badge--refuse">{counts.refuse} refuse</span>{/if}
-				{#if counts.warn}<span class="badge badge--warn">{counts.warn} warning{counts.warn === 1 ? '' : 's'}</span>{/if}
-				{#if counts.info}<span class="badge badge--info">{counts.info} note{counts.info === 1 ? '' : 's'}</span>{/if}
-				{#if counts.handled}<span class="badge badge--ok">{counts.handled} handled</span>{/if}
-				{#if !rows.length}<span class="badge badge--ok">no findings</span>{/if}
-			</span>
+			{#if counts.refuse}<span class="refuse">{plural(counts.refuse, 'refusal')}</span>, {/if}{#if counts.warn}<span class="warnline">{plural(counts.warn, 'warning')}</span>{:else}no warnings{/if},
+			{counts.info ? plural(counts.info, 'note') : 'no notes'}{#if counts.handled}, {plural(counts.handled, 'check')} handled{/if}{#if !rows.length}, no findings{/if}.
 		{:else}
-			<span class="muted">No diagnostics stored with this record.</span>
+			No diagnostics stored with this record.
 		{/if}
-		<span class="tree" title="How the model got its distances (PLAN.md D22)">{treeLine}</span>
+		Distances: <span class="tree" title="How the model got its distances (PLAN.md D22)">{treeLine}</span>.
 		{#if saturated}
-			<span class="badge badge--warn">{saturated.toLocaleString()} saturated pair{saturated === 1 ? '' : 's'}</span>
+			<span class="warnline">{plural(saturated, 'taxon pair', 'taxon pairs')} at the TN93 saturation sentinel.</span>
 		{/if}
 		{#if repairs.length}
-			<span class="repairs">{repairs.join(' · ')}</span>
+			Repairs: {repairs.join(', ')}.
 		{:else if pre}
-			<span class="muted">No automatic repairs were needed.</span>
+			No automatic repairs were needed.
 		{/if}
-		{#if hasDiagnosis}
-			<button type="button" class="toggle" aria-expanded={open} onclick={() => (open = !open)}>
-				{open ? 'Hide the checks' : 'Show all checks'}
-			</button>
+		{#if pre?.reference_sequence}Reference {pre.reference_sequence}.{/if}
+		{#if model?.regime}{model.regime}{/if}
+	</summary>
+	{#if hasDiagnosis}
+		{#if rows.length}
+			<table class="checks">
+				<thead><tr><th>Severity</th><th>Code</th><th>Message</th></tr></thead>
+				<tbody>
+					{#each rows as r, i (r.code + i)}
+						<tr>
+							<td><span class="sev" class:sev--warn={r.severity === 'warn' && !r.handled} class:sev--refuse={r.severity === 'refuse'}>{r.handled ? 'handled' : SEVERITY_LABEL[r.severity] ?? r.severity}</span></td>
+							<td class="mono">{r.code}</td>
+							<td>{r.message}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{:else}
+			<p class="note">No findings.</p>
 		{/if}
-	</div>
-	{#if open && hasDiagnosis}
-		<div class="full">
-			<BeforeYouRun {model} prescreen={null} pending={false} variant={record.options.variant} onVariant={() => {}} />
-		</div>
 	{/if}
-</div>
+</details>
 
 <style>
 	.strip {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--surface-raised);
-		padding: var(--space-2) var(--space-4);
-		font-size: var(--text-sm);
-	}
-	.line {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		flex-wrap: wrap;
-	}
-	.label {
-		font-weight: 600;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		font-size: var(--text-xs);
+		font-size: var(--text-md);
 		color: var(--text-muted);
+		margin: 0 0 var(--space-8);
+		max-width: none;
 	}
-	.counts {
-		display: inline-flex;
-		gap: var(--space-1);
-		flex-wrap: wrap;
-	}
-	.badge {
-		display: inline-block;
-		padding: 0.05rem 0.5rem;
-		border-radius: 999px;
-		font-weight: 600;
-		font-size: var(--text-xs);
-		white-space: nowrap;
-	}
-	.badge--refuse {
-		background: var(--danger-soft);
-		color: var(--danger);
-	}
-	.badge--warn {
-		background: var(--warn-soft);
-		color: var(--warn);
-	}
-	.badge--info {
-		background: var(--bg-subtle);
+	summary {
 		color: var(--text-muted);
+		max-width: var(--measure);
 	}
-	.badge--ok {
-		background: var(--ok-soft);
-		color: var(--ok);
-	}
-	.repairs {
+	summary strong {
 		color: var(--text);
 	}
 	.tree {
 		color: var(--text);
-		font-weight: 600;
 	}
-	.muted {
-		color: var(--text-faint);
+	.refuse {
+		color: var(--text);
+		font-weight: 700;
 	}
-	.toggle {
-		margin-left: auto;
-		background: none;
-		border: 0;
-		color: var(--link);
-		text-decoration: underline;
-		cursor: pointer;
-		font-size: var(--text-sm);
-		padding: 0;
+	.warnline {
+		color: var(--warn);
 	}
-	.full {
+	.warnline::before {
+		content: '';
+		display: inline-block;
+		width: 0.5em;
+		height: 0.5em;
+		background: var(--warn-mark);
+		margin-right: 0.4em;
+		vertical-align: 0.05em;
+	}
+	.checks {
 		margin-top: var(--space-3);
+		max-width: 60rem;
+	}
+	.checks th:first-child,
+	.checks td:first-child {
+		width: 6rem;
+	}
+	.checks td:nth-child(2) {
+		white-space: nowrap;
+	}
+	.sev {
+		color: var(--text-faint);
+		font-size: var(--text-sm);
+	}
+	.sev--refuse {
+		color: var(--text);
+		font-weight: 700;
+	}
+	.note {
+		margin: var(--space-3) 0 0;
 	}
 </style>

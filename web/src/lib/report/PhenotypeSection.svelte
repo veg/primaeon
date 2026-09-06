@@ -229,15 +229,14 @@
 {:else}
 	<div class="pheno">
 		<p class="lede">
-			<strong>Does the selection signal track a trait?</strong> Mark the foreground taxa and HyphAeon compares each
-			codon's attribution over taxa — the same forward pass that scored the sites — with the trait vector,
-			giving a directional association per codon, a Benjamini–Hochberg q, a PARS signature, trait sectors, and a
-			gene-level card. It is <code>hyphaeon phenotype</code>, running here.
+			Mark the foreground taxa and each codon's attribution over taxa (the same forward pass that scored the
+			sites) is compared with the trait vector: a directional association per codon, a Benjamini–Hochberg q, a
+			PARS signature, trait sectors, and a gene-level verdict. This is <code>hyphaeon phenotype</code>, run here on demand.
 		</p>
 
 		<div class="tabs" role="tablist" aria-label="How to describe the trait">
 			<button type="button" role="tab" aria-selected={kind === 'preset'} class:active={kind === 'preset'} onclick={() => (kind = 'preset')} disabled={presetsLoaded && presets.length === 0}>
-				Preset{#if presetsLoaded && presets.length}<span class="pill">{presets.length}</span>{/if}
+				Preset{#if presetsLoaded && presets.length}{' '}<span class="pill">{presets.length}</span>{/if}
 			</button>
 			<button type="button" role="tab" aria-selected={kind === 'tree'} class:active={kind === 'tree'} onclick={() => (kind = 'tree')} disabled={!tree.newick}>Pick on the tree</button>
 			<button type="button" role="tab" aria-selected={kind === 'list'} class:active={kind === 'list'} onclick={() => (kind = 'list')}>Paste a list</button>
@@ -384,8 +383,8 @@
 			</span>
 		</div>
 
-		{#if error}<p class="note note--danger" role="alert">{error}</p>{/if}
-		{#if failure && !section}<p class="note note--danger">The phenotype run failed: {failure}</p>{/if}
+		{#if error}<p class="note note--danger" role="alert"><strong>{error === 'Cancelled.' ? 'Cancelled.' : 'The run failed.'}</strong> {error === 'Cancelled.' ? 'Nothing was stored; run it again when ready.' : error}</p>{/if}
+		{#if failure && !section}<p class="note note--danger"><strong>The phenotype run failed.</strong> {failure}</p>{/if}
 
 		{#if section}
 			<hr />
@@ -417,33 +416,33 @@
 				<h3>Top sites</h3>
 				<div class="tablewrap">
 					<table>
+						<caption><b></b>Trait-associated codons, the first {Math.min(TOP_SITES, section.sites.length)} of {section.sites.length.toLocaleString()} in the reference's own order (by score, descending). ρ is the directional association, q its Benjamini–Hochberg adjustment; a purple square marks a codon at q ≤ {usedAlpha} with ρ &gt; 0. Foreground and background are the residue's frequency in each group. Click a codon to open its tree.</caption>
 						<thead>
 							<tr>
-								<th>Codon</th><th>Change</th><th>ρ</th><th>Score</th><th>LRT</th><th>p</th><th>q</th><th>Foreground</th><th>Background</th>
+								<th>Codon</th><th>Change</th><th class="num">ρ</th><th class="num">Score</th><th class="num">LRT</th><th class="num">p</th><th class="num">q</th><th class="num">Foreground</th><th class="num">Background</th>
 							</tr>
 						</thead>
 						<tbody>
 							{#each topSites as row (row.site)}
-								<tr class:called={(row.q_value ?? 1) <= usedAlpha && row.association_rho > 0}>
-									<td><button type="button" class="linkbutton mono" onclick={() => onSelect?.(row.site)}>{row.site}</button></td>
+								{@const called = (row.q_value ?? 1) <= usedAlpha && row.association_rho > 0}
+								<tr class:called>
+									<td class="call" class:call--on={called}><button type="button" class="linkbutton" onclick={() => onSelect?.(row.site)}>{row.site}</button></td>
 									<td class="mono">{row.ref_aa}→{row.derived_aa}</td>
-									<td class="mono">{fmt(row.association_rho)}</td>
-									<td class="mono">{fmt(row.score)}</td>
-									<td class="mono">{fmt(row.hyphaeon_lrt, 2)}</td>
-									<td class="mono">{fmtP(row.p_value)}</td>
-									<td class="mono">{fmtP(row.q_value)}</td>
-									<td class="mono">{row.foreground_freq_pct.toFixed(0)}%</td>
-									<td class="mono">{row.background_freq_pct.toFixed(0)}%</td>
+									<td class="num">{fmt(row.association_rho)}</td>
+									<td class="num">{fmt(row.score)}</td>
+									<td class="num">{fmt(row.hyphaeon_lrt, 2)}</td>
+									<td class="num">{fmtP(row.p_value)}</td>
+									<td class="num">{fmtP(row.q_value)}</td>
+									<td class="num">{row.foreground_freq_pct.toFixed(0)} %</td>
+									<td class="num">{row.background_freq_pct.toFixed(0)} %</td>
 								</tr>
 							{/each}
 						</tbody>
 					</table>
 				</div>
-				<p class="hint">
-					Rows are in the reference's own order — by score, descending, not by codon — and only codons the pillar
-					could score appear at all (a site needs a non-empty attribution row and at least
-					{section.options?.minTaxa ?? PHENOTYPE_DEFAULTS.minTaxaPerSite} sequenced taxa). Showing the first
-					{TOP_SITES} of {section.sites.length.toLocaleString()}; the CSV has them all.
+				<p class="table__foot">
+					Only codons the pillar could score appear (a non-empty attribution row and at least
+					{section.options?.minTaxa ?? PHENOTYPE_DEFAULTS.minTaxaPerSite} sequenced taxa). Showing {Math.min(TOP_SITES, section.sites.length)} of {section.sites.length.toLocaleString()}; the CSV below has them all.
 				</p>
 
 				<h3>Trait sectors</h3>
@@ -484,57 +483,42 @@
 	.pheno {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-3);
+		gap: var(--space-4);
 	}
 	.lede,
-	.hint {
+	.hint,
+	.note {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-muted);
-	}
-	.hint code {
-		font-size: var(--text-xs);
 	}
 	.tabs {
 		display: flex;
-		gap: 2px;
-		background: var(--border);
-		padding: 2px;
-		border-radius: 6px;
-		align-self: flex-start;
+		gap: var(--space-5);
+		border-bottom: 1px solid var(--hair);
 		flex-wrap: wrap;
 	}
 	.tabs button {
-		border: none;
+		border: 0;
 		background: transparent;
-		border-radius: 4px;
-		padding: 0.3rem 0.7rem;
-		font-size: var(--text-sm);
-		font-weight: 600;
+		padding: 0 0 var(--space-2);
+		margin-bottom: -1px;
+		font-size: var(--text-md);
 		color: var(--text-muted);
 		cursor: pointer;
+		border-bottom: 2px solid transparent;
 	}
 	.tabs button.active {
-		background: var(--surface);
-		color: var(--brand);
+		color: var(--text);
+		border-bottom-color: var(--text);
 	}
 	.tabs button:disabled {
 		color: var(--text-faint);
 		cursor: default;
 	}
 	.pill {
-		display: inline-block;
-		margin-left: 0.4rem;
-		padding: 0 0.4rem;
-		border-radius: 999px;
-		background: var(--brand-soft);
-		color: var(--brand);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
+		color: var(--text-faint);
 	}
 	.panel {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-4);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
@@ -543,55 +527,54 @@
 		list-style: none;
 		margin: 0;
 		padding: 0;
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
-		gap: var(--space-2);
+		max-width: var(--measure);
+	}
+	.presets li + li {
+		border-top: 1px solid var(--hair);
 	}
 	.preset {
 		display: flex;
-		gap: var(--space-2);
+		gap: var(--space-3);
 		align-items: flex-start;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		padding: var(--space-2) var(--space-3);
+		padding: var(--space-2) 0;
 		cursor: pointer;
-		height: 100%;
+		font-size: var(--text-md);
 	}
-	.preset--on {
-		border-color: var(--brand);
-		background: var(--brand-soft);
+	.preset input {
+		margin-top: 0.25rem;
 	}
 	.preset__body {
 		display: flex;
 		flex-direction: column;
-		gap: 0.15rem;
+		gap: 0.1rem;
 	}
 	.preset__title {
-		font-weight: 600;
-		font-size: var(--text-sm);
+		color: var(--text);
+	}
+	.preset--on .preset__title {
+		font-weight: 700;
 	}
 	.count {
 		display: block;
 		font-weight: 400;
-		font-size: var(--text-xs);
-		color: var(--brand);
-		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		color: var(--text-faint);
 	}
 	.preset__desc {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		color: var(--text-muted);
 	}
 	.field {
 		display: grid;
 		gap: var(--space-1);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
 	.field > span {
-		font-weight: 600;
+		color: var(--text);
 	}
 	.field small {
 		color: var(--text-faint);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 	}
 	.field--narrow {
 		max-width: 8rem;
@@ -603,14 +586,8 @@
 	select,
 	input[type='number'] {
 		width: 100%;
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		background: var(--surface);
-		padding: var(--space-2) var(--space-3);
 	}
 	textarea {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
 		resize: vertical;
 	}
 	.cols {
@@ -623,23 +600,24 @@
 		display: inline-flex;
 		gap: var(--space-2);
 		align-items: center;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
+		cursor: pointer;
 	}
 	.preview {
-		border-left: 3px solid var(--border-strong);
-		padding-left: var(--space-3);
-		font-size: var(--text-sm);
-	}
-	.preview--ok {
-		border-color: var(--ok);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		max-width: var(--measure);
 	}
 	.preview__line {
 		margin: 0;
 	}
+	.preview__line strong {
+		color: var(--text);
+	}
 	.preview__taxa {
 		margin: 0.2rem 0 0;
-		font-size: var(--text-xs);
-		color: var(--text-muted);
+		font-size: var(--text-sm);
+		color: var(--text-faint);
 		overflow-wrap: anywhere;
 	}
 	.muted {
@@ -647,17 +625,16 @@
 	}
 	.options {
 		display: flex;
-		gap: var(--space-4);
+		gap: var(--space-5);
 		flex-wrap: wrap;
 		align-items: flex-start;
 	}
 	.hint--perm {
 		flex: 1 1 20rem;
-		max-width: 44rem;
 	}
 	.run {
 		display: flex;
-		gap: var(--space-3);
+		gap: var(--space-4);
 		align-items: center;
 		flex-wrap: wrap;
 	}
@@ -665,75 +642,74 @@
 		flex: 1 1 14rem;
 	}
 	.linkbutton {
-		background: none;
-		border: 0;
-		padding: 0;
-		color: var(--link);
-		text-decoration: underline;
+		all: unset;
 		cursor: pointer;
+		color: var(--brand);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
 		font-size: inherit;
 	}
-	.note {
-		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-muted);
-		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-subtle);
+	.linkbutton:hover {
+		text-decoration-thickness: 2px;
 	}
-	.note--warn {
-		background: var(--warn-soft);
-		color: var(--warn);
-	}
-	.note--danger {
-		background: var(--danger-soft);
-		color: var(--danger);
+	.linkbutton:focus-visible {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
 	}
 	hr {
-		border: 0;
-		border-top: 1px solid var(--border);
-		width: 100%;
-		margin: var(--space-2) 0 0;
+		margin: var(--space-4) 0 0;
 	}
 	.result {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-3);
+		gap: var(--space-4);
+	}
+	.result .lede {
+		color: var(--text-muted);
+		font-size: var(--text-md);
+		max-width: none;
+	}
+	.result .lede strong {
+		color: var(--text);
 	}
 	h3 {
 		margin: var(--space-2) 0 0;
-		font-size: var(--text-lg);
 	}
 	.pars {
 		margin: 0;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-subtle);
-		border-radius: var(--radius);
+		font-family: var(--font-mono);
+		font-size: var(--text-md);
 		overflow-wrap: anywhere;
 	}
 	.mono {
 		font-family: var(--font-mono);
-		font-variant-numeric: tabular-nums;
+		font-size: var(--text-sm);
 	}
 	.tablewrap {
 		overflow-x: auto;
 	}
-	table {
-		font-size: var(--text-sm);
-		width: 100%;
-	}
 	th,
 	td {
-		padding: var(--space-1) var(--space-2);
 		white-space: nowrap;
 	}
-	tr.called td {
-		background: var(--danger-soft);
+	.call--on::before {
+		content: '';
+		display: inline-block;
+		width: 0.5em;
+		height: 0.5em;
+		background: var(--brand);
+		margin-right: 0.45em;
+		vertical-align: 0.05em;
+	}
+	.table__foot {
+		margin: 0;
+		font-size: var(--text-sm);
+		color: var(--text-muted);
 	}
 	.downloads {
 		display: flex;
-		gap: var(--space-2);
+		gap: var(--space-3);
 		flex-wrap: wrap;
-		margin-top: var(--space-2);
 	}
 </style>

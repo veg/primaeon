@@ -3,15 +3,16 @@
 
 	WHY THIS FILE EXISTS. PLAN.md §4.1: "/evaluate — meme CSV + HyPhy MEME JSON → metrics +
 	scatter." The evaluate port (PLAN.md §5.2 order 3) runs without the model, so this page needs
-	only the library; until it lands the inputs are shown disabled and the result panels are named.
+	only the library; until it lands the inputs are shown disabled and the result panels are named
+	as statements of what they will hold (web/DESIGN.md §3 "/evaluate").
 -->
 <svelte:head>
 	<title>Evaluate · HyphAeon</title>
 </svelte:head>
 
 <div class="container container--narrow">
-	<p class="eyebrow">Evaluate</p>
-	<h1>Compare a run against HyPhy MEME</h1>
+	<h1>Evaluate</h1>
+	<p class="meta">Compare a run against HyPhy MEME · <code>hyphaeon evaluate</code></p>
 	<p class="intro">
 		Load a HyphAeon site-selection CSV and the MEME JSON for the same alignment. Sites are matched
 		by position, pooled across genes when several pairs are given, and scored the way
@@ -44,41 +45,74 @@
 </div>
 
 <style>
-	.intro {
+	h1 {
+		margin-bottom: var(--space-1);
+	}
+	.meta {
+		font-size: var(--text-md);
 		color: var(--text-muted);
-		margin-bottom: var(--space-5);
+		margin: 0 0 var(--space-5);
+		padding-bottom: var(--space-3);
+		border-bottom: 1px solid var(--text);
+		max-width: none;
+	}
+	.intro {
+		margin-bottom: var(--space-6);
 	}
 	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-		box-shadow: var(--shadow);
-		padding: var(--space-5);
+		border-top: 1px solid var(--hair);
+		border-bottom: 1px solid var(--hair);
+		padding: var(--space-5) 0;
 		display: grid;
 		gap: var(--space-4);
-		margin-bottom: var(--space-6);
+		margin-bottom: var(--space-8);
 	}
 	.field {
 		display: grid;
-		gap: var(--space-1);
+		grid-template-columns: minmax(0, 14rem) 1fr;
+		gap: var(--space-1) var(--space-4);
+		align-items: center;
+		font-size: var(--text-md);
 	}
 	.field span {
-		font-weight: 600;
-		font-size: var(--text-sm);
+		color: var(--text-muted);
+	}
+	.field input:disabled {
+		opacity: 0.45;
 	}
 	.run {
 		display: flex;
 		gap: var(--space-4);
 		align-items: center;
 		flex-wrap: wrap;
+		padding-top: var(--space-2);
 	}
 	.hint,
 	.todo {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 		margin: 0 0 var(--space-4);
 	}
+	.panels {
+		counter-reset: section;
+	}
 	.panels h2 {
-		margin-top: var(--space-4);
+		position: relative;
+		padding: 0 0 var(--space-2) 2.5rem;
+		margin: var(--space-6) 0 var(--space-3);
+		border-bottom: 1px solid var(--rule);
+	}
+	.panels h2::before {
+		counter-increment: section;
+		content: counter(section);
+		position: absolute;
+		left: 0;
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+	@media (max-width: 40em) {
+		.field {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>

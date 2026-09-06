@@ -9,6 +9,9 @@
 	and the tree the model was given, lengths included, or nothing at all when the run was tree-free) and navigates to
 	it; the original report is untouched. A record without input texts (a Phase 1 run, a gallery
 	record, a server job) cannot be re-run here and the disclosure says so.
+
+	Set as a plain disclosure (web/DESIGN.md §3): a muted summary with the native marker, no box;
+	the form is a grid of labelled inputs and the section's one primary button, "Re-run everything".
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
@@ -104,8 +107,8 @@
 		<form class="grid" onsubmit={rerun}>
 			<div class="field" role="radiogroup" aria-labelledby="rr-variant">
 				<span id="rr-variant">Model variant</span>
-				<label class="radio"><input type="radio" name="rr-variant" value="general" bind:group={variant} /> <span><strong>General</strong> — deep, cross-species trees</span></label>
-				<label class="radio"><input type="radio" name="rr-variant" value="viral" bind:group={variant} /> <span><strong>Viral</strong> — shallow trees</span></label>
+				<label class="radio"><input type="radio" name="rr-variant" value="general" bind:group={variant} /> <span>General, for deep, cross-species trees</span></label>
+				<label class="radio"><input type="radio" name="rr-variant" value="viral" bind:group={variant} /> <span>Viral, for shallow trees</span></label>
 			</div>
 			<label class="field">
 				<span>Taxon cap</span>
@@ -115,7 +118,7 @@
 			<label class="field">
 				<span>Call mode</span>
 				<select bind:value={callMode}>
-					<option value="percentile">Percentile (top 2% / 5% of variable sites)</option>
+					<option value="percentile">Percentile (top 2 % / 5 % of variable sites)</option>
 					<option value="zscore">Z-score (Z ≥ 2.5 / 2.0)</option>
 					<option value="pvalue">p-value / q (the reference's gates)</option>
 				</select>
@@ -152,28 +155,22 @@
 				<button type="submit" class="button" disabled={busy}>{busy ? 'Starting…' : 'Re-run everything'}</button>
 				<span class="hint">Runs on the same alignment and tree (branch lengths kept) into a new report; this one stays.</span>
 			</div>
-			{#if error}<p class="error" role="alert">{error}</p>{/if}
+			{#if error}<p class="note note--danger" role="alert"><strong>The run could not start.</strong> {error}</p>{/if}
 		</form>
 	{/if}
 </details>
 
 <style>
 	.rerun {
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface-raised);
-		padding: var(--space-3) var(--space-5);
-	}
-	summary {
-		cursor: pointer;
-		font-family: var(--font-display);
-		font-size: var(--text-lg);
+		margin-top: var(--space-5);
+		font-size: var(--text-md);
 	}
 	.grid {
 		margin-top: var(--space-4);
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-		gap: var(--space-4);
+		gap: var(--space-4) var(--space-6);
+		max-width: 52rem;
 	}
 	.field {
 		display: grid;
@@ -181,25 +178,28 @@
 		align-content: start;
 	}
 	.field > span {
-		font-weight: 600;
-		font-size: var(--text-sm);
+		color: var(--text);
 	}
 	.field small {
 		color: var(--text-faint);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 	}
 	.radio,
 	.check {
 		display: flex;
 		gap: var(--space-2);
 		align-items: flex-start;
-		font-size: var(--text-sm);
 		font-weight: 400;
+		cursor: pointer;
+	}
+	.radio > span,
+	.check > span {
+		color: var(--text-muted);
 	}
 	.sub {
 		display: grid;
 		gap: var(--space-1);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		color: var(--text-muted);
 		margin-top: var(--space-1);
 	}
@@ -208,29 +208,21 @@
 	select {
 		width: 100%;
 		max-width: 16rem;
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-sm);
-		background: var(--surface);
-		padding: var(--space-1) var(--space-2);
 	}
 	.actions {
 		grid-column: 1 / -1;
 		display: flex;
-		gap: var(--space-3);
+		gap: var(--space-4);
 		align-items: center;
 		flex-wrap: wrap;
-		border-top: 1px solid var(--border);
-		padding-top: var(--space-3);
+		border-top: 1px solid var(--hair);
+		padding-top: var(--space-4);
 	}
 	.hint {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-muted);
 	}
-	.error {
+	.note {
 		grid-column: 1 / -1;
-		color: var(--danger);
-		font-size: var(--text-sm);
 		margin: 0;
 	}
 </style>

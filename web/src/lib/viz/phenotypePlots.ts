@@ -115,7 +115,7 @@ function colour(ctx: PhenotypePlotContext) {
 	return {
 		domain: [LABEL.called, LABEL.background, LABEL.other],
 		range: [ctx.called, ctx.negative, ctx.neutral],
-		legend: true
+		legend: false
 	};
 }
 
@@ -179,8 +179,8 @@ export function createPhenotypePlot(kind: PhenotypePlotKind, sites: PhenotypeSit
 		height: 320,
 		marginBottom: 44,
 		marginLeft: 60,
-		x: { label: 'Codon site →', grid: true, domain },
-		y: { label: yLabel, grid: true, zero: kind !== 'significance' },
+		x: { label: 'Codon site →', grid: false, domain },
+		y: { label: yLabel, grid: false, zero: kind !== 'significance' },
 		color: colour(ctx),
 		marks
 	});
@@ -198,8 +198,8 @@ export function createParsPlot(sites: PhenotypeSiteRecord[], ctx: PhenotypePlotC
 		height: 320,
 		marginBottom: 44,
 		marginLeft: 60,
-		x: { label: 'Background frequency of the derived residue (%) →', grid: true, domain: [0, 100] },
-		y: { label: '↑ Foreground frequency (%)', grid: true, domain: [0, 100] },
+		x: { label: 'Background frequency of the derived residue (%) →', grid: false, domain: [0, 100] },
+		y: { label: '↑ Foreground frequency (%)', grid: false, domain: [0, 100] },
 		color: colour(ctx),
 		marks: [
 			Plot.line(

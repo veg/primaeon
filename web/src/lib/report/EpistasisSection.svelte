@@ -7,6 +7,9 @@
 	for the sector panel's p_perm caveat come from the section when the runtime records them and
 	from the report's options otherwise (they are the same numbers: the orchestrator ran with the
 	report's options).
+
+	The lede states the finding with the numbers inline (web/DESIGN.md §5); its first `strong` is
+	the edge count, digits only, because the e2e reads it.
 -->
 <script lang="ts">
 	import type { ReportRecord } from '$lib/api';
@@ -18,9 +21,11 @@
 	interface Props {
 		record: ReportRecord;
 		epistasis: EpistasisSection;
+		/** Sites the Sites section calls at the active cut; a called node is filled in the network. */
+		called?: readonly number[] | null;
 		onSelect: (site: number) => void;
 	}
-	let { record, epistasis, onSelect }: Props = $props();
+	let { record, epistasis, called = null, onSelect }: Props = $props();
 
 	// runtime/src/epistasis.js records `permutations: {n, seed, rng, note}`; older payloads a number.
 	const perm = $derived(epistasis.permutations as { n?: number; seed?: number } | number | undefined);
@@ -32,15 +37,14 @@
 </script>
 
 <p class="lede">
-	Co-selection is the cosine similarity of two sites' per-taxon attribution rows (attention × non-consensus
-	indicator from the same forward pass that scored the sites); an edge is kept at cosine ≥ 0.30, BH q ≤ 0.05,
-	CESI ≥ 2.0 and both LRTs ≥ 1.0. Sectors are modularity communities of that network pruned to their
-	dominant eigenvector and tested against a permutation null.
-	<strong>{edges.length}</strong> edge{edges.length === 1 ? '' : 's'} over <strong>{sites}</strong> site{sites === 1 ? '' : 's'};
-	<strong>{sectors.length}</strong> sector{sectors.length === 1 ? '' : 's'}.
+	<strong>{edges.length}</strong> co-selected pair{edges.length === 1 ? '' : 's'} over {sites} site{sites === 1 ? '' : 's'},
+	forming {sectors.length} sector{sectors.length === 1 ? '' : 's'}{permutations ? `, tested against ${permutations.toLocaleString()} permutations` : ''}.
+	Edges are pairs of sites whose per-taxon attribution rows agree (cosine ≥ 0.30, BH q ≤ 0.05, CESI ≥ 2.0, both
+	LRTs ≥ 1.0); the attribution rows come from the same forward pass that scored the sites. Sectors are modularity
+	communities of that graph pruned to their dominant eigenvector.
 </p>
 
-<EpistasisNetwork {edges} {sectors} {onSelect} />
+<EpistasisNetwork {edges} {sectors} {called} {onSelect} />
 
 <h3>Pairs</h3>
 <PairTable {edges} {onSelect} />
@@ -51,11 +55,8 @@
 <style>
 	.lede {
 		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--text-muted);
 	}
 	h3 {
 		margin: var(--space-2) 0 0;
-		font-size: var(--text-lg);
 	}
 </style>

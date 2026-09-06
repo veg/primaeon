@@ -10,6 +10,10 @@
 	measurement. Section ids are the ReportRecord section names (sites, gene, epistasis,
 	attribution, filter, dms, phenotype) plus diagnostics and evaluate, so the report can deep-link
 	to /methods/#gene from the section it is qualifying.
+
+	LOOK. web/DESIGN.md §3 "/methods": the same rules as the report — h1, a metadata line, numbered
+	h2 per section by CSS counter (never markup), the CLI command as a mono run-in at the right of
+	the heading row, prose on --measure, hairline rules. The word "surrogate" must appear here.
 -->
 <script lang="ts">
 	import { base } from '$app/paths';
@@ -30,9 +34,12 @@
 	/>
 </svelte:head>
 
-<div class="container container--narrow">
-	<p class="eyebrow">Methods</p>
-	<h1>What each analysis computes, and how far to read it</h1>
+<div class="container container--narrow methods">
+	<h1>Methods</h1>
+	<p class="meta">
+		What each analysis computes, and how far to read it · model <code>{set.model_version}</code> ·
+		reference <code>{set.reference_version}</code> (<code>{set.reference_tag}</code>)
+	</p>
 	<p class="intro">
 		One upload runs every analysis below, in this order, and the report fills in as each finishes.
 		Each section says what is computed, mirroring the reference implementation function by
@@ -41,16 +48,20 @@
 	</p>
 
 	<nav class="toc" aria-label="On this page">
-		<ul>
+		<ol>
 			<li><a href="#model">The model</a></li>
 			{#each PILLARS as p (p.id)}
 				<li><a href="#{p.id}">{p.title}</a></li>
 			{/each}
-		</ul>
+			<li><a href="#reproducing">Reproducing a report</a></li>
+		</ol>
 	</nav>
 
 	<section id="model" class="pillar">
-		<h2>The model</h2>
+		<div class="pillar__head">
+			<h2>The model</h2>
+			<span class="eyebrow">surrogate for {card.surrogate_for}</span>
+		</div>
 		<p>{card.what_it_is}</p>
 		<p>
 			It is a surrogate for {card.surrogate_for}: the training targets are MEME likelihood-ratio
@@ -67,6 +78,7 @@
 		</p>
 		<div class="scroll">
 			<table class="variants">
+				<caption><b>Model variants.</b> The two exported graphs, what each was trained on, and the prefix of the SHA-256 that every surface verifies before it scores.</caption>
 				<thead>
 					<tr><th>Variant</th><th>Trained on</th><th>Regime</th><th>Graph</th></tr>
 				</thead>
@@ -113,17 +125,18 @@
 
 	{#each PILLARS as p (p.id)}
 		<section id={p.id} class="pillar">
-			<h2>{p.title}</h2>
-			<dl class="meta">
-				<dt>Mirrors</dt>
-				<dd><code>{p.command}</code></dd>
+			<div class="pillar__head">
+				<h2>{p.title}</h2>
+				<span class="eyebrow"><code>{p.command}</code></span>
+			</div>
+			<dl class="meta-list">
 				<dt>Model outputs</dt>
 				<dd><code>{p.needs}</code></dd>
 				<dt>In the browser</dt>
 				<dd>{p.cost}</dd>
 			</dl>
 			{#if p.status}
-				<p class="status">{p.status}</p>
+				<p class="note">{p.status}</p>
 			{/if}
 
 			<h3>What is computed</h3>
@@ -154,8 +167,11 @@
 		</section>
 	{/each}
 
-	<section class="pillar">
-		<h2>Reproducing a report</h2>
+	<section id="reproducing" class="pillar">
+		<div class="pillar__head">
+			<h2>Reproducing a report</h2>
+			<span class="eyebrow"><code>provenance.reference_command</code></span>
+		</div>
 		<p>
 			Every report carries a provenance block with the surface that computed it, the model
 			version, variant and graph hash, the seed, the options as submitted, everything the
@@ -168,77 +184,118 @@
 </div>
 
 <style>
-	.intro {
-		color: var(--text-muted);
-		margin-bottom: var(--space-5);
+	.methods {
+		counter-reset: section;
 	}
-	.toc ul {
-		list-style: none;
-		padding: 0;
-		margin: 0 0 var(--space-6);
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-2) var(--space-4);
-		font-size: var(--text-sm);
-	}
-	.pillar {
-		border-top: 1px solid var(--border);
-		padding-top: var(--space-5);
-		margin-bottom: var(--space-8);
-	}
-	.pillar h3 {
-		font-family: var(--font-text);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-muted);
-		margin: var(--space-5) 0 var(--space-2);
+	h1 {
+		margin-bottom: var(--space-1);
 	}
 	.meta {
+		font-size: var(--text-md);
+		color: var(--text-muted);
+		margin: 0 0 var(--space-5);
+		padding-bottom: var(--space-3);
+		border-bottom: 1px solid var(--text);
+		max-width: none;
+	}
+	.intro {
+		margin-bottom: var(--space-5);
+	}
+	.toc ol {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 var(--space-8);
+		font-size: var(--text-md);
+		counter-reset: toc;
+		columns: 2;
+		column-gap: var(--space-5);
+	}
+	.toc li {
+		counter-increment: toc;
+		break-inside: avoid;
+		padding-left: 2rem;
+		position: relative;
+		line-height: 1.7;
+	}
+	.toc li::before {
+		content: counter(toc);
+		position: absolute;
+		left: 0;
+		color: var(--text-muted);
+	}
+
+	.pillar {
+		margin-bottom: var(--space-10);
+	}
+	.pillar__head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--space-4);
+		flex-wrap: wrap;
+		border-bottom: 1px solid var(--rule);
+		padding: 0 0 var(--space-2) 2.5rem;
+		margin-bottom: var(--space-4);
+		position: relative;
+	}
+	.pillar__head h2 {
+		margin: 0;
+	}
+	.pillar__head h2::before {
+		counter-increment: section;
+		content: counter(section);
+		position: absolute;
+		left: 0;
+		color: var(--text-muted);
+		font-weight: 400;
+	}
+	.pillar__head .eyebrow {
+		margin: 0;
+		font-size: var(--text-sm);
+		color: var(--text-muted);
+	}
+	.pillar__head .eyebrow code {
+		font-size: var(--text-sm);
+	}
+	.pillar h3 {
+		margin: var(--space-5) 0 var(--space-2);
+	}
+	.meta-list {
 		display: grid;
 		grid-template-columns: max-content 1fr;
 		gap: var(--space-1) var(--space-4);
-		margin: 0 0 var(--space-3);
-		font-size: var(--text-sm);
+		margin: 0 0 var(--space-4);
+		font-size: var(--text-md);
 	}
-	.meta dt {
+	.meta-list dt {
 		color: var(--text-muted);
 	}
-	.meta dd {
+	.meta-list dd {
 		margin: 0;
-	}
-	.status {
-		font-size: var(--text-sm);
-		padding: var(--space-2) var(--space-3);
-		border-left: 2px solid var(--accent);
-		background: var(--accent-soft);
-		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 	}
 	.fields {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--space-1) var(--space-2);
 		align-items: baseline;
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 	}
 	.fields__label {
 		color: var(--text-muted);
 		margin-right: var(--space-1);
 	}
 	.fields code {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 	}
 	.scroll {
 		overflow-x: auto;
-		margin-bottom: var(--space-3);
+		margin-bottom: var(--space-5);
 	}
 	.variants {
-		font-size: var(--text-sm);
 		min-width: 36rem;
 	}
 	.fine {
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
 	}
 	.real {
@@ -247,10 +304,17 @@
 		gap: var(--space-3);
 		align-items: center;
 		margin-top: var(--space-5);
-		font-size: var(--text-sm);
+		font-size: var(--text-md);
 		color: var(--text-muted);
+		max-width: none;
 	}
 	.real span {
 		flex: 1 1 20rem;
+		max-width: var(--measure);
+	}
+	@media (max-width: 40em) {
+		.toc ol {
+			columns: 1;
+		}
 	}
 </style>
