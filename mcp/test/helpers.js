@@ -37,6 +37,9 @@ export const TEST_THREADS = Number.parseInt(process.env.HYPHAEON_MCP_THREADS || 
  * @param {object} [opts] createServer options; `threads` builds an engine with that many ORT
  *   threads (the engine is then this helper's to release on close, as createServer would).
  */
+/** Request timeout for every test tool call: long enough for the biggest example on a slow runner. */
+export const TEST_REQUEST_TIMEOUT_MS = 600_000;
+
 export async function connect(opts = {}) {
   const { threads, ...serverOpts } = opts;
   let engine = null;
@@ -49,6 +52,18 @@ export async function connect(opts = {}) {
   await handle.server.connect(serverTransport);
   const client = new Client({ name: "hyphaeon-mcp-test", version: "0.0.0" });
   await client.connect(clientTransport);
+
+  // WHY callTool IS WRAPPED. The MCP SDK times a request out after 60 s
+  // (DEFAULT_REQUEST_TIMEOUT_MSEC) and answers with MCP error -32001, which surfaces here as a
+  // failed SUITE rather than a failed assertion, whatever `beforeAll`'s own timeout says. The
+  // heaviest calls in this suite are real analyses on the biggest example: RHO's phenotype pass is
+  // 655 taxa x 349 codons, comfortably inside 60 s on a developer machine and NOT inside it on a
+  // 4-vCPU CI runner, where it took the whole `app` job down on veg/primaeon's second run. Tests
+  // that mean to assert a timeout can still pass their own `timeout` in the options argument.
+  const rawCallTool = client.callTool.bind(client);
+  client.callTool = (params, resultSchema, options) =>
+    rawCallTool(params, resultSchema, { timeout: TEST_REQUEST_TIMEOUT_MS, ...(options ?? {}) });
+
   return {
     client,
     handle,
