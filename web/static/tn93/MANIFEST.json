@@ -1,0 +1,22 @@
+{
+  "WHY THIS FILE EXISTS": "The provenance and integrity record for the vendored tn93 WebAssembly build, read by runtime/src/tn93-wasm.js before the module is instantiated. Same policy as the ONNX graphs (CLAUDE.md, 'Every session verifies the sha256'): the app refuses to run code whose bytes it cannot account for, and the hashes live in data rather than in source. The files are the tn93.js glue and tn93.wasm from the release asset below, unmodified; LICENSE is the one shipped in that tarball. Re-vendor by downloading the asset, copying the two tn93 files and updating version, released, asset and the two hashes here.",
+  "tool": "tn93",
+  "repository": "https://github.com/veg/tn93",
+  "version": "v1.0.17",
+  "asset": "tn93-v1.0.17-wasm.tar.gz",
+  "release": "https://github.com/veg/tn93/releases/tag/v1.0.17",
+  "vendored": "2026-09-07",
+  "files": {
+    "tn93.wasm": {
+      "bytes": 182322,
+      "sha256": "9fed4c9f10365d4a6bcdea13c71dbc6db4135c699ed732fd057a2a4ed52dd22f",
+      "what": "The compiled tn93 CLI. Run through callMain with the reference's own argv (dataset.py:507-537): -t 1.0 -l 1 -q -o <csv> <fasta>."
+    },
+    "tn93.cjs": {
+      "bytes": 72585,
+      "sha256": "f23bb1e388c21294ffd3a8a817491a238e9ecf6bb4da7816a06e2afd94f8a7f0",
+      "what": "Emscripten MODULARIZE glue, factory `create_tn93`, CommonJS export. No eval and no new Function, so it needs only 'wasm-unsafe-eval' in the page's script-src, never 'unsafe-eval'. Vendored with a .cjs extension because runtime/package.json is type: module, under which Node would load a .js file as ESM, find no exports and hand back an empty namespace."
+    }
+  },
+  "verified": "Against native tn93 1.0.15 on 2026-09-07: identical rows and values on bat_oas1 (153 pairs), Smc6 (190), camelid (22,366) and HIV1_RT (113,050); the row ORDER differs because the native binary is multi-threaded and this build is not. HIV1_RT runs in 243 ms here against 240 ms native and 821 ms for the library's JavaScript."
+}

@@ -215,6 +215,7 @@ export async function startReport(req: StartRequest): Promise<string> {
 				manifestUrl: absolute(req.base, '/models/manifest.json'),
 				modelsBase: absolute(req.base, '/models/'),
 				ortBase: absolute(req.base, '/ort/'),
+				tn93Base: absolute(req.base, '/tn93/'),
 				numThreads: Math.max(1, Math.min(MAX_THREADS, hardwareConcurrency ?? 1))
 			},
 			{

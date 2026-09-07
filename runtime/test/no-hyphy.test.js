@@ -80,10 +80,22 @@ describe('HyPhy is not in this package', () => {
 
 	it('has no hyphy source, no vendored build, and no ./hyphy export', async () => {
 		expect(existsSync(join(RUNTIME, 'src', 'hyphy'))).toBe(false);
-		expect(existsSync(join(RUNTIME, 'vendor'))).toBe(false);
+		// `vendor/` itself is allowed again since the tn93 WebAssembly build landed there (250 KB,
+		// vendor/tn93/MANIFEST.json); what must stay gone is HyPhy's own 6.4 MB tracked build.
+		expect(existsSync(join(RUNTIME, 'vendor', 'hyphy'))).toBe(false);
 		const pkg = JSON.parse(readFileSync(join(RUNTIME, 'package.json'), 'utf8'));
-		expect(Object.keys(pkg.exports)).toEqual(['.', './web', './node', './prescreen', './prescreen/scope', './package.json']);
-		expect(pkg.files).toEqual(['src']);
+		// The list is exact so a new subpath has to be added deliberately; './tn93-wasm' is the
+		// compiled TN93 loader, and 'vendor' ships with it because the module reads its own files.
+		expect(Object.keys(pkg.exports)).toEqual([
+			'.',
+			'./web',
+			'./node',
+			'./prescreen',
+			'./prescreen/scope',
+			'./package.json',
+			'./tn93-wasm'
+		]);
+		expect(pkg.files).toEqual(['src', 'vendor']);
 		// The old subpath fails the way Node fails any unexported path, not with a module-not-found
 		// from inside a file that still exists. `require.resolve` rather than `import()`, because
 		// Vite resolves a literal dynamic import at transform time and would fail the whole file

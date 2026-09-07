@@ -11,10 +11,12 @@
     "./node": "./src/session-node.js",
     "./prescreen": "./src/prescreen/hitLikelihood.js",
     "./prescreen/scope": "./src/prescreen/scope.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./tn93-wasm": "./src/tn93-wasm.js"
   },
   "files": [
-    "src"
+    "src",
+    "vendor"
   ],
   "scripts": {
     "test": "vitest run"

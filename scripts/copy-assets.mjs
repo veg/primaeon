@@ -164,6 +164,32 @@ function findOrtPackage() {
 	}
 }
 
+// 2b. tn93 WebAssembly ---------------------------------------------------------------------------
+//
+// runtime/vendor/tn93 holds veg/tn93's published WebAssembly build (MANIFEST.json records the
+// release and the sha256 of each file). The browser cannot require() the CommonJS glue, and the
+// page's CSP has no 'unsafe-eval' to evaluate it by hand, so the glue is rewritten here as an ES
+// module — the file verbatim plus one export line — which a worker loads with a plain dynamic
+// import from this origin. The .wasm is copied unchanged and its bytes are verified at load
+// against the manifest copied beside it, exactly as the ONNX graphs are.
+{
+	const vendor = join(repo, 'runtime', 'vendor', 'tn93');
+	const manifestPath = join(vendor, 'MANIFEST.json');
+	if (!existsSync(manifestPath)) {
+		warn('tn93', `${vendor} has no MANIFEST.json; skipping. Tree-free runs will use the library's JavaScript.`);
+	} else {
+		const dest = join(staticDir, 'tn93');
+		mkdirSync(dest, { recursive: true });
+		let total = copy(join(vendor, 'tn93.wasm'), join(dest, 'tn93.wasm'));
+		total += copy(manifestPath, join(dest, 'MANIFEST.json'));
+		const glue = readFileSync(join(vendor, 'tn93.cjs'), 'utf8');
+		const esm = `${glue}\nexport default create_tn93;\n`;
+		writeFileSync(join(dest, 'tn93.mjs'), esm);
+		total += Buffer.byteLength(esm);
+		log('tn93', `copied the v${JSON.parse(readFileSync(manifestPath, 'utf8')).version.replace(/^v/, '')} build (${mb(total)}) to web/static/tn93/`);
+	}
+}
+
 // 3. _headers -----------------------------------------------------------------------------------
 
 /**

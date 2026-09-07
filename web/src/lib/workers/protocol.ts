@@ -138,6 +138,9 @@ export interface InferRequest {
 	modelsBase: string;
 	/** Absolute URL prefix of the vendored ORT WASM (`.../ort/`). */
 	ortBase: string;
+	/** Where static/tn93/ is served from; the compiled TN93 for tree-free runs (falls back to the
+	 *  library's JavaScript when absent or unloadable). */
+	tn93Base?: string;
 	/** Threads to ask ORT for; honoured only when the worker is cross-origin isolated. */
 	numThreads: number;
 	/** Display name for the record (file name or demo id). */
@@ -175,6 +178,9 @@ export interface AnalyzeRequest {
 	manifestUrl: string;
 	modelsBase: string;
 	ortBase: string;
+	/** Where static/tn93/ is served from; the compiled TN93 for tree-free runs (falls back to the
+	 *  library's JavaScript when absent or unloadable). */
+	tn93Base?: string;
 	numThreads: number;
 }
 
@@ -212,6 +218,9 @@ export interface PhenotypeRequest {
 	manifestUrl: string;
 	modelsBase: string;
 	ortBase: string;
+	/** Where static/tn93/ is served from; the compiled TN93 for tree-free runs (falls back to the
+	 *  library's JavaScript when absent or unloadable). */
+	tn93Base?: string;
 	numThreads: number;
 }
 
