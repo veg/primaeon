@@ -62,7 +62,7 @@ on:
 
 env:
   # The engine commit these tests run against. Bump together with the library the app consumes.
-  ENGINE_REF: phase-4a
+  ENGINE_REF: phase-4b
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on

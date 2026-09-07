@@ -201,7 +201,8 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   `ci` job is the one that rebakes) and `actions/deploy-pages`. `web/static/.nojekyll` is required
   because Jekyll would drop `_app/`. Pages cannot send COOP/COEP, so that deployment runs ONNX on one
   thread; the production host (`deploy/README.md`) is the multi-threaded one.
-- **`ENGINE_REF`** (workflow `env`, `phase-3a` today) is the engine commit CI runs against — a
+- **`ENGINE_REF`** (workflow `env`, `phase-4b` today: the tag carrying
+  `tn93Options.pairwiseDistances`, which the compiled TN93 needs) is the engine commit CI runs against — a
   tag, branch or SHA. It is bumped in the same change that moves the app onto a new library, never
   by itself; a push to the engine's default branch cannot break this repository's CI. Once the
   library is a published npm version the `file:` link goes away, but the models and fixtures the
