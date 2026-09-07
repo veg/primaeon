@@ -25,12 +25,15 @@
  *              `site` / `ref_aa` / `derived_aa`, both frequency columns (pure counting over the
  *              two groups: measured 0.0), `p_assoc_perm` null on every row, the trait sector's
  *              membership, signatures, shared counts and its whole degenerate null block
- *              (`spectral_coherence`, `p_perm`, `null_coherence_*`: measured 0.0), and each
+ *              (`p_perm`, a pure count with a degenerate null: measured 0.0), and each
  *              co-selection pair's sites, residues and `shared_branches`.
  *   graph      1e-5 x max(1, |x|) — PLAN.md 5.4's class for anything downstream of an ORT forward
  *              pass. `hyphaeon_lrt` (measured 1.9e-6) and everything computed from it or from the
  *              attention: `attribution_norm`, the two attention means, `association_rho`, `score`,
- *              the gene tracks, `mean_lrt`, `similarity`, `cesi` (worst of all of them: 4.7e-6, on
+ *              the gene tracks, `mean_lrt`, `similarity`, `cesi`, and the sector's
+ *              `spectral_coherence` / `null_coherence_*`, which are eigenvalues of an
+ *              attention-derived matrix and match on darwin/x64 but differ by 9.4e-8 relative on
+ *              linux/x64 (worst of all of them: 4.7e-6, on
  *              `p_evd_length_adjusted`, which takes `max_assoc` through an exponential).
  *   probability 1e-6 ABSOLUTE for `p_lrt`, `p_value`, `p_assoc`, `p_assoc_parametric`, `q_value`
  *              and the pairs' `p_value` / `q_value`. A p-value is an exponential function of a
@@ -201,9 +204,18 @@ describe("hyphaeon_phenotype in-process on RHO vs fixtures/e2e/phenotype_RHO_mar
       for (const k of ["sector_id", "size", "sites", "pars_signature", "consensus_signature", "shared_taxa", "shared_branches", "isotropic_baseline"]) {
         expect(got[k], "sector." + k).toEqual(want[k]);
       }
-      // n_permutations 0 makes the null a single copy of the observed value on both sides.
-      for (const k of ["spectral_coherence", "p_perm", "null_coherence_mean", "null_coherence_std", "null_coherence_95"]) {
-        expect(got[k], "sector." + k).toBe(want[k]);
+      // n_permutations 0 makes the null a single copy of the observed value on both sides, so
+      // p_perm is a pure count (1.0) and stays exact. The coherence itself is NOT: it is the
+      // leading eigenvalue of a similarity matrix built from the model's attention, so it carries
+      // the forward pass's rounding and belongs in the graph class like every other model-derived
+      // float here. It was exact on darwin/x64 when this suite was written, which is why it sat in
+      // the exact list; on CI's linux/x64 the same run gives 0.6355730295181274 against the
+      // fixture's 0.6355729699134827, a relative 9.4e-8 — three orders inside the class, and
+      // invariant to the thread count (1, 2 and 8 all reproduce the darwin value here).
+      expect(got.p_perm, "sector.p_perm").toBe(want.p_perm);
+      for (const k of ["spectral_coherence", "null_coherence_mean", "null_coherence_std", "null_coherence_95"]) {
+        const relCoherence = graphClass(got[k], want[k]);
+        expect(relCoherence, "sector." + k + " (graph class)").toBeLessThanOrEqual(GRAPH_TOL);
       }
       // mean_lrt is a mean of the model's LRTs.
       const rel = graphClass(got.mean_lrt, want.mean_lrt);
