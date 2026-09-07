@@ -214,6 +214,16 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   postinstall metadata lists `cuda12` as a requirement on `linux/x64` and would download the CUDA
   execution-provider binaries from NuGet on every uncached `npm ci`; the CPU binding is bundled and
   is all this repository uses.
+- **Memory is the binding constraint on a 16 GB runner.** `resolveBatchSize` (`runtime/src/predict.js`)
+  bounds the batch by a MEASURED inference working set (930 bytes per taxon pair per site, budget
+  1.5 GB) on top of the reference's own model, which underestimates onnxruntime's arena by ~18x: a
+  RHO meme pass fell from 13.6 GB to 1.2 GB and the runtime suite from 18 GB to 6.1 GB at no
+  scientific cost (batching is chunking; RHO at batch 4 vs the default is bit-identical, max |dLRT|
+  and |dp| exactly 0) and no wall-clock cost (11.2 s vs 12.5 s). The `parity` job additionally
+  swaps 16 GB on /mnt because RHO's epistasis pass runs the sector DMS at one site (19
+  substitutions) per graph call, a granularity no bound can subdivide: 14.3 GB peak. Both jobs of
+  the repository's first run died as exit 143, "the runner has received a shutdown signal", which
+  is what an OOM kill looks like there.
 - Budget: `app` is bounded at 45 min, `parity` at 60. Measured locally at this change: the four
   vitest suites 82 s in all (runtime 32 s, web 2 s, mcp 33 s, server 15 s); Phase 3 measured the
   node parity surfaces at 2:28 with 6 threads and the Python reference at ~1.5 min of CLI time,

@@ -241,6 +241,20 @@ jobs:
       # The node surface: every example, every analysis this runtime has, into the engine
       # checkout's parity/node/ (tree runs) and parity/node-tn93/ (tree-free runs, D22); exit 1 if
       # any run failed. B = 10,000 and seed 42 are the runner's defaults and parity.py's (D17).
+      # RHO's epistasis pass runs the sector DMS on 655 taxa, and the library's DMS granularity is
+      # one whole site (19 substitutions) per graph call, which no batch bound can subdivide: peak
+      # RSS measured 14.3 GB here after the resolveBatchSize memory bound (22.9 GB before it, which
+      # is what killed this job on the repository's first run). That is close enough to the runner's
+      # 16 GB that a spike would be OOM-killed again, so give the kernel somewhere to page to. /mnt
+      # is the runner's large scratch disk; the swapfile lives and dies with the runner.
+      - name: Swap headroom for RHO's 655-taxon epistasis pass
+        run: |
+          sudo fallocate -l 16G /mnt/parity-swap
+          sudo chmod 600 /mnt/parity-swap
+          sudo mkswap /mnt/parity-swap
+          sudo swapon /mnt/parity-swap
+          free -h
+
       - name: Node surface (runtime/scripts/parity-node.mjs)
         run: >
           node runtime/scripts/parity-node.mjs

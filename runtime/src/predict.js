@@ -61,11 +61,45 @@ export function adaptiveBatchSize(numTaxa) {
 }
 
 /**
+ * What ONE SITE in a batch actually costs at inference, in bytes per taxon PAIR, measured on this
+ * graph under onnxruntime-node — not what the reference predicts.
+ *
+ * WHY THIS CONSTANT EXISTS. `adaptiveBatchSize` mirrors inference.py, which models a site as
+ * 48 bytes per pair (48 * N^2) against a 1.0e9-byte budget. That is torch's own accounting of the
+ * tensors it allocates; it does not describe onnxruntime's arena, which holds the axial-attention
+ * intermediates for the whole batch. Peak RSS of one `runMeme` pass over RHO (655 taxa, 349
+ * codons, general.onnx, 4 intra-op threads, darwin/x64 Node 22), sampled every 100 ms:
+ *
+ *     batchSize 4    1.62 GB     11.2 s      -> 0.40 GB per site  ->  ~930 bytes per pair
+ *     batchSize 16   5.75 GB     11.6 s      -> 0.36 GB per site  ->  ~840 bytes per pair
+ *     default (38)  13.63 GB     12.5 s      -> 0.36 GB per site  ->  ~830 bytes per pair
+ *
+ * So the real cost is ~18x the reference's model, the batch buys almost no wall time (11.2 s vs
+ * 12.5 s, 12 %), and the default batch alone needs more memory than a 16 GB CI runner has: the
+ * first `ci` run on veg/primaeon lost BOTH jobs to the OOM killer ("the runner has received a
+ * shutdown signal", exit 143) — the `app` job inside vitest, the `parity` job during RHO
+ * epistasis, whose peak measured 22.9 GB here. Batching is pure chunking, so bounding it changes
+ * no number: RHO at batch 4 vs the default is bit-identical on every site (max |dLRT| and max
+ * |dp| both exactly 0 over 349 sites, measured the same day).
+ *
+ * The bound is deliberately generous (1.5 GB, ~2x a browser tab's comfortable working set) so it
+ * binds ONLY where the reference's model is wrong by orders of magnitude: at 655 taxa it gives 4
+ * sites per call, at 256 (the app's default taxon cap) 26, and below ~120 taxa it never binds at
+ * all. `runDms` keeps its own floor of one site's 19 mutants per call, which is a smaller working
+ * set than this bound allows at every N the DMS work budget admits.
+ */
+const ACTIVATION_BYTES_PER_PAIR_PER_SITE = 930;
+
+/** Peak inference working set a single graph call may aim for, in bytes. See above. */
+const DEFAULT_MEMORY_BUDGET_BYTES = 1.5e9;
+
+/**
  * Sites per graph call: the caller's explicit `batchSize`, else the reference's adaptive size
- * bounded by the library's tensor budget (`batchBudgetBytes` → `batchSizeFor`).
+ * bounded by the library's tensor budget (`batchBudgetBytes` → `batchSizeFor`) and by the
+ * measured inference working set (`memoryBudgetBytes`, see above).
  *
  * @param {number} numTaxa
- * @param {{batchSize?: number, batchBudgetBytes?: number}} [options]
+ * @param {{batchSize?: number, batchBudgetBytes?: number, memoryBudgetBytes?: number}} [options]
  * @returns {number}
  */
 export function resolveBatchSize(numTaxa, options = {}) {
@@ -77,7 +111,23 @@ export function resolveBatchSize(numTaxa, options = {}) {
 			? Math.floor(options.batchBudgetBytes)
 			: undefined;
 	const tensorBound = budget === undefined ? batchSizeFor(numTaxa) : batchSizeFor(numTaxa, budget);
-	return Math.max(1, Math.min(adaptiveBatchSize(numTaxa), tensorBound));
+	return Math.max(1, Math.min(adaptiveBatchSize(numTaxa), tensorBound, memoryBound(numTaxa, options)));
+}
+
+/**
+ * Sites per graph call that keep the inference working set under the memory budget.
+ *
+ * @param {number} numTaxa
+ * @param {{memoryBudgetBytes?: number}} [options]
+ * @returns {number}
+ */
+export function memoryBound(numTaxa, options = {}) {
+	const budget =
+		Number.isFinite(options.memoryBudgetBytes) && options.memoryBudgetBytes > 0
+			? options.memoryBudgetBytes
+			: DEFAULT_MEMORY_BUDGET_BYTES;
+	const perSite = ACTIVATION_BYTES_PER_PAIR_PER_SITE * Math.max(1, numTaxa) ** 2;
+	return Math.max(1, Math.floor(budget / perSite));
 }
 
 /**
