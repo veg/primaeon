@@ -1,4 +1,4 @@
-# HyphAeon — design specification
+# PrimAeon — design specification
 
 The look the implementers build. It supersedes the visual decisions in `web/src/app.css` and in every
 component's scoped `<style>`; it changes no logic, no numbers, no DOM hook and no class name.
@@ -262,7 +262,7 @@ then `nav[aria-label="Primary"]` at 14 px `--text-muted` with `--space-5` gaps; 
 the left, four links at the right. The masthead mark is the only purple on a page with nothing to
 signal.
 
-**Landing (drop zone, paste, examples).** `h1` "HyphAeon" at 28/700, one 16 px `--text-muted`
+**Landing (drop zone, paste, examples).** `h1` "PrimAeon" at 28/700, one 16 px `--text-muted`
 sentence, then `.dropzone`: a `1px dashed var(--rule)` rectangle, `--space-6` `--space-5` padding, no
 fill, left-aligned, holding a 20/700 `.dropzone__title` ("Drop your alignment here") and a 14 px
 `--text-muted` `.dropzone__hint`. Hover and `.dropzone--active` (drag-over) darken the dash to
@@ -593,7 +593,7 @@ asserted. Anything marked **exact** is a full-text match.
 **Shell and navigation**
 - `nav[aria-label="Primary"] a` — labels **exactly** `['Methods', 'Evaluate', 'MCP']`, in that order;
   no nav href may match `/(analyze|gallery)/?$`.
-- `page.getByRole('heading', { level: 1, name: 'HyphAeon' })` on `/`; `<title>` matches `/HyphAeon/`.
+- `page.getByRole('heading', { level: 1, name: 'PrimAeon' })` on `/`; `<title>` matches `/PrimAeon/`.
 - Every route document must keep COOP/COEP; no request may go off-origin (this is why no CDN and no
   Google Font may be introduced) and no route may fetch `*.onnx`, `ort-*.wasm/.mjs`, or anything
   matching `/hyphy/i`.

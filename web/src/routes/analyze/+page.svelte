@@ -314,7 +314,7 @@
 </script>
 
 <svelte:head>
-	<title>Analyzing · HyphAeon</title>
+	<title>Analyzing · PrimAeon</title>
 </svelte:head>
 
 <div class="container container--narrow">

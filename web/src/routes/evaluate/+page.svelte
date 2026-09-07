@@ -7,7 +7,7 @@
 	as statements of what they will hold (web/DESIGN.md §3 "/evaluate").
 -->
 <svelte:head>
-	<title>Evaluate · HyphAeon</title>
+	<title>Evaluate · PrimAeon</title>
 </svelte:head>
 
 <div class="container container--narrow">

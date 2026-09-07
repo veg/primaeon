@@ -15,7 +15,7 @@
 </script>
 
 <svelte:head>
-	<title>Results · HyphAeon</title>
+	<title>Results · PrimAeon</title>
 </svelte:head>
 
 <div class="container container--narrow">

@@ -57,7 +57,7 @@
 </script>
 
 <svelte:head>
-	<title>MCP · HyphAeon</title>
+	<title>MCP · PrimAeon</title>
 	<meta
 		name="description"
 		content="Run HyphAeon from Claude: the stdio server for Claude Code, the remote connector, the tool list, a recorded transcript, and how a report is reproduced with one tool call."

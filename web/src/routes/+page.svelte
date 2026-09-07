@@ -109,15 +109,15 @@
 </script>
 
 <svelte:head>
-	<title>HyphAeon</title>
+	<title>PrimAeon</title>
 	<meta
 		name="description"
-		content="Drop a codon alignment. HyphAeon predicts episodic selection per site, a gene-level verdict, epistatic sectors and a digital deep mutational scan, in your browser, in seconds."
+		content="Drop a codon alignment. PrimAeon runs HyphAeon, the neural surrogate for MEME: episodic selection per site, a gene-level verdict, epistatic sectors and a digital deep mutational scan, in your browser, in seconds."
 	/>
 </svelte:head>
 
 <section class="hero container container--narrow">
-	<h1>HyphAeon</h1>
+	<h1>PrimAeon</h1>
 	<p class="lede">Drop a codon alignment. Every analysis runs here, in seconds, and nothing leaves your browser.</p>
 
 	<label

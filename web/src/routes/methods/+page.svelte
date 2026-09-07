@@ -27,7 +27,7 @@
 </script>
 
 <svelte:head>
-	<title>Methods · HyphAeon</title>
+	<title>Methods · PrimAeon</title>
 	<meta
 		name="description"
 		content="What each HyphAeon analysis computes, what the port was validated against, and the measured behaviour of the model: calibration by regime, concordance with MEME, tree sensitivity, and the conventions that make results reproducible."

@@ -11,7 +11,7 @@
 </script>
 
 <svelte:head>
-	<title>HyphAeon</title>
+	<title>PrimAeon</title>
 	<meta name="robots" content="noindex" />
 </svelte:head>
 

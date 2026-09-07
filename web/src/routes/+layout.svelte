@@ -41,7 +41,7 @@
 		<div class="container header__inner">
 			<a class="brand" href="{base}/">
 				<span class="brand__mark" aria-hidden="true"></span>
-				<span class="brand__name">HyphAeon</span>
+				<span class="brand__name">PrimAeon</span>
 			</a>
 			<nav aria-label="Primary">
 				<ul>

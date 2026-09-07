@@ -1,6 +1,6 @@
 # hyphaeon-app
 
-The HyphAeon application: everything that *runs* the HyphAeon neural MEME surrogate. npm
+The HyphAeon application, named **PrimAeon** on the site (Primate + Aeon, as HyPhy + Aeon gave HyphAeon; the engine, the CLI and every package keep their names): everything that *runs* the HyphAeon neural MEME surrogate. npm
 workspaces `runtime/`, `web/`, `mcp/`, `server/` (+ `e2e/`), all consuming `@veg/hyphaeon-js`, the
 library in `../HyphAeon/js` that mirrors the Python reference `../HyphAeon/hyphaeon/*.py`. Plan of
 record: `PLAN.md` (draft v5).

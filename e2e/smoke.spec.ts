@@ -52,8 +52,8 @@ function walk(dir: string, prefix = ''): string[] {
 test.describe('landing page', () => {
 	test('renders the drop zone, without the surrogate caveat and without Analyze/Gallery in the nav', async ({ page }) => {
 		await page.goto('/');
-		await expect(page).toHaveTitle(/HyphAeon/);
-		await expect(page.getByRole('heading', { level: 1, name: 'HyphAeon' })).toBeVisible();
+		await expect(page).toHaveTitle(/PrimAeon/);
+		await expect(page.getByRole('heading', { level: 1, name: 'PrimAeon' })).toBeVisible();
 		await expect(page.locator('.dropzone')).toBeVisible();
 		await expect(page.getByText(/drop your alignment here/i)).toBeVisible();
 

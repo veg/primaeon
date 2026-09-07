@@ -66,7 +66,7 @@
 </script>
 
 <svelte:head>
-	<title>{loaded?.record.name ? `${loaded.record.name} · Report` : 'Report'} · HyphAeon</title>
+	<title>{loaded?.record.name ? `${loaded.record.name} · Report` : 'Report'} · PrimAeon</title>
 </svelte:head>
 
 <div class="container">

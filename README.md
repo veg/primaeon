@@ -1,6 +1,6 @@
 # hyphaeon-app
 
-The application for [HyphAeon](https://github.com/veg/HyphAeon), a neural surrogate for HyPhy's
+**PrimAeon**, the application for [HyphAeon](https://github.com/veg/HyphAeon), a neural surrogate for HyPhy's
 MEME and BUSTED with co-selection networks, a digital deep mutational scan and phenotype
 association on top. This repository holds **everything that runs**:
 
