@@ -145,6 +145,9 @@
 					{#if typeof pre.tn93_saturated_pairs === 'number' && pre.tn93_saturated_pairs > 0}
 						· {(pre.tn93_saturated_pairs as number).toLocaleString()} pair{pre.tn93_saturated_pairs === 1 ? '' : 's'} at the saturation sentinel
 					{/if}
+					{#if pre.tn93_engine}
+						· computed by {pre.tn93_engine === 'wasm' ? "veg/tn93's compiled code (WebAssembly)" : 'the JavaScript port of the tn93 package'}
+					{/if}
 				</dd>
 				{#if pre.display_tree_source}
 					<dt>Tree drawn</dt><dd>{pre.display_tree_source === 'nj' ? 'neighbour-joining on the TN93 distances (display only)' : pre.display_tree_source === 'user-topology' ? 'your topology with unit branch lengths (display only; the model used TN93 distances)' : 'the tree the model was given'}</dd>

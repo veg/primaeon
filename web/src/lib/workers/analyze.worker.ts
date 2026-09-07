@@ -74,6 +74,21 @@ function manifestFor(url: string): Promise<Manifest> {
 	return manifestPromise;
 }
 
+/**
+ * Where the page serves the compiled TN93 from. STRINGS ONLY: this object travels inside the run's
+ * `options`, which is structured-cloned across the worker boundary and stored with the record, so
+ * anything unclonable here (a promise, a fetched object) fails the whole run with "could not be
+ * cloned". The runtime fetches the manifest itself and verifies the wasm against it.
+ */
+function tn93Sources(base: string): { glueUrl: string; wasmUrl: string; manifestUrl: string } {
+	const prefix = base.replace(/\/+$/, '');
+	return {
+		glueUrl: `${prefix}/tn93.mjs`,
+		wasmUrl: `${prefix}/tn93.wasm`,
+		manifestUrl: `${prefix}/MANIFEST.json`
+	};
+}
+
 function abortError(): Error {
 	const err = new Error('Cancelled');
 	err.name = 'AbortError';
@@ -163,7 +178,11 @@ serve<AnalyzeWorkerRequest, AnalyzeWorkerResponse>(async (req, ctx) => {
 			//  removed both the fit and the refusal.)
 			treeSource: req.treeSource,
 			alignmentName: req.inputs.alignmentName,
-			treeName: req.inputs.treeName
+			treeName: req.inputs.treeName,
+			// The compiled TN93 (veg/tn93 v1.0.17) when the page served it, else the library's
+			// JavaScript: `prepareRun` falls back on any load failure and records which ran in
+			// `preprocessing.tn93_engine`. Only a tree-free run reaches either.
+			...(req.tn93Base ? { tn93Wasm: tn93Sources(req.tn93Base) } : { tn93Engine: 'js' })
 		},
 		onSection: (name, payload, meta) => ctx.section(name, payload, Boolean(meta?.final))
 	})) as unknown as AnalyzeResponse['record'];

@@ -399,6 +399,12 @@ export async function runEverything({
 		referenceSequence: options.referenceSequence,
 		useTn93: options.useTn93,
 		tn93Options: options.tn93Options,
+		// Which engine computes the tree-free distances, and where the browser serves it from.
+		// Under Node the loader finds its own vendored copy, so `tn93Wasm` is only ever set by a
+		// surface that has to name URLs; both are forwarded because this list is an allow-list and
+		// an option that is not named here never reaches `prepareRun`.
+		tn93Engine: options.tn93Engine,
+		tn93Wasm: options.tn93Wasm,
 		requireBranchLengths: options.requireBranchLengths,
 		displayTree: options.displayTree,
 		treeSource: options.treeSource,

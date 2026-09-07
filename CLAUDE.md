@@ -133,6 +133,22 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   it from the memo (releasing a handle alone hands the next caller a "Session already disposed"
   session); `mcp` `engine.close()` calls it and the bin sets `process.exitCode` afterwards instead
   of `process.exit(0)`.
+- **The tree-free distances come from veg/tn93's own compiled code.** `runtime/vendor/tn93/` holds
+  the WebAssembly build published with tn93 v1.0.17 (250 KB: `tn93.cjs` glue, `tn93.wasm`, and
+  `MANIFEST.json` recording the release and each file's sha256, verified before the module is
+  instantiated exactly as the ONNX graphs are). `runtime/src/tn93-wasm.js` runs it with the
+  reference's own argv (`-t 1.0 -l 1 -q -o`) and returns RAW pairwise distances; the sentinel, the
+  float32 rounding and dataset.py's imputation stay in the library, which takes those numbers
+  through `tn93Options.pairwiseDistances` (a hook added to `@veg/hyphaeon-js` for this and probed at
+  runtime, because a library without it would ignore the option and the run would claim an engine it
+  did not use). `options.tn93Engine` is `'auto'` by default: the compiled engine, falling back to
+  the JavaScript port with a `TN93_ENGINE_FALLBACK` note; `preprocessing.tn93_engine` records which
+  ran and the provenance panel shows it. Measured: every matrix entry identical to the port on all
+  five examples, the gallery rebake changed no number, and HIV1_RT is 181 ms against 887 ms. The
+  browser gets the same files from `static/tn93/` with the glue rewritten as an ES module by
+  `copy-assets.mjs` (the page's CSP already carries `'wasm-unsafe-eval'` for onnxruntime and no
+  `'unsafe-eval'`; the glue has no `eval`). Options crossing into the worker must stay
+  structured-cloneable, which is why the manifest is named by URL rather than handed over.
 - **There is no tree tool and no HyPhy (D22, Phase 3).** A tree with usable branch lengths is used
   as given; no tree, or a tree without them, takes the library's tree-free path — pairwise TN93
   distances straight into the MDS, the reference's own `--use-tn93` — and the report gets a tree
@@ -185,7 +201,8 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   `ci` job is the one that rebakes) and `actions/deploy-pages`. `web/static/.nojekyll` is required
   because Jekyll would drop `_app/`. Pages cannot send COOP/COEP, so that deployment runs ONNX on one
   thread; the production host (`deploy/README.md`) is the multi-threaded one.
-- **`ENGINE_REF`** (workflow `env`, `phase-3a` today) is the engine commit CI runs against — a
+- **`ENGINE_REF`** (workflow `env`, `phase-4b` today: the tag carrying
+  `tn93Options.pairwiseDistances`, which the compiled TN93 needs) is the engine commit CI runs against — a
   tag, branch or SHA. It is bumped in the same change that moves the app onto a new library, never
   by itself; a push to the engine's default branch cannot break this repository's CI. Once the
   library is a published npm version the `file:` link goes away, but the models and fixtures the

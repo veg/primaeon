@@ -230,6 +230,7 @@ export async function runAnalysis(req: RunRequest): Promise<ResultRecord> {
 				manifestUrl: absolute(req.base, '/models/manifest.json'),
 				modelsBase: absolute(req.base, '/models/'),
 				ortBase: absolute(req.base, '/ort/'),
+				tn93Base: absolute(req.base, '/tn93/'),
 				numThreads: requestedThreads,
 				name: req.demo ?? req.alignmentName
 			},
