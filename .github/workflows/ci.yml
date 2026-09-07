@@ -18,9 +18,12 @@
 #
 # actions/checkout refuses a `path` outside the workspace, which is why this repository is itself
 # checked out into a subdirectory rather than the workspace root. veg/HyphAeon is private, so its
-# checkout needs a token with read access to it: the repository secret ENGINE_TOKEN (a fine-grained
-# personal access token, "Contents: read" on veg/HyphAeon). Pull requests from forks do not receive
-# secrets and will fail at that step; that is the expected outcome, not a bug to route around.
+# checkout authenticates with the repository secret ENGINE_DEPLOY_KEY: the private half of a
+# READ-ONLY deploy key registered on veg/HyphAeon ("primaeon CI (read-only)", Settings -> Deploy
+# keys). A deploy key is scoped to that one repository and to reading it, which is narrower than
+# any personal access token; rotate it by generating a new ed25519 pair, registering the public half
+# there and replacing the secret here. Pull requests from forks do not receive secrets and will
+# fail at that step; that is the expected outcome, not a bug to route around.
 #
 # ENGINE_REF pins the engine commit these tests run against (a tag, branch or SHA of veg/HyphAeon).
 # It is bumped deliberately, in the same change that bumps the library the app consumes, so a
@@ -97,7 +100,7 @@ jobs:
         with:
           repository: veg/HyphAeon
           ref: ${{ inputs.engine_ref || env.ENGINE_REF }}
-          token: ${{ secrets.ENGINE_TOKEN }}
+          ssh-key: ${{ secrets.ENGINE_DEPLOY_KEY }}
           path: HyphAeon
 
       - name: Set up Node (.nvmrc)
@@ -194,7 +197,7 @@ jobs:
         with:
           repository: veg/HyphAeon
           ref: ${{ inputs.engine_ref || env.ENGINE_REF }}
-          token: ${{ secrets.ENGINE_TOKEN }}
+          ssh-key: ${{ secrets.ENGINE_DEPLOY_KEY }}
           path: HyphAeon
 
       - name: Set up Node (.nvmrc)

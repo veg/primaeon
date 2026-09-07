@@ -471,7 +471,7 @@ download on linux/x64), `pm2` (or Docker), certbot.
 # host
 sudo mkdir -p /opt && cd /opt
 git clone https://github.com/veg/HyphAeon.git && (cd HyphAeon && git checkout <tag>)      # until the app pins a published @veg/hyphaeon-js
-git clone https://github.com/veg/hyphaeon-app.git && cd hyphaeon-app && ONNXRUNTIME_NODE_INSTALL=skip npm install
+git clone https://github.com/veg/primaeon.git && cd primaeon && ONNXRUNTIME_NODE_INSTALL=skip npm install
 sudo mkdir -p /var/lib/hyphaeon /var/log/hyphaeon && sudo chown $USER /var/lib/hyphaeon /var/log/hyphaeon
 #   edit deploy/ecosystem.config.cjs env: HYPHAEON_SERVER_ISSUER, HYPHAEON_MODELS_DIR, HYPHAEON_DATA_DIR
 pm2 start deploy/ecosystem.config.cjs && pm2 save && pm2 startup

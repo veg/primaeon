@@ -1,0 +1,125 @@
+# WHY THIS FILE EXISTS
+#
+# Publishes the site to GitHub Pages at https://veg.github.io/primaeon/ on every push to main, so
+# there is always a viewable build of the current main. This is the preview deployment; the
+# production host (deploy/README.md: Apache on silverback with COOP/COEP headers, rsync-web.sh) is
+# a separate, manual step.
+#
+# What is different about a Pages build:
+#
+#   - HYPHAEON_BASE=/primaeon: Pages serves a project site under the repository name, so every
+#     in-app URL goes through $app/paths.base (web/svelte.config.js reads the base from this
+#     variable; PLAN.md D1). Nothing else in the site knows about the prefix.
+#   - HYPHAEON_PREBAKE=skip: the gallery reports are the COMMITTED records under
+#     web/static/gallery/ (CLAUDE.md, "gallery records ... are tracked"). ci.yml's `app` job is the
+#     one that rebakes and would fail if they were stale; this job only publishes.
+#   - .nojekyll (web/static/.nojekyll, copied into build/): Pages runs Jekyll by default, and
+#     Jekyll drops every path that starts with an underscore, which is where SvelteKit puts its
+#     bundles (`_app/`). Without the marker the site is an empty shell with 404s for every script.
+#   - No COOP/COEP: Pages cannot set response headers, so `crossOriginIsolated` is false there and
+#     ONNX Runtime runs on one thread (session-web.js honours the thread request only when
+#     isolated). Every analysis still runs; the large examples take longer than on the production
+#     origin. web/static/_headers is copied but ignored by Pages.
+#
+# The engine checkout uses the same read-only deploy key as ci.yml (ENGINE_DEPLOY_KEY) because the
+# build copies the graphs and the manifest from ../HyphAeon/models and npm ci links
+# @veg/hyphaeon-js from ../HyphAeon/js. ENGINE_REF must match ci.yml's.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  ENGINE_REF: phase-4a
+  ONNXRUNTIME_NODE_INSTALL: skip
+  HYPHAEON_ENGINE_DIR: ${{ github.workspace }}/HyphAeon
+  HYPHAEON_MODELS_DIR: ${{ github.workspace }}/HyphAeon/models
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the site for Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: hyphaeon-app
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: hyphaeon-app
+
+      - name: Check out veg/HyphAeon (the engine, private) beside it
+        uses: actions/checkout@v4
+        with:
+          repository: veg/HyphAeon
+          ref: ${{ env.ENGINE_REF }}
+          ssh-key: ${{ secrets.ENGINE_DEPLOY_KEY }}
+          path: HyphAeon
+
+      - name: Set up Node (.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: hyphaeon-app/.nvmrc
+          cache: npm
+          cache-dependency-path: hyphaeon-app/package-lock.json
+
+      - name: Cache node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            hyphaeon-app/node_modules
+            hyphaeon-app/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('hyphaeon-app/package-lock.json', 'hyphaeon-app/.nvmrc') }}
+
+      - name: Install
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build under /primaeon with the committed gallery records
+        working-directory: hyphaeon-app/web
+        env:
+          HYPHAEON_BASE: /primaeon
+          HYPHAEON_PREBAKE: skip
+        run: npm run build
+
+      - name: Check the build has its bundles and the models
+        working-directory: hyphaeon-app/web
+        run: |
+          test -f build/.nojekyll
+          test -d build/_app
+          test -f build/models/manifest.json
+          test -f build/report/gallery/bat_oas1/index.html
+          grep -q 'PrimAeon' build/index.html
+          du -sh build
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: hyphaeon-app/web/build
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

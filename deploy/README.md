@@ -60,7 +60,7 @@ Two consequences worth stating, because they used to be true and are not any mor
    ```bash
    sudo mkdir -p /opt && cd /opt
    git clone https://github.com/veg/HyphAeon.git && (cd HyphAeon && git checkout phase-3a)
-   git clone https://github.com/veg/hyphaeon-app.git
+   git clone https://github.com/veg/primaeon.git
    cd hyphaeon-app && npm install          # links @veg/hyphaeon-js from ../HyphAeon/js
    ```
    Until `server` is in the root workspaces, install it on its own: `cd server && npm install --no-workspaces --omit=dev`.

@@ -1,6 +1,7 @@
 # hyphaeon-app
 
-**PrimAeon**, the application for [HyphAeon](https://github.com/veg/HyphAeon), a neural surrogate for HyPhy's
+**PrimAeon**, the application for [HyphAeon](https://github.com/veg/HyphAeon), live at
+<https://veg.github.io/primaeon/> (a single-threaded preview deployment; see `deploy/`), a neural surrogate for HyPhy's
 MEME and BUSTED with co-selection networks, a digital deep mutational scan and phenotype
 association on top. This repository holds **everything that runs**:
 
@@ -126,7 +127,7 @@ surface the same way. CI runs both on every push (`.github/workflows/ci.yml`; th
 `.github/workflows/ci.yml` runs two jobs on every push to `main` and every pull request: `app`
 (install, every workspace's tests, `svelte-check`, the full build, Playwright) and `parity` (the
 node surfaces, then the Python reference and the comparison). Both check out `veg/HyphAeon` at
-`ENGINE_REF` beside this repository with the `ENGINE_TOKEN` secret, because the engine is
+`ENGINE_REF` beside this repository with the `ENGINE_DEPLOY_KEY` secret (a read-only deploy key), because the engine is
 private; the section "CI" in `CLAUDE.md` says what to set and how to bump the ref.
 
 ## Documents

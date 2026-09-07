@@ -174,10 +174,17 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   into `$GITHUB_WORKSPACE/HyphAeon` (actions/checkout refuses a `path` outside the workspace, which
   is why this repository is not at the workspace root). Every `run` step has
   `working-directory: hyphaeon-app` by default.
-- **The engine is private**, so its checkout uses the repository secret **`ENGINE_TOKEN`**: a
-  fine-grained personal access token with *Contents: read* on `veg/HyphAeon` (Settings → Secrets
-  and variables → Actions). It is the only secret the workflow needs. Pull requests from forks do
+- **The engine is private**, so its checkout uses the repository secret **`ENGINE_DEPLOY_KEY`**:
+  the private half of a READ-ONLY deploy key registered on `veg/HyphAeon` as "primaeon CI
+  (read-only)" (created 2026-09-07; narrower than any personal access token, scoped to reading
+  that one repository). It is the only secret either workflow needs. Pull requests from forks do
   not receive secrets and fail at that step by design.
+- **`.github/workflows/pages.yml`** publishes `main` to GitHub Pages at
+  <https://veg.github.io/primaeon/> after every push: the same two checkouts, then
+  `HYPHAEON_BASE=/primaeon HYPHAEON_PREBAKE=skip npm run build` (the committed gallery records; the
+  `ci` job is the one that rebakes) and `actions/deploy-pages`. `web/static/.nojekyll` is required
+  because Jekyll would drop `_app/`. Pages cannot send COOP/COEP, so that deployment runs ONNX on one
+  thread; the production host (`deploy/README.md`) is the multi-threaded one.
 - **`ENGINE_REF`** (workflow `env`, `phase-3a` today) is the engine commit CI runs against — a
   tag, branch or SHA. It is bumped in the same change that moves the app onto a new library, never
   by itself; a push to the engine's default branch cannot break this repository's CI. Once the
