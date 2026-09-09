@@ -22,6 +22,7 @@
 	let { children } = $props();
 
 	const links = [
+		{ href: '/reports/', label: 'Reports' },
 		{ href: '/methods/', label: 'Methods' },
 		{ href: '/evaluate/', label: 'Evaluate' },
 		{ href: '/mcp/', label: 'MCP' }
