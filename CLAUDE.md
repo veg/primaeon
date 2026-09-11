@@ -218,6 +218,15 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   `runtime/`, `mcp/`, `server/`, `web/scripts/`, the lockfile or `ci.yml`. A pull request that
   cannot move a number gets the fast path: measured locally, a prebake-skipped build is 8.4 s and
   the 62 e2e specs still pass against the committed records.
+- **Two more cuts inside the fast path.** The e2e runs in three Playwright shards (124 s of the
+  147-second web job was the browser suite; locally the shards are 15.7 / 14.1 / 9.3 s against 31 s
+  whole), and the web job always builds with `HYPHAEON_PREBAKE=skip` now, leaving `gallery` as the
+  only job that ever rebakes. `HYPHAEON_SKIP_SLOW_TESTS=1`, set on pull requests only, skips the
+  full-alignment fixture comparisons inside `runtime/test/{phenotype,tree-free}.test.js` and
+  `mcp/test/phenotype.test.js` — parity checks living in unit suites, and the long pole of both:
+  mcp 32.0 s → 13.3 s, runtime 23.1 s → 16.5 s locally. They still run on main, nightly, and for
+  anyone who types `npm test`; the numbers they check are covered by the parity gate, which runs on
+  exactly the pull requests that can move them.
 - **Job `app` (superseded; kept here for what its steps did)**: `npm ci` (root; `node_modules` cached on the lockfile + `.nvmrc` hash, restored
   whole on a hit and `npm ci` skipped — the library link inside it is a relative symlink and
   survives), `npm run test --workspaces --if-present` with `HYPHAEON_MODELS_DIR` and
