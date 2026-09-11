@@ -1,25 +1,48 @@
 # Temporal selection and dating in PrimAeon — plan
 
-Draft 1, 2026-09-11. Engine revisions read for this plan: `veg/HyphAeon` `main` at `49c188c` and
-`feat/js-port` at `5848336` (tag `phase-4b`, the line PrimAeon is pinned to). Nothing here is built
-yet; this is the plan of record for the work, in the shape of `PLAN.md`.
+Draft 2, 2026-09-11. Engine revisions read for this plan: `veg/HyphAeon` `main` at `49c188c`,
+`feature/dating-mrca-module` at `b3b9d3c`, and `feat/js-port` at `5848336` (tag `phase-4b`, the line
+PrimAeon is pinned to). Nothing here is built yet; this is the plan of record for the work, in the
+shape of `PLAN.md`.
+
+**Draft 1 was wrong on one point and it mattered.** It said the engine has no dating. It has a large
+one, on `feature/dating-mrca-module`, which my first fetch missed because the local clone's remote
+is configured to fetch only `main`. That branch is the subject of §3, and it changes the shape of
+the work: dating is not something we invent, it is a second pillar to port.
 
 ## 0. The answer in one paragraph
 
-Yes, the formats matter, and they are already decided: the engine's `temporal` pillar ingests dates
+Yes, the formats matter, and they are already decided upstream: both pillars ingest dates the same
 three ways — from FASTA headers, from a Nextstrain Auspice JSON, or from a CSV/TSV metadata table —
-and harmonises all of them to a decimal year. The hard part is not parsing, which is a hundred lines
-of regular expressions; it is that a surveillance set fails quietly, with half its taxa dateless or
-its metadata names not quite matching its sequence names, and the reference simply drops those
-taxa. So the page has to make date ingestion a visible, reviewable step rather than a silent one.
-Two other things shape the work. The pillar exists only on the engine's `main`, which has diverged
-from the branch PrimAeon pins, and reconciling those two lines is a prerequisite, not a detail.
-And "dating" in the sense people usually mean it — a clock rate, a time to most recent common
-ancestor, outlier detection — is **not** in the engine at all, but phylotree, which this app already
-ships, has root-to-tip regression with best-root fitting, so that half is cheap and should come
-first, because it is also the honest gate on whether the temporal analysis means anything.
+and harmonise them to a decimal year, with dating adding a custom regular expression for headers
+that fit none of the patterns. The parsing is the easy half. The hard half is that a dated set fails
+quietly: metadata names are compared to sequence names with nothing but a trim, a partial table
+never falls back to the headers for the taxa it missed, and a bare year is silently imputed to the
+middle of the year. So date ingestion has to be a visible, reviewable stage of its own, and that
+stage is most of the product work. What we are wrapping is two separate pillars, **dating** (a clock
+rate, an ancestor date with a confidence interval, and the sequences whose dates do not fit) and
+**temporal** (how selection at each site moves through time). Dating is the one to ship first: it is
+smaller, it answers a question people already ask, its flagship example reproduces a famous result
+in about a second, and its diagnostics are the honest gate on whether the temporal analysis means
+anything. The blocker for both is that they live on two engine branches that have each diverged from
+the line PrimAeon pins, and reconciling those is a prerequisite, not a detail.
 
-## 1. What exists upstream, and what does not
+## 1. What exists upstream
+
+Three engine branches matter, and no two of them agree.
+
+| Branch | Carries |
+|---|---|
+| `feat/js-port` (`5848336`, tag `phase-4b`) | What PrimAeon runs on: the ONNX export, the JavaScript library, the fixtures, the parity harness, the MDS sign convention |
+| `main` (`49c188c`) | The `temporal` pillar, `splits`, the v0.1.0 release, a reworked `dataset.py`. No export, no library |
+| `feature/dating-mrca-module` (`b3b9d3c`) | Everything on `main` at its fork point **plus** an epidemiology suite: `dating.py` (3,194 lines), `autoclock.py` (1,878), `r0.py` (935), `geo.py` (921), `sieve.py` (803), `sketch.py` (302), `alignment.py` (200), and dated example data |
+
+The dating branch adds five new command-line verbs: `dating` (aliases `date`, `mrca`, `clock`,
+`chronaeon`), `geo` for discrete phylogeography, `r0` for epidemic growth and reproduction numbers,
+`sieve` for triaging very large collections, and `autoclock`. Only the first is in scope here; the
+others are noted in §8 so the roadmap is not a surprise.
+
+## 1a. The temporal pillar
 
 `hyphaeon temporal` (aliases `surveillance`, `longitudinal`) landed on the engine's `main` in
 `hyphaeon/temporal.py`, 1,100 lines, with `TEMPORAL_ANALYSIS_GUIDE.md` and two test files
@@ -44,8 +67,11 @@ with different names. Port from `temporal.py`, never from the guide, and raise t
 
 ## 2. The input contract, which is the hard part
 
-All three mechanisms end in the same place: a map from taxon name to a float time coordinate.
-`parse_temporal_metadata` dispatches; `parse_date_to_decimal` normalises.
+All three mechanisms end in the same place: a map from taxon name to a float time coordinate. The
+temporal pillar's rules are below; dating accepts the same three sources **plus** a user-supplied
+regular expression, and in practice reads conventions these patterns miss — its own HIV example uses
+two-digit years embedded in lab-style names. Treat the union as the contract, and make the page show
+which rule matched each sequence.
 
 ### 2.1 Dates in FASTA headers
 
@@ -98,51 +124,92 @@ falling back to **the first column in the file**. The date column is sought amon
 4. **Time units change the parser.** The same header parses differently under `years` and
    `generations`. The page must ask, or infer and show what it inferred, before anything runs.
 
-## 3. Dating, which the engine does not do
+## 3. Dating: the ChronAeon pillar
 
-Three different things travel under this word. Being explicit about which we ship matters.
+`hyphaeon dating` calibrates a molecular clock from time-stamped sequences and dates their common
+ancestor. It runs three estimators and reports all of them side by side.
 
-**Temporal signal (cheap, and we should do it first).** Root-to-tip regression: divergence from the
-root against sampling date, one point per tip. The slope is a clock rate, the x-intercept an
-estimated time to most recent common ancestor, the R² tells you whether the data are clocklike at
-all, and the residual outliers are the sequences with wrong dates, recombination, or contamination.
-This is what TempEst does, and it is the honest gate on the temporal pillar: if the regression is
-flat, the trajectories downstream are decoration.
+1. **Centred root-to-tip ordinary least squares**, an emulation of TempEst. Divergence from the root
+   against sampling date, parameterised around the mean date rather than year zero, which makes the
+   ancestor's standard error an exact expression instead of a numerically unstable one.
+2. **Attention-derived generalised least squares.** Closely related sequences are not independent
+   observations, which is why plain regression reports intervals that are too narrow. Instead of
+   inferring a tree to get the shared-ancestry covariance, this uses the model's own cross-taxa
+   attention as that covariance, with ridge regularisation. This is the pillar's flagship, and it is
+   the reason the dating page needs the neural model at all.
+3. **Latent manifold coalescent collapse.** Tree-free and root-free: track the variance of the
+   model's 128-dimensional sequence representations over time and extrapolate back to where it
+   vanishes, which is the founding bottleneck. It needs no root, no tree and no clock assumption,
+   and upstream's own benchmark shows it beating the other two badly on within-host data.
 
-We can ship it almost for free. `phylotree` 2.6.0 is **already a dependency and already used** by the
-site-tree modal, and it exports `rootToTip`, `fitRootToTip` (best root by maximising R²) and
-`extractDates`. The app already builds a neighbour-joining tree on TN93 distances for display (D22),
-which is exactly the input this needs. Note that phylotree's own date extractor is narrower than the
-engine's, so feed it dates we parsed with the engine's rules through a custom getter rather than
-letting it re-parse names.
+It also offers clock curvature models (linear, restricted spline, power, or an automatic choice
+between them), six ways to compute the ancestor's confidence interval, a bootstrap defaulting to a
+thousand resamples, leave-one-out cross-validation, and per-taxon outlier detection.
 
-**A time-scaled tree (a later decision).** Converting substitutions per site into calendar time for
-every node — what LSD2 or TreeTime produce. Least-squares dating is implementable in JavaScript and
-would give the report a dated tree to draw, but it is a project of its own and it is not needed by
-the temporal pillar, which works on the time axis of the tips alone.
+**Inputs**: an in-frame codon alignment, strictly enforced, or a BEAST XML; an optional tree; dates
+by the same three mechanisms as §2 plus `--date-regex` for headers that fit no pattern; and a root
+taxon, which may be an explicit outgroup or a consensus.
 
-**Bayesian dating (out of scope).** BEAST-class inference does not belong in a browser tab.
+**Outputs**: a results JSON, a per-taxon CSV carrying each sequence's sampled date, its predicted
+date, the discrepancy and a Z-score, and optional diagnostic figures.
+
+### 3.1 Why this is the half to ship first
+
+The upstream benchmark reproduces a landmark result. On 143 HIV-1 group M envelope sequences, the
+pillar dates the pandemic ancestor to 1927.6 with a 95 % interval of 1916.4 to 1938.7, against the
+1931.4 published in 2000 off seven days on a 512-processor machine, and it recovers the same clock
+rate. The model pass takes about a second. It also flags the 1959 Léopoldville isolate as the
+outlier it is, and predicts its date to within a few years of the published estimate.
+
+That is a browser-sized analysis with a famous answer, and the per-taxon outlier table is exactly
+what a working virologist wants from a dating tool: which of my sequences have wrong dates.
+
+### 3.2 The one open question: what the model has to give us
+
+Two of the three estimators need model outputs. The latent estimator needs the 128-dimensional
+sequence representation, which **we already export** as `root_repr`. The generalised least squares
+estimator needs a cross-taxa attention matrix over taxa, and what our export currently emits is the
+root row of that attention, not the full matrix. Whether the pillar builds its covariance from what
+we already have, or needs a new graph output, decides whether the dating page costs an export change,
+a new hash in the manifest, and a re-bake of every stored record. **This is the first thing to
+settle**, and §5.1 records the answer once measured.
+
+Note also what this pillar does *not* need: the trajectories, the permutation null and the wave
+decomposition that dominate the temporal pillar's runtime. Dating is a regression over N taxa, not a
+resampling loop over sites, which is the other reason it is the cheaper half.
+
+### 3.3 What phylotree still gives us for free
+
+`phylotree` 2.6.0 is already a dependency and already used by the site-tree modal, and it exports
+root-to-tip regression with best-root fitting. That is not a substitute for the pillar, but it is a
+useful instant preview: the moment dates are parsed, the page can draw the regression and its R²
+before anyone commits to a full run, and it gives a second implementation to check the ported
+ordinary-least-squares estimator against.
 
 ## 4. The page
 
-A separate route, `/temporal`, not a section of the existing report: the input is different (an
-alignment *and* a time source), the failure modes are different, and the run is long enough that it
-should be startable, cancellable and reviewable on its own. It reuses everything else — the same
-drop zone, the same streaming record, the same IndexedDB store, the same section machinery.
+One route, `/time`, covering both pillars, not a section of the existing report: the input is
+different (an alignment *and* a time source), the failure modes are different, and the runs are long
+enough to want their own cancellable page. Everything else is reused — the drop zone, the streaming
+record, the IndexedDB store, the section machinery, the figure and caption idiom.
 
-Three stages, streaming in the order a reader needs them:
+Four stages, streaming in the order a reader needs them:
 
-1. **Dates.** What was found, from where, how many taxa carry one, the timespan, the units, a
-   reviewable table of raw string to parsed value with imputation flagged, and the unmatched names.
-   Nothing else runs until this is green, and the reader can supply a metadata file here if the
-   headers were not enough.
-2. **Temporal signal.** Root-to-tip regression on the display tree, best-fitting root, rate, TMRCA,
-   R², and flagged outliers the reader can drop before continuing.
-3. **Temporal selection.** The engine's pillar: per-site trajectories, velocities, the wave modes,
-   and the four-way classification against the static MEME q-values, which means the meme pass runs
-   first and the page shows it.
+1. **Dates.** What was found and from where, how many taxa carry one, the span, the units, and a
+   reviewable table of raw string against parsed value with every imputation flagged. Unmatched names
+   are shown, not swallowed. The reader can drop in a metadata file or a custom pattern here and
+   watch the table change. Nothing else runs until this stage is green.
+2. **Clock.** The three dating estimators side by side, as the command line prints them: ancestor
+   date with interval, rate, R². The root-to-tip plot is the centrepiece and is drawn from the
+   preview the moment stage 1 is green.
+3. **Outliers.** The per-taxon table: sampled date, predicted date, discrepancy, Z-score. This is
+   the part users act on, and it should be sortable and downloadable, with the option to drop the
+   flagged sequences and re-run.
+4. **Temporal selection.** The second pillar, offered rather than automatic because it costs minutes
+   where dating costs seconds: per-site trajectories, velocities, wave modes, and the four-way
+   classification against the static result.
 
-Downloads mirror the CLI's own files so a browser run and a command-line run are interchangeable.
+Downloads mirror each command's own files so a browser run and a command-line run are interchangeable.
 
 ## 5. The port
 
@@ -221,9 +288,11 @@ Per the house rule, port the bug and flag it rather than fixing it in the port.
 - The "earliest 5 %" root window is at least three sequences and at most twenty-five, so it is three
   for anything under sixty taxa and capped for anything over five hundred.
 
-## 6. The blocker: two engine lines that have diverged
+## 6. The blocker: three engine lines that have diverged
 
-PrimAeon pins `feat/js-port`. The temporal pillar is on `main`. They are not close.
+PrimAeon pins `feat/js-port`. The temporal pillar is on `main`. The dating suite is on
+`feature/dating-mrca-module`, which is 22 commits ahead of `main` and 16 behind it. No two of the
+three agree, and all three touch the same preprocessing file.
 
 | | |
 |---|---|
@@ -243,6 +312,13 @@ line by line and the fixtures were generated from it:
   agree on bat_oas1 and RHO. Merging the lines forces that decision.
 - `compute_tn93_distance_matrix` changed signature on `main`.
 - `main` added internal-stop warnings (`_warn_internal_stops`).
+- The dating branch changes **the predicate behind our tree policy**. `has_nonzero_branch_lengths`
+  used to require half the branches to be positive; it now requires half to be numeric and only five
+  per cent to be positive, explicitly so that dense outbreak trees full of identical isolates are
+  accepted. That is precisely the D22 decision about when an upload goes tree-free, and precisely
+  the data the time page targets, so the same upload can change path depending on which engine line
+  the app is pinned to.
+- The dating branch also adds BEAST XML parsing and a cross-distance matrix to the same file.
 
 **Proposal.** Reconcile before porting anything: merge `main` into `feat/js-port`, resolve
 `dataset.py` with D20 landed upstream rather than carried as a patch, regenerate the fixtures, re-run
@@ -251,40 +327,51 @@ happened; starting the port against an unreconciled branch means porting a file 
 
 ## 7. Demo data
 
-No time-stamped example ships with the engine; the five bundled alignments are static. A temporal
-page with no example to click is a page nobody tries, so this is real work, not an afterthought.
+Draft 1 said none ships. That was wrong too: the dating branch brings dated examples.
 
-- **Experimental evolution.** `tests/test_temporal_experimental.py` builds a synthetic 25-clone,
-  50,000-generation panel with a single fixation at codon 301. It is small, it is ours, it has a
-  known answer, and it exercises the non-calendar path. This should be the first demo and a port
-  fixture.
-- **Surveillance.** Influenza A/H3N2 haemagglutinin from GenBank is the classic public choice with
-  real wave structure and no redistribution constraints. **Not GISAID**, whose terms forbid
-  redistribution, which rules out most convenient SARS-CoV-2 collections.
-- **Within-host longitudinal.** A published HIV-1 env series is a good third, and closer to what the
-  lab's own users bring.
+- **HIV-1 group M envelope, 143 sequences, 981 codons** (`examples/korber_env_gp160.fasta`). The
+  flagship. Public LANL data, a famous published answer, small enough to run in a tab, and it
+  exercises the awkward header case — the names carry two-digit years in a lab convention that none
+  of the standard patterns match, so it is also the argument for the custom-pattern box.
+- **H5N1 haemagglutinin with a metadata CSV and a tree**, the phylogeography benchmark set. Useful
+  here as the worked example of dates arriving in a table rather than in headers.
+- **H1N1 2009 pandemic, 100 sequences**, headers carrying a decimal year in a pipe-delimited field.
+  Note it is 13,154 nt, which is not divisible by three, so it will not survive the dating pillar's
+  strict in-frame check as it stands; it belongs to the geography example.
+- **Experimental evolution** has no shipped dataset, but the temporal tests build a synthetic
+  25-clone, 50,000-generation panel with a known fixation, which is the right first demo for the
+  generations axis and doubles as a port fixture.
+
+So the gallery story is: one famous dating result, one table-driven example, one generations
+example. No GISAID data, which cannot be redistributed.
 
 ## 8. Phases
 
 1. **Reconcile the engine** (§6) and tag. Parity green on the existing surfaces before anything new.
    This is the only phase with no product output, and nothing else can start on top of it.
-2. **Dates and temporal signal.** The date ingestion port, the diagnostics, the review table, the
-   root-to-tip stage, the `/temporal` page shell. Shippable on its own and useful on its own.
-3. **The temporal pillar.** The library port, the runtime orchestrator, the worker, the sections and
-   their figures, the downloads, fixtures and parity.
-4. **The other surfaces.** A `hyphaeon_temporal` MCP tool and a server analysis, as every other
-   pillar has.
+2. **Dates.** The ingestion port, the matching diagnostics, the review table, the custom-pattern box,
+   the `/time` page shell and the instant root-to-tip preview. Shippable and useful on its own.
+3. **Dating.** The three estimators, the intervals, the outlier table, the Korber example in the
+   gallery, fixtures and parity. This is the phase that delivers the headline.
+4. **Temporal selection.** The heavier pillar: trajectories, velocities, waves, classification, and
+   the permutation null in a worker at a browser-sized default.
+5. **The other surfaces.** MCP tools and server analyses for both, as every other pillar has.
+
+A note on sequencing. Dating before temporal is not only about size: dating's outlier table is how a
+reader finds the bad dates that would otherwise poison every trajectory in the temporal run.
 
 ## 9. Decisions needed
 
 | | Question | Recommendation |
 |---|---|---|
-| D23 | Separate page or a section of the report | **Separate `/temporal`.** Different inputs, different failures, long run. |
-| D24 | Ship dating at all | **Ship temporal signal (root-to-tip) in phase 2**, defer time-scaled trees until someone asks. |
+| D23 | Separate page or a section of the report | **One separate route, `/time`**, carrying both pillars. Different inputs, different failures, long runs. |
+| D24 | Which pillar first | **Dating.** Seconds rather than minutes, a famous worked example, and its outliers are the gate on the other pillar's inputs. |
 | D25 | Who reconciles the engine lines | Needs an owner upstream; the app cannot merge D20 on the ML team's behalf. |
 | D26 | Permutations in the browser | **Default to 200, not the reference's 1,000**, and say so on the page. Measured: the null costs 35 to 100 seconds at two hundred candidate sites and three to eight minutes at a thousand, dwarfing the model itself. Offer the full count as a server run. |
-| D28 | Wave sign convention | Pin one on both sides before parity, as D20 did for the MDS. Until then the wave modes are a picture, not a number. |
 | D27 | Taxon cap for temporal | The report caps at 256. A surveillance set is thousands. Uniform temporal downsampling, per the guide's own advice, is the right default; the cap must not silently eat the early epidemic. |
+| D28 | Wave sign convention | Pin one on both sides before parity, as D20 did for the MDS. Until then the wave modes are a picture, not a number. |
+| D29 | Does dating need a new ONNX output | Unresolved, and the first thing to measure (§3.2). If the covariance needs a full cross-taxa attention matrix, this costs an export change, a manifest hash and a gallery re-bake. |
+| D30 | What to do about the rest of the suite | Phylogeography, reproduction numbers and the large-collection sieve arrived on the same branch. **Out of scope here**, but they are the reason to design `/time` as a surface that can hold more than one time-aware analysis. |
 
 ## 10. Risks
 
