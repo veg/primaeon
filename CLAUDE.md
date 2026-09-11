@@ -207,7 +207,18 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   by itself; a push to the engine's default branch cannot break this repository's CI. Once the
   library is a published npm version the `file:` link goes away, but the models and fixtures the
   suites read still come from this checkout, so the ref stays.
-- **Job `app`**: `npm ci` (root; `node_modules` cached on the lockfile + `.nvmrc` hash, restored
+- **Five jobs, split so nobody waits on the slow ones** (measured on run 34166686659, 2026-09-11:
+  the gallery prebake was 8.8 min of a 14-min job and the two parity halves 9.6 + 8.3 of a 19-min
+  one). `scope` (~20 s) decides from the changed paths whether the slow gates run; `unit` is one
+  runner per workspace in parallel; `web` is svelte-check, build and Playwright, and on a pull
+  request it builds with `HYPHAEON_PREBAKE=skip` (8 s instead of 8.8 min) against the committed
+  gallery records, which is exactly what `pages.yml` deploys; `gallery` rebakes and fails if those
+  committed records are stale; `parity` is the numeric gate. `gallery` and `parity` run on pushes to
+  main, on the nightly schedule, on a manual run with `full: true`, and on any pull request touching
+  `runtime/`, `mcp/`, `server/`, `web/scripts/`, the lockfile or `ci.yml`. A pull request that
+  cannot move a number gets the fast path: measured locally, a prebake-skipped build is 8.4 s and
+  the 62 e2e specs still pass against the committed records.
+- **Job `app` (superseded; kept here for what its steps did)**: `npm ci` (root; `node_modules` cached on the lockfile + `.nvmrc` hash, restored
   whole on a hit and `npm ci` skipped — the library link inside it is a relative symlink and
   survives), `npm run test --workspaces --if-present` with `HYPHAEON_MODELS_DIR` and
   `HYPHAEON_ENGINE_DIR` pointing into the engine checkout, `cd web && npm run check && npm run
