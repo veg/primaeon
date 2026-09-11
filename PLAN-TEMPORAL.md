@@ -137,10 +137,12 @@ ancestor. It runs three estimators and reports all of them side by side.
    inferring a tree to get the shared-ancestry covariance, this uses the model's own cross-taxa
    attention as that covariance, with ridge regularisation. This is the pillar's flagship, and it is
    the reason the dating page needs the neural model at all.
-3. **Latent manifold coalescent collapse.** Tree-free and root-free: track the variance of the
-   model's 128-dimensional sequence representations over time and extrapolate back to where it
-   vanishes, which is the founding bottleneck. It needs no root, no tree and no clock assumption,
-   and upstream's own benchmark shows it beating the other two badly on within-host data.
+3. **A latent root search.** The guide advertises a third estimator that extrapolates the variance
+   of the model's representations back to a founding bottleneck. **That estimator is not in the
+   code.** What is there instead optimises a root *position* in the model's representation space, by
+   gradient descent on a weighted combination of the observed sequences, so that distance-to-root
+   correlates as strongly as possible with sampling date. Useful, but a different thing, and another
+   case of the documentation running ahead of the source.
 
 It also offers clock curvature models (linear, restricted spline, power, or an automatic choice
 between them), six ways to compute the ancestor's confidence interval, a bootstrap defaulting to a
@@ -164,19 +166,34 @@ outlier it is, and predicts its date to within a few years of the published esti
 That is a browser-sized analysis with a famous answer, and the per-taxon outlier table is exactly
 what a working virologist wants from a dating tool: which of my sequences have wrong dates.
 
-### 3.2 The one open question: what the model has to give us
+### 3.2 What the model has to give us, now answered
 
-Two of the three estimators need model outputs. The latent estimator needs the 128-dimensional
-sequence representation, which **we already export** as `root_repr`. The generalised least squares
-estimator needs a cross-taxa attention matrix over taxa, and what our export currently emits is the
-root row of that attention, not the full matrix. Whether the pillar builds its covariance from what
-we already have, or needs a new graph output, decides whether the dating page costs an export change,
-a new hash in the manifest, and a re-bake of every stored record. **This is the first thing to
-settle**, and §5.1 records the answer once measured.
+**Least squares needs nothing from the model.** Ask for that estimator with tree or TN93 distances
+and the transformer is never loaded. That is the whole reason a first version can ship without
+touching the export.
+
+**Everything else needs two outputs we do not have.** The covariance is built from the full
+taxon-by-taxon attention matrix averaged over sites, heads and layers, together with a per-taxon
+embedding. Our graph emits the *root token's* attention row and the *root token's* embedding, which
+are vectors where these are matrices. So the attention-based estimator and the latent root search
+both require **a new export with two more outputs, and the averaging must happen inside the graph** —
+emitting attention per site would be tens of gigabytes at surveillance size. That means a new
+contract, a new hash in the manifest, fresh fixtures for a quantity nothing currently checks, and a
+re-bake of the gallery.
+
+Incidentally, the embeddings are 384-dimensional in the current configuration, not the 128 the guide
+repeats.
 
 Note also what this pillar does *not* need: the trajectories, the permutation null and the wave
-decomposition that dominate the temporal pillar's runtime. Dating is a regression over N taxa, not a
-resampling loop over sites, which is the other reason it is the cheaper half.
+decomposition that dominate the temporal pillar. Dating is a regression over taxa, not a resampling
+loop over sites.
+
+### 3.2a One thing in the date parser we must not copy silently
+
+The dating pillar's header parser contains a hard-coded special case: any sequence whose name
+contains `Z59`, `ZR59` or `1959` is dated to mid-1959, before any pattern is tried. It exists for the
+archival isolate in the HIV example. Whatever we do about it, the page must not apply a rule like
+that invisibly, and it belongs in the upstream issue list.
 
 ### 3.3 What phylotree still gives us for free
 
@@ -213,9 +230,53 @@ Downloads mirror each command's own files so a browser run and a command-line ru
 
 ## 5. The port
 
+### 5.0 Dating
+
+**The cheap version is genuinely cheap.** Least-squares dating with tree-free distances needs no
+model, no export change, and almost nothing the library does not already have: the TN93 matrix, the
+alignment parser, Newick handling and patristic distances are all in place. What is missing is small
+and enumerable:
+
+| Missing | Size |
+|---|---|
+| The inverse Student-t, which every confidence interval needs | ~40 lines over the existing cumulative function |
+| The F distribution's tail, for the curvature tests | ~10 lines over the existing incomplete beta |
+| A bounded one-dimensional minimiser, for the covariance parameter | ~60 lines |
+| A root finder, for inverting the spline clock per taxon | ~40 lines |
+| Poisson sampling and a general percentile | small |
+| A rectangular TN93, distances from every taxon to one root | a loop over the existing pair function |
+
+**The expensive version is the tree.** Re-rooting is the one part with no counterpart in the library
+and the one where a subtly wrong port produces plausible, wrong dates that never announce themselves:
+the reference deep-copies the tree up to sixty times, re-roots on each candidate node and picks by
+residual sum of squares under a causality constraint. A first version should decline to do it, which
+the reference itself supports with a single flag, and which our own tree-free default already leans
+towards.
+
+**Two things to leave behind.** The power-law clock needs a box-constrained quasi-Newton fit with
+two dozen restarts and five hundred bootstrap refits; it is not what the automatic choice selects, so
+drop it from the browser surface. And the reference's redundant algebra should not be reproduced
+faithfully: it decomposes the same covariance matrix four separate times and then forms its inverse
+densely, which at scale is minutes to hours of pure waste in JavaScript. Factor once, share the
+spectrum, and accept that parity then compares the estimates rather than the intermediates.
+
+**Cost.** At the size of the worked HIV example, 143 sequences and 981 codons, the whole thing is a
+second of model time and microseconds of regression: comfortably a browser analysis. At three
+thousand sequences the model path is not viable in a tab at all, roughly an hour and a half and over
+the memory ceiling, and the reference itself refuses the neural route above fifteen hundred
+sequences without a tree. Least squares at that size is a minute or two, dominated entirely by
+computing the distances.
+
+**Two upstream problems to raise rather than port.** The reference's own pairwise distance loop is
+plain Python and costs minutes where a typed-array loop costs seconds. And the latent root search
+allocates two arrays of about fourteen gigabytes each at three thousand sequences, which is a bug
+that only stays hidden because a guard refuses that size first.
+
+### 5.1 Temporal
+
 Line references are to `hyphaeon/temporal.py` at `main` `49c188c`.
 
-### 5.1 The good news: the model already gives us everything
+### 5.1.1 The good news: the model already gives us everything
 
 The pillar calls the model **once per site and never again**. Sites are scored in batches
 (`ceil(L / batch)` forward passes, five to eighteen for a thousand codons at five hundred taxa), and
@@ -230,7 +291,7 @@ for a velocity, filter on an energy floor, test what survives against a date-shu
 four collective wave modes by singular value decomposition, and cross the result with the static
 MEME q-values into the four-way classification.
 
-### 5.2 What is already in the library, and what is missing
+### 5.1.2 What is already in the library, and what is missing
 
 | Needed | Status |
 |---|---|
@@ -241,7 +302,7 @@ MEME q-values into the four-way classification.
 | **Thin singular value decomposition** | **Absent.** Build it from the existing symmetric eigensolver on the smaller Gram matrix |
 | Delimiter-sniffing CSV, Auspice JSON walk, column discovery | Absent, and by the split rule this belongs in the app, beside the FASTA validator, not in the library |
 
-### 5.3 Cost, and the one loop that matters
+### 5.1.3 Cost, and the one loop that matters
 
 For a realistic surveillance run, five hundred taxa by a thousand codons, two hundred and fifty time
 points and the reference's default of a thousand permutations:
@@ -260,7 +321,7 @@ array kernel in a worker, chunked so it can report progress and be cancelled, th
 mutational scan already is. Memory is not a concern at a few megabytes, with one exception: the
 per-site, per-time table must be stored as columns, not as a quarter of a million row objects.
 
-### 5.4 What parity can and cannot claim
+### 5.1.4 What parity can and cannot claim
 
 The reference draws its permutations from a hard-coded seed of 42 through numpy's Mersenne Twister;
 the library standardises on a different generator and has already recorded, for phenotype, that the
@@ -276,7 +337,7 @@ This repository has been bitten by precisely this before, in the MDS eigenvector
 a sign convention has to be pinned on both sides before any comparison means anything. Where two
 singular values are nearly equal the basis can rotate, and no sign rule fixes that.
 
-### 5.5 Upstream quirks to replicate and report
+### 5.1.5 Upstream quirks to replicate and report
 
 Per the house rule, port the bug and flag it rather than fixing it in the port.
 
@@ -345,17 +406,66 @@ Draft 1 said none ships. That was wrong too: the dating branch brings dated exam
 So the gallery story is: one famous dating result, one table-driven example, one generations
 example. No GISAID data, which cannot be redistributed.
 
+## 7a. The rest of the suite, and what it means for us
+
+The dating branch brought four more analyses. None is in scope, but two change how `/time` should be
+designed and one is worth stealing outright.
+
+- **`r0`** estimates epidemic growth rate and reproduction numbers from a dated tree, by least-squares
+  tree calibration, an exact profile likelihood over the coalescent, and the standard conversion to
+  R nought. It never touches the neural model and needs nothing exotic, so it is **the most
+  browser-portable thing on the branch**. It is also the natural second tenant of a `/time` page.
+- **`geo`** infers a discrete transmission network by parsimony plus a label-permutation test, and a
+  spatial epicentre. Portable too, with one substitution: it shells out to FastTree when given no
+  tree, and we already have neighbour joining. It requires a metadata file with a location column
+  and reads nothing from sequence names.
+- **`autoclock`** deconvolves a collection into several clocks by spectral clustering, then dates
+  each community. It is the largest new module, it has no test file, and its documented three-tier
+  pipeline is **not actually wired**: the sketching and alignment tiers it describes are never
+  called and their command-line verbs do not exist.
+- **`sieve`** triages large submission streams against a pre-fitted clock. Mostly portable, except
+  that its alignment path shells out to minimap2.
+
+**The one to steal: `alignment.py`.** A reference-guided codon threader that takes *unaligned*
+sequences, finds the strand and reading frame, aligns to a reference protein and threads codons back
+into a fixed-length frame. It needs no model, no subprocess and no network, and it is a textbook
+dynamic program. Today PrimAeon refuses an unaligned upload; this is the smallest change that would
+let it accept one, and it is independently useful to every existing pillar.
+
+**A warning about the branch as it stands.** Importing the package now pulls in scikit-learn and
+matplotlib through `autoclock.py`, and neither is a declared dependency, so a base install fails at
+import. That is an upstream fix, but it lands on whoever reconciles the lines.
+
+## 7b. Three date parsers, not one
+
+This is the finding that matters most for the page, and it is not visible from any one guide.
+
+The temporal pillar, the dating pillar and the reproduction-number module **each parse dates their
+own way**, with different rules and different fallbacks. Dating understands the lab conventions the
+others miss, including two-digit years in LANL-style names and weeks-post-infection, and it accepts a
+user-supplied pattern. The reproduction-number module tries pipe-delimited fields in its own order.
+The temporal pillar has the four patterns in §2.1 and no custom-pattern escape.
+
+So "what date does this sequence have" currently depends on which analysis you asked for. The app
+must not reproduce that. **One ingestion component, the union of the rules, and a table that says
+which rule matched each sequence** — and an upstream issue asking that the three converge, because
+the alternative is that our page and the command line disagree about the same file.
+
 ## 8. Phases
 
 1. **Reconcile the engine** (§6) and tag. Parity green on the existing surfaces before anything new.
    This is the only phase with no product output, and nothing else can start on top of it.
 2. **Dates.** The ingestion port, the matching diagnostics, the review table, the custom-pattern box,
    the `/time` page shell and the instant root-to-tip preview. Shippable and useful on its own.
-3. **Dating.** The three estimators, the intervals, the outlier table, the Korber example in the
-   gallery, fixtures and parity. This is the phase that delivers the headline.
-4. **Temporal selection.** The heavier pillar: trajectories, velocities, waves, classification, and
+3. **Dating without the model.** Least squares with tree-free distances, the intervals, the
+   curvature test, the per-taxon outlier table, the HIV example in the gallery, fixtures and parity.
+   No export change, no new graph output, and it already answers the question people ask.
+4. **Dating with the model.** The export gains the taxon-by-taxon attention and the per-taxon
+   embeddings, averaged in-graph; then the attention-based estimator and the latent root search.
+   This is a separate phase because it costs a new model contract and a gallery re-bake.
+5. **Temporal selection.** The heavier pillar: trajectories, velocities, waves, classification, and
    the permutation null in a worker at a browser-sized default.
-5. **The other surfaces.** MCP tools and server analyses for both, as every other pillar has.
+6. **The other surfaces.** MCP tools and server analyses for both, as every other pillar has.
 
 A note on sequencing. Dating before temporal is not only about size: dating's outlier table is how a
 reader finds the bad dates that would otherwise poison every trajectory in the temporal run.
@@ -370,8 +480,12 @@ reader finds the bad dates that would otherwise poison every trajectory in the t
 | D26 | Permutations in the browser | **Default to 200, not the reference's 1,000**, and say so on the page. Measured: the null costs 35 to 100 seconds at two hundred candidate sites and three to eight minutes at a thousand, dwarfing the model itself. Offer the full count as a server run. |
 | D27 | Taxon cap for temporal | The report caps at 256. A surveillance set is thousands. Uniform temporal downsampling, per the guide's own advice, is the right default; the cap must not silently eat the early epidemic. |
 | D28 | Wave sign convention | Pin one on both sides before parity, as D20 did for the MDS. Until then the wave modes are a picture, not a number. |
-| D29 | Does dating need a new ONNX output | Unresolved, and the first thing to measure (§3.2). If the covariance needs a full cross-taxa attention matrix, this costs an export change, a manifest hash and a gallery re-bake. |
-| D30 | What to do about the rest of the suite | Phylogeography, reproduction numbers and the large-collection sieve arrived on the same branch. **Out of scope here**, but they are the reason to design `/time` as a surface that can hold more than one time-aware analysis. |
+| D29 | Does dating need a new ONNX output | **Answered: yes, for two of the three estimators, no for the first.** Least squares never loads the model; the attention covariance and the latent root need a taxon-by-taxon attention matrix and per-taxon embeddings, averaged inside the graph (§3.2). Ship phase 3 without them. |
+| D33 | The power-law clock in the browser | **Drop it.** It needs a constrained quasi-Newton fit with two dozen restarts, and the automatic model choice does not select it. |
+| D34 | Tree re-rooting | **Do not port it for a first version.** It is the one place a subtly wrong port yields plausible, wrong dates; the reference has a flag to skip it and our tree-free default already leans that way. |
+| D30 | What to do about the rest of the suite | Phylogeography, reproduction numbers and the large-collection sieve arrived on the same branch (§7a). **Out of scope here**, but they are the reason to design `/time` as a surface that can hold more than one time-aware analysis. Reproduction numbers are the cheapest follow-on: no model, nothing exotic. |
+| D31 | Whose date rules win | **One ingestion component in the app, the union of all three upstream parsers**, showing which rule matched each sequence (§7b), plus an upstream issue asking that they converge. |
+| D32 | Accept unaligned uploads | Worth doing on its own schedule: the branch's reference-guided codon threader is model-free, subprocess-free and the easiest port on it, and it would lift a refusal every pillar currently makes. |
 
 ## 10. Risks
 
@@ -380,4 +494,11 @@ reader finds the bad dates that would otherwise poison every trajectory in the t
 - **The engine's documentation drift** means the only trustworthy specification is the code.
 - **Permutation cost** may put the honest default out of reach in a tab; see D26.
 - **Surveillance sizes** break the assumptions the report was built on: 256 taxa is a demo, not a
-  pandemic.
+  pandemic. The model-based dating path is not viable in a tab beyond about a thousand sequences,
+  and the reference refuses it above fifteen hundred without a tree. Be explicit on the page about
+  where the browser stops and the server starts.
+- **A wrong re-rooting is silent.** Every other failure here announces itself; that one just moves
+  the answer by years.
+- **The documentation is not the specification**, in three separate places now: temporal's flags,
+  dating's advertised third estimator, and the sieve's design document. Port from source, and keep
+  a running list for upstream.
