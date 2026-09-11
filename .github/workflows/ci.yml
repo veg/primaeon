@@ -357,14 +357,14 @@ jobs:
         working-directory: hyphaeon-app/web
         run: npm run build
 
+      # Not `git diff --exit-code`: a rebake rewrites wall times, a timestamp, the Node version and
+      # the thread count, so a plain diff reports six files and 124 lines whenever a rebake happens
+      # at all — which it did on this job's first run, on records whose every number was identical.
+      # The script compares the records with those volatile keys removed and fails only on a value
+      # that means something.
       - name: The committed records must be what this code bakes
-        run: |
-          if ! git diff --quiet -- web/static/gallery; then
-            echo "::error::The prebaked gallery records are stale. Run 'npm run build' in web/ and commit web/static/gallery."
-            git diff --stat -- web/static/gallery
-            exit 1
-          fi
-          echo "gallery records match" >> "$GITHUB_STEP_SUMMARY"
+        working-directory: hyphaeon-app/web
+        run: node scripts/check-gallery-current.mjs
 
   parity:
     name: parity (python reference vs node, node-tn93)
