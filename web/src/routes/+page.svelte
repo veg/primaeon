@@ -8,7 +8,7 @@
 	qualify, not here. This page therefore carries one sentence and the inputs.
 
 	HANDOFF. The pipeline, workers and diagnostics live on the analyze route. This page reads the
-	dropped files as text, parks them in sessionStorage under HANDOFF_KEY, and navigates to
+	dropped files as text, parks them in memory (lib/handoff.ts) and navigates to
 	/analyze/?autorun=1, which loads the handoff and runs as soon as diagnostics allow (see
 	analyze/+page.svelte).
 
@@ -26,6 +26,7 @@
 -->
 <script lang="ts">
 	import { base } from '$app/paths';
+	import { setHandoff, type Handoff } from '$lib/handoff';
 	import { goto } from '$app/navigation';
 	import { readText } from '$lib/analyze/inputs';
 	import catalogue from '$lib/gallery/examples.json';
@@ -33,7 +34,6 @@
 
 	const EXAMPLES: readonly GalleryExample[] = catalogue.examples as GalleryExample[];
 
-	const HANDOFF_KEY = 'hyphaeon:handoff';
 	const TREE_EXT = /\.(nwk|newick|tree|tre|nex|nexus)$/i;
 
 	let dragging = $state(false);
@@ -41,20 +41,10 @@
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 
-	type Handoff = {
-		alignmentText: string;
-		alignmentName: string | null;
-		treeText: string | null;
-		treeName: string | null;
-	};
-
 	async function start(handoff: Handoff) {
-		try {
-			sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(handoff));
-		} catch {
-			error = 'This browser blocks session storage, so the file cannot be handed to the analysis page.';
-			return;
-		}
+		// The hand-off travels in memory, not in storage: navigation here is client-side, so there is
+		// no size limit and nothing to fail. See lib/handoff.ts for what this replaced and why.
+		setHandoff(handoff);
 		await goto(`${base}/analyze/?autorun=1`);
 	}
 

@@ -4,7 +4,7 @@
 
 	WHY THIS FILE EXISTS. PLAN.md §4.0 / D21: the only user action is uploading a dataset, so this
 	route has no analysis picker and no options form on the way to results. It receives the inputs
-	(the landing page's sessionStorage hand-off with `?autorun=1`, or `?demo=<id>&autorun=1`), runs
+	(the landing page's in-memory hand-off with `?autorun=1`, or `?demo=<id>&autorun=1`), runs
 	the library's `diagnose()` in the prep worker, follows the diagnostics' variant suggestion, then
 	calls `startReport()` (lib/report/run.svelte.ts), which creates the record in IndexedDB and
 	starts the ONE analyze worker that hosts the whole orchestrator, and navigates to the report
@@ -28,6 +28,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
+	import { takeHandoff } from '$lib/handoff';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { DiagnosisSnapshot, ReportOptions, Variant } from '$lib/api';
@@ -44,7 +45,6 @@
 	const MAX_SPECIES_HARD = 512;
 	const MIN_SPECIES = 3;
 	const DEBOUNCE_MS = 400;
-	const HANDOFF_KEY = 'hyphaeon:handoff';
 
 	// ---- inputs ----------------------------------------------------------------------------------
 	let alignmentText = $state('');
@@ -114,19 +114,12 @@
 	});
 
 	function loadHandoff() {
-		let raw: string | null = null;
-		try {
-			raw = sessionStorage.getItem(HANDOFF_KEY);
-			sessionStorage.removeItem(HANDOFF_KEY);
-		} catch {
-			raw = null;
-		}
-		if (!raw) {
+		const h = takeHandoff();
+		if (!h) {
 			autorun = false;
 			return;
 		}
 		try {
-			const h = JSON.parse(raw) as { alignmentText?: string; alignmentName?: string | null; treeText?: string | null; treeName?: string | null };
 			alignmentText = h.alignmentText ?? '';
 			alignmentName = h.alignmentName ?? null;
 			treeText = h.treeText ?? '';
