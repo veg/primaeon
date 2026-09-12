@@ -806,6 +806,47 @@ Two further notes:
 - Purple appears on `/time` on links and on exactly two marks: the fit line and the flagged points
   in the clock figure, where it carries a fact about the data. Nothing in the date table borrows it.
 
+**The `/time` route, phase 3: the ancestor date (sections 3 and 4)**
+
+Six further resolutions, each a place the specification above had no pattern or where phase 3
+changed a rule phase 2 recorded. Nothing in §6 moved and no spec was edited.
+
+- **The purple budget grows from two marks to four, plus the page's first primary button.** The note
+  above is amended rather than quietly broken: section 3's figure adds the dating fit line, the
+  ancestor mark on the time axis and its interval bracket, and `Estimate the ancestor date` is
+  `/time`'s one primary (`--brand` fill, `--on-brand` label, never labelled exactly "Run"). Every
+  one of those marks carries a fact about the data, which is the rule §2 states; nothing decorative
+  gained a hue, and both tables are still colourless apart from the orange word in the Status
+  column.
+- **Orange now also marks a dating warning, not only a date problem.** Phase 2 reserved it for
+  problems with the dates because nothing else on the page could change an answer. Section 3 can:
+  a reserved holdout, a flagged sequence, a predicted date that came from a different model, a
+  degenerate interval. Those take §3's warning treatment (the 0.5 em `--warn-mark` square, the rest
+  in `--text-muted`) inside the "What this estimate rests on" disclosure; the runtime's own
+  `severity` decides which, and its `note` severity stays a plain `.note`. The clock-model finding
+  is a plain `.note` as the surface specification asked, because it is a fact about the fit rather
+  than a problem with it.
+- **The counter instability §3 flagged is fixed by dropping one `<b>`.** The warnings table's
+  `<caption>` inside the *closed* `details.strip` is `display: none` and increments nothing, so the
+  review table was "Table 1" closed and "Table 2" open. That caption's bold opening is now a
+  `<span class="capname">` with the same look and no `::before`, so the table counter runs over the
+  tables a reader can actually see. The alternative — moving the table out of the disclosure — would
+  have put nine diagnostics permanently on the page.
+- **A table row that states an absence.** The estimator table lists the four estimators this build
+  does not run. Their rows carry an em dash in the date column and their reason spanning the
+  remaining three, in `--text-faint`: no badge, no pill, no "coming soon" (§4, §5). A table that
+  omitted them would let a reader think this is the whole pillar, which is the claim §5 forbids.
+- **Two controls the phase-2 `/time` rule did not anticipate.** Section 3 has a `<select>` for the
+  root (the input rule, square, `1px var(--rule)`) and section 4 has a checkbox per row for
+  excluding a sequence from the fit (`accent-color: var(--brand)`). The checkbox is the control; the
+  ROW is still not one — no pointer cursor and no `--surface-2` hover — so §8's phase-2 rule stands
+  as written.
+- **The clock preview stops printing a second ancestor number.** Once section 3 has an estimate,
+  `ClockPreview`'s "Ancestor date" stat tile is replaced by one line naming both numbers and the gap
+  between them (`crossCheckSentence`), taking the warning treatment when the gap exceeds the
+  interval section 3 quotes. Two ancestor estimates on one page with nothing connecting them is the
+  same defect §8 records for the filter section's duplicated lede, and the same fix.
+
 **Measured at integration** (`scratchpad/design/final/contrast.py` over the tokens in `app.css`)
 
 | Scheme | Token | Hex | on `--bg` | on `--surface-2` |

@@ -14,14 +14,20 @@
 	`e2e/smoke.spec.ts` fixes that to Methods, Evaluate, MCP. It is reached by one sentence on the
 	landing page and one on /analyze.
 
-	IT RUNS NOTHING AND IT SAYS SO. Neither time-aware analysis is ported yet. Section 3 states that
-	in the present tense rather than promising a date — web/DESIGN.md §5 forbids "coming soon" — and
-	the page's one gate unlocks two downloads and a stored flag, not a run.
+	IT RUNS ONE THING, AND IT LOADS NO MODEL TO DO IT (phase 3). The gate in section 1 unlocks the
+	ancestor-date estimate in section 3: TN93 divergence to a chosen root, a straight line through
+	it, and a per-sequence table in section 4. That is the model-free half of `hyphaeon dating`; the
+	two model-based estimators need a taxon-by-taxon attention matrix the current ONNX export does
+	not emit, and section 3 says so in place rather than promising them (web/DESIGN.md §5 forbids
+	"coming soon"). The temporal-selection pillar is still not ported and section 5 says so.
 
-	EVERYTHING IS SYNCHRONOUS AND ON THE MAIN THREAD. The ingest is string work over text already in
-	memory; at 143 sequences it is well under a millisecond and the reader sees the table re-sort
-	under the control they just changed, which is the whole point. No worker is started, no model is
-	loaded, nothing goes off-origin.
+	THE DATE REVIEW IS SYNCHRONOUS; THE ESTIMATE IS NOT. The ingest is string work over text already
+	in memory — at 143 sequences it is well under a millisecond, and the reader sees the table
+	re-sort under the control they just changed, which is the whole point. The estimate is N pairwise
+	TN93 comparisons over the full alignment width and runs in its own cancellable worker
+	(`lib/workers/dating.worker.ts`), whose entire import graph is `@veg/hyphaeon-runtime/dating`.
+	Nothing on this route loads ORT, a graph or any WebAssembly, and `e2e/time.spec.ts` asserts it by
+	watching the network.
 
 	LOOK. web/DESIGN.md: `--container` (an eight-column table needs the report's measure), three
 	sections numbered by the `.numbered` CSS counter in app.css, a `<figure>` with a numbered caption
@@ -38,6 +44,12 @@
 	import { digest, readText } from '$lib/analyze/inputs';
 	import { setHandoff, takeHandoff } from '$lib/handoff';
 	import { clockPreview } from '$lib/time/clock';
+	import { crossCheckSentence, datingView, figureModel, predictionCaveat, taxonRows } from '$lib/time/dating';
+	import { DATING_CSV_NAME, DATING_DOWNLOAD_NOTE, DATING_JSON_NAME, datingCsv, datingJson } from '$lib/time/datingDownloads';
+	import DatingSection from '$lib/time/DatingSection.svelte';
+	import TaxonDatingTable from '$lib/time/TaxonDatingTable.svelte';
+	import { datingClient, workersAvailable } from '$lib/workers/clients';
+	import type { DatingRequest, DatingResponse } from '$lib/workers/protocol';
 	import {
 		diagnosis,
 		pageState,
@@ -53,7 +65,7 @@
 	import { DATES_CSV_COLUMNS, datesCsv, datesJson, saveText } from '$lib/time/downloads';
 	import { buildRecord, fromStored } from '$lib/time/record';
 	import { alignmentHeaders, classifyDropped, isDateSource } from '$lib/time/sources';
-	import type { TimeSetOptions, TimeSetRecord, TimeUnits } from '$lib/time/types';
+	import type { DatingResult, DatingRootChoice, TimeSetOptions, TimeSetRecord, TimeUnits } from '$lib/time/types';
 	import DateReviewTable from '$lib/time/DateReviewTable.svelte';
 	import CoverageFigure from '$lib/time/CoverageFigure.svelte';
 	import ClockPreview from '$lib/time/ClockPreview.svelte';
@@ -97,6 +109,16 @@
 	let recordId = $state<string | null>(null);
 	let visibleRows = $state<ReviewRow[]>([]);
 
+	// ---- the dating run (phase 3) ----------------------------------------------------------------
+	let datingRoot = $state<DatingRootChoice>('consensus');
+	let rootTaxon = $state<string | null>(null);
+	let excludedTaxa = $state<string[]>([]);
+	let dating = $state<DatingResult | null>(null);
+	let datingState = $state<'idle' | 'running'>('idle');
+	let datingProgress = $state('');
+	let datingFailure = $state<string | null>(null);
+	let datingAbort: AbortController | null = null;
+
 	// ---- derived: the whole review, re-derived on every edit --------------------------------------
 	const names = $derived(alignmentText ? alignmentHeaders(alignmentText) : null);
 	const taxa = $derived(alignmentText ? taxaForDates(alignmentText) : []);
@@ -133,6 +155,23 @@
 	const unmatched = $derived(ingest ? unmatchedMetadataLine(ingest, metadataName) : null);
 	const anchors = $derived(taxa.length ? archival1959Candidates(taxa) : []);
 	const preview = $derived(clockPreview({ treeText, ingest }));
+	const datingResult = $derived(datingView(dating, ingest?.time_units ?? 'years'));
+	const datingFigure = $derived(figureModel(dating));
+	const datingTaxa = $derived(taxonRows(dating, excludedTaxa));
+	const datingCaveat = $derived(predictionCaveat(dating, ingest?.time_units ?? 'years'));
+	/**
+	 * The one line that stops the page printing two ancestor numbers with nothing between them. The
+	 * width it compares against is the interval section 3 quotes, so "they disagree by more than the
+	 * interval" means what it says.
+	 */
+	const crossCheck = $derived.by(() => {
+		const ols = (dating?.record?.ols ?? null) as Record<string, unknown> | null;
+		const t = typeof ols?.t_mrca === 'number' ? ols.t_mrca : NaN;
+		const ci = Array.isArray(ols?.ci_fieller) ? (ols.ci_fieller as number[]) : null;
+		const width = ci && Number.isFinite(ci[0]) && Number.isFinite(ci[1]) ? ci[1] - ci[0] : NaN;
+		if (!preview.available || !preview.fit?.ok) return null;
+		return crossCheckSentence(t, preview.fit.tMrca, width, ingest?.time_units ?? 'years');
+	});
 
 	const tableInfo = $derived(
 		(ingest?.table ?? null) as {
@@ -252,7 +291,12 @@
 			delimiter: tableInfo?.delimiter ?? null,
 			dropUndated,
 			rootMode: 'midpoint',
-			outgroup: null
+			outgroup: null,
+			datingRoot,
+			rootTaxon,
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			excludedTaxa: [...excludedTaxa]
 		};
 	}
 
@@ -272,7 +316,8 @@
 			},
 			options: options(),
 			ingest,
-			ready: gate.ready
+			ready: gate.ready,
+			dating
 		});
 	}
 
@@ -281,6 +326,7 @@
 		// Track what the reader can see change, then write at the store's own cadence.
 		void ingest;
 		void dropUndated;
+		void dating;
 		if (!ingest || !storageAvailable()) return;
 		if (saveTimer) clearTimeout(saveTimer);
 		saveTimer = setTimeout(() => {
@@ -341,8 +387,88 @@
 			archival1959 = stored.options.archival1959;
 			customPattern = stored.options.customPattern ?? '';
 			dropUndated = stored.options.dropUndated;
+			datingRoot = stored.options.datingRoot;
+			rootTaxon = stored.options.rootTaxon;
+			excludedTaxa = [...stored.options.excludedTaxa];
+			dating = stored.dating;
 		})();
 	});
+
+	// ---- the ancestor-date run -------------------------------------------------------------------
+
+	/**
+	 * The magic root strings the reference tests for (`dating.py:650`, `:659`) are passed through as
+	 * `rootTaxon`, because that is the argument the reference itself uses for all four cases. Case 1
+	 * is tested FIRST and case-sensitively, so a sequence actually named `earliest` wins — which is
+	 * why the picker lists the sequence names separately rather than expecting a reader to type one.
+	 */
+	function rootArgument(): string | null {
+		if (datingRoot === 'taxon') return rootTaxon;
+		if (datingRoot === 'unweighted') return 'unweighted_consensus';
+		if (datingRoot === 'earliest') return 'earliest';
+		return null;
+	}
+
+	async function estimateAncestor() {
+		if (!ingest || !gate.ready || !workersAvailable()) return;
+		datingFailure = null;
+		datingProgress = 'Reading the alignment…';
+		datingState = 'running';
+		datingAbort = new AbortController();
+		const request: DatingRequest = {
+			alignmentText,
+			alignmentName,
+			dates: ingest.rows
+				.filter((r) => r.value != null && Number.isFinite(r.value))
+				.map((r) => ({ taxon: r.taxon, value: r.value as number })),
+			rootTaxon: rootArgument(),
+			excludedTaxa: [...excludedTaxa],
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			timeUnits: ingest.time_units
+		};
+		try {
+			const response = await datingClient().call<DatingResponse>(request, {
+				signal: datingAbort.signal,
+				onProgress: (_phase, done, total, message) => {
+					datingProgress = total > 0 ? `${message} (${done} of ${total})` : message;
+				}
+			});
+			dating = {
+				...response,
+				ranAtIso: new Date().toISOString(),
+				options: {
+					root: datingRoot,
+					rootTaxon,
+					clockModel: 'auto',
+					ciMethod: 'fieller',
+					excludedTaxa: [...excludedTaxa],
+					units: ingest.time_units
+				}
+			};
+		} catch (err) {
+			const e = err instanceof Error ? err : new Error(String(err));
+			// A cancel is not a failure, and it leaves whatever the previous run produced in place.
+			if (e.name !== 'AbortError') datingFailure = e.message;
+		} finally {
+			datingState = 'idle';
+			datingProgress = '';
+			datingAbort = null;
+		}
+	}
+
+	function cancelEstimate() {
+		datingAbort?.abort();
+	}
+
+	function setRoot(choice: DatingRootChoice, taxon: string | null) {
+		datingRoot = choice;
+		rootTaxon = taxon;
+	}
+
+	function toggleExcluded(taxon: string, on: boolean) {
+		excludedTaxa = on ? [...excludedTaxa, taxon] : excludedTaxa.filter((t) => t !== taxon);
+	}
 
 	// ---- downloads and the hand-off back ---------------------------------------------------------
 	function downloadCsv() {
@@ -351,6 +477,12 @@
 	function downloadJson() {
 		const record = currentRecord();
 		if (record) saveText('dates.json', datesJson(record), 'application/json');
+	}
+	function downloadDatingJson() {
+		if (dating?.ok) saveText(DATING_JSON_NAME, datingJson(dating), 'application/json');
+	}
+	function downloadDatingCsv() {
+		if (dating?.ok) saveText(DATING_CSV_NAME, datingCsv(dating.rows), 'text/csv');
 	}
 	async function runSelection() {
 		setHandoff({ alignmentText, alignmentName, treeText, treeName, metadataText, metadataName });
@@ -411,7 +543,14 @@
 					<details class="strip">
 						<summary><b>What we read from your files.</b> {strip.sentence}</summary>
 						<table>
-							<caption><b>Everything the date layer reported.</b> One row per diagnostic, in its own report order; severity is the same three-value scale the analysis report uses.</caption>
+							<!-- NOT `<b>`, and that is the fix for a counter bug this phase inherited. `app.css`'s
+							     `.numbered caption b::before` increments the table counter, but this caption lives
+							     inside a CLOSED `<details>`, which is `display: none` and therefore increments
+							     nothing — so the review table below was "Table 1" with the strip closed and
+							     "Table 2" with it open, and two more tables on the page would have made that
+							     visible. This caption keeps its look and leaves the counter alone; DESIGN.md §8
+							     records the choice. -->
+							<caption><span class="capname">Everything the date layer reported.</span> One row per diagnostic, in its own report order; severity is the same three-value scale the analysis report uses.</caption>
 							<thead>
 								<tr><th scope="col">Severity</th><th scope="col">Code</th><th scope="col">Message</th></tr>
 							</thead>
@@ -511,9 +650,79 @@
 		</header>
 		{#if ingest && ingest.coverage.dated > 0}
 			<CoverageFigure rows={rows} units={ingest.time_units} span={ingest.span} />
-			<ClockPreview preview={preview} {treeName} />
+			<ClockPreview preview={preview} {treeName} {crossCheck} />
 		{:else}
 			<p class="note">No sequence carries a date yet, so there is nothing to place on a time axis.</p>
+		{/if}
+	</section>
+
+	<section class="section" id="dating" aria-labelledby="dating-title">
+		<header class="section__head">
+			<h2 id="dating-title">Ancestor date</h2>
+			<p class="eyebrow"><code>hyphaeon dating --method ols --no-tree</code>, ported</p>
+		</header>
+		{#if ingest}
+			{#if datingFailure}
+				<p class="notice--error" role="alert"><strong>The estimate failed.</strong> {datingFailure}</p>
+			{/if}
+			<DatingSection
+				view={datingResult}
+				figure={datingFigure}
+				run={dating}
+				units={ingest.time_units}
+				ready={gate.ready}
+				gateReasons={gate.reasons}
+				state={datingState}
+				progress={datingProgress}
+				taxa={taxa}
+				root={datingRoot}
+				{rootTaxon}
+				excludedCount={excludedTaxa.length}
+				{alignmentName}
+				onRoot={setRoot}
+				onRun={() => void estimateAncestor()}
+				onCancel={cancelEstimate}
+			/>
+		{:else}
+			<p class="note">Nothing is loaded yet, so there is nothing to date.</p>
+		{/if}
+	</section>
+
+	<section class="section" id="taxa" aria-labelledby="taxa-title">
+		<header class="section__head">
+			<h2 id="taxa-title">Per-sequence dates</h2>
+			<p class="eyebrow"><code>hyphaeon dating</code>'s per-taxon CSV, ported</p>
+		</header>
+		{#if dating?.ok && ingest}
+			<p class="note">
+				Every sequence the estimate saw, whether or not it calibrated the clock. Tick a row to leave it
+				out and the button in section 3 re-reads; excluded sequences are named in the provenance below
+				and in both downloads, so an estimate can never be quietly conditioned on a hidden exclusion.
+			</p>
+			{#if datingCaveat}
+				<p class="note note--warn">
+					<strong>The predicted dates are not dates here.</strong>
+					{datingCaveat.text}
+				</p>
+			{/if}
+			<TaxonDatingTable
+				rows={datingTaxa}
+				units={ingest.time_units}
+				activeName={dating.activeName}
+				excluded={excludedTaxa}
+				onToggle={toggleExcluded}
+			/>
+			<div class="downloads">
+				<button type="button" class="button button--secondary" onclick={downloadDatingCsv}>Dating (CSV)</button>
+				<button type="button" class="button button--secondary" onclick={downloadDatingJson}>Dating (JSON)</button>
+			</div>
+			<p class="hint downloads__note">{DATING_DOWNLOAD_NOTE}</p>
+		{:else}
+			<p class="note">
+				No estimate has been made yet. Section 3 starts one; this table is its per-sequence output —
+				the label you supplied, the date the clock predicts, the gap between them, and whether the
+				sequence was flagged or held out of the fit.
+			</p>
 		{/if}
 	</section>
 
@@ -531,6 +740,21 @@
 				<div><dt>Name matching</dt><dd>{ingest.match_tier ?? 'not used'}{#if ingest.match_tier && ingest.match_tier !== 'exact'}<span class="qual">weaker than an exact comparison; every row says which tier matched it</span>{/if}</dd></div>
 				<div><dt>Archival 1959 rule</dt><dd>{archival1959 ? 'applied' : 'off'}{#if anchors.length}<span class="qual">{anchors.length} sequence{anchors.length === 1 ? '' : 's'} would be affected</span>{/if}</dd></div>
 				<div><dt>Tree</dt><dd>{treeName ?? 'none supplied'}{#if !preview.available}<span class="qual">no clock preview: {preview.code}</span>{/if}</dd></div>
+				<div>
+					<dt>Ancestor date</dt>
+					<dd>
+						{#if dating?.ok}
+							tree-free TN93, root {dating.rootDescription}
+							<span class="qual"
+								>{dating.selectedClock}; the page quotes the straight line, because the spline's
+								interval is degenerate upstream. Excluded: {excludedTaxa.length === 0 ? 'none' : excludedTaxa.join(', ')}.
+								No root search, no bootstrap, no random numbers anywhere on this path.</span
+							>
+						{:else}
+							not estimated<span class="qual">section 3 starts it; no model is loaded either way</span>
+						{/if}
+					</dd>
+				</div>
 			</dl>
 
 			<div class="downloads">
@@ -551,9 +775,14 @@
 		{/if}
 
 		<p class="note">
-			This page reads dates and shows what it read. The clock-rate estimate, the ancestor date and
-			the per-sequence outlier table read this same table and are not built yet;
-			<span class="mono">hyphaeon dating</span> computes them today at the command line.
+			This page reads dates, shows what it read, and estimates an ancestor date from them without
+			loading a model. Two upstream quirks are replicated on purpose and worth naming here: the
+			model-averaged row reads a deliberately skewed interval as a symmetric Gaussian one
+			(<span class="mono">dating.py:2916</span>), and the spline clock's own interval collapses to its
+			point estimate because its bootstrap raises on every replicate
+			(<span class="mono">dating.py:1917</span>). The temporal-selection pillar — per-site
+			trajectories, velocities and wave modes — is not ported; <span class="mono">hyphaeon temporal</span>
+			computes it today at the command line.
 		</p>
 	</section>
 </article>
@@ -696,6 +925,11 @@
 	}
 	.faint {
 		color: var(--text-faint);
+	}
+	/* The strip caption's bold opening, which deliberately is not a `<b>`; see the markup. */
+	.capname {
+		color: var(--text);
+		font-weight: 700;
 	}
 	@media (max-width: 40em) {
 		.section {
