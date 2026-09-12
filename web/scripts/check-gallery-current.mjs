@@ -37,32 +37,22 @@ const repo = resolve(web, '..');
 const galleryDir = join(web, 'static', 'gallery');
 
 /**
- * Keys whose value changes on every bake and says nothing about the science: how long it took, when
- * it ran, and on what. Matched by key name at any depth.
+ * A key whose value changes on every bake and says nothing about the science. Two attempts at this
+ * as a fixed list both missed one — first `elapsed_sec`, then the prebake stamp itself — so it is a
+ * rule now: anything naming a duration, a moment, the machine, or the bookkeeping that decides
+ * whether a rebake was needed.
+ *
+ * The stamp is deliberately here. It is a hash of the inputs the bake depended on, so it differs
+ * exactly when a rebake happened, which is the condition that brought us here; whether the records
+ * are CURRENT is decided by the numbers below it, not by the bookkeeping above them.
  */
-const VOLATILE = new Set([
-	'at',
-	'createdAt',
-	'created_at',
-	'createdAtIso',
-	'generated_at',
-	'generatedAt',
-	'runtime_sec',
-	'runtimeSec',
-	'elapsed',
-	'elapsed_seconds',
-	'elapsedMs',
-	'wall',
-	'wallMs',
-	'wall_seconds',
-	'timings',
-	'node',
-	'threads',
-	// Which engine checkout baked the records. Real provenance, and it moves whenever the pin does,
-	// which says nothing about whether the numbers are current — that is what the tolerance above
-	// is for.
-	'commit'
-]);
+function isVolatile(key) {
+	if (/^(at|createdAt|created_at|createdAtIso|generated_at|generatedAt|timings|node|threads|commit|stamp)$/.test(key)) {
+		return true;
+	}
+	// elapsed, elapsed_sec, elapsedMs, wall, wall_seconds, runtime_sec, duration_ms, ...
+	return /^(elapsed|wall|runtime|duration)/.test(key) || /(_sec|_seconds|_ms|Ms|Sec|Seconds)$/.test(key);
+}
 
 /** The same object with every volatile key dropped, at any depth. */
 function stripVolatile(value) {
@@ -70,7 +60,7 @@ function stripVolatile(value) {
 	if (value && typeof value === 'object') {
 		const out = {};
 		for (const [k, v] of Object.entries(value)) {
-			if (VOLATILE.has(k)) continue;
+			if (isVolatile(k)) continue;
 			out[k] = stripVolatile(v);
 		}
 		return out;
