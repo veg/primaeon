@@ -250,6 +250,7 @@
 				{rootLabel}
 				{splinePreferred}
 				{alignmentName}
+				distanceMode={view.distanceMode}
 			/>
 		{/if}
 

@@ -545,7 +545,11 @@ export function verdictSentence(run: DatingResult, units: TimeUnits): string {
 	const interval = isUnbounded(ci)
 		? `with a 95 % interval (${label}) that has no lower bound and an upper bound of ${yr(ci![1])}`
 		: `with a 95 % interval (${label}) from ${yr(ci?.[0] ?? NaN)} to ${yr(ci?.[1] ?? NaN)}`;
-	const which = head && head.key !== 'ols' ? `, by ${MODEL_SHORT[head.key]},` : '';
+	// NAME THE ESTIMATOR ALWAYS. This read `head.key !== 'ols'`, so a least-squares headline said
+	// only "these sequences share a common ancestor", and a reader had no way to tell which of the
+	// three estimates the sentence was quoting — least squares being the default is exactly why it
+	// has to say so.
+	const which = head ? `, by ${MODEL_SHORT[head.key]},` : '';
 	return (
 		`These ${fit} sequences${which} share a common ancestor ${where} ${yr(n(m, 't_mrca'))}, ${interval}. ` +
 		`The clock runs at ${sci(rate)} substitutions per site per ${unitWord(units)} and accounts for ` +

@@ -104,7 +104,7 @@ env:
   # left at phase-5b because the file's own rule is that the pin names the engine the code needs,
   # and a pin that resolves to a green checkout of the wrong engine would be worse than one that
   # fails at the checkout step and says why.
-  ENGINE_REF: feat/dating-model
+  ENGINE_REF: phase-5c
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on

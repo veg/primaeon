@@ -26,6 +26,10 @@
 
 	interface Props {
 		model: DatingFigureModel;
+		/** Which distance the vertical axis carries: 'latent' comes from the model's representation
+		 *  space, everything else is a TN93 distance. The caption said TN93 in both, which was wrong in
+		 *  latent mode and contradicted the page's own note two paragraphs above it. */
+		distanceMode?: string;
 		units: TimeUnits;
 		/** Named in the caption, because divergence is measured to it. */
 		rootLabel: string;
@@ -33,7 +37,8 @@
 		splinePreferred: boolean;
 		alignmentName: string | null;
 	}
-	let { model, units, rootLabel, splinePreferred, alignmentName }: Props = $props();
+	let { model, units, rootLabel, splinePreferred, alignmentName, distanceMode }: Props = $props();
+	const distanceWord = $derived(distanceMode === 'latent' ? 'distance in the model\'s representation space' : 'TN93 distance');
 
 	const W = 900;
 	const H = 340;
@@ -98,7 +103,7 @@
 	</svg>
 	<figcaption>
 		<b>Divergence from the root against sampling date{alignmentName ? `, ${alignmentName}` : ''}.</b>
-		One point per dated sequence, {model.points.length} in all; the vertical axis is TN93 distance to
+		One point per dated sequence, {model.points.length} in all; the vertical axis is {distanceWord} to
 		{rootLabel}. The purple line is the centred least-squares fit and the purple mark on the time axis
 		is the ancestor it implies, with its 95 % interval as the hairline bracket around
 		it{#if model.ancestor?.openLow}, whose left end is open because the interval has no lower bound{/if}.
