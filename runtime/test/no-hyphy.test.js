@@ -94,6 +94,7 @@ describe('HyPhy is not in this package', () => {
 			'./web',
 			'./node',
 			'./dates',
+			'./clock',
 			'./prescreen',
 			'./prescreen/scope',
 			'./package.json',
