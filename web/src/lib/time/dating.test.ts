@@ -70,7 +70,16 @@ function runOn(text: string, rootTaxon: string | null, excluded: string[] = []):
 		rootCase: run.rootCase,
 		elapsedMs: 0,
 		ranAtIso: '2026-01-01T00:00:00.000Z',
-		options: { root: 'taxon', rootTaxon, clockModel: 'auto', ciMethod: 'fieller', excludedTaxa: excluded, units: 'years' }
+		options: {
+			root: 'taxon',
+			rootTaxon,
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			excludedTaxa: excluded,
+			units: 'years',
+			useModel: false,
+			distanceMode: 'auto'
+		}
 	};
 }
 
@@ -170,7 +179,16 @@ describe.runIf(available())('the flagship example, end to end through the view m
 
 	it('fills the six stat entries, with the interval in the qualifier and nothing at display size', () => {
 		const stats = statEntries(run, 'years');
-		expect(stats.map((s) => s.label)).toEqual(['Ancestor date', 'Clock rate', 'R²', 'Slope p', 'Residual RMSE', 'Root']);
+		// The last label is 'Divergence measured to', not 'Root': phase 4 made the two different
+		// questions, because under the latent distance mode there is no root sequence to name.
+		expect(stats.map((s) => s.label)).toEqual([
+			'Ancestor date',
+			'Clock rate',
+			'R²',
+			'Slope p',
+			'Residual RMSE',
+			'Divergence measured to'
+		]);
 		expect(stats[0].value).toBe('1893.9');
 		expect(stats[0].qualifier).toContain('95 % interval (Fieller): 1850.9 to 1916.8');
 		expect(stats[1].value).toBe('1.169 × 10⁻³');
@@ -306,7 +324,16 @@ describe('a refusal is a refusal, and it renders nothing else', () => {
 		rootCase: 4,
 		elapsedMs: 0,
 		ranAtIso: '',
-		options: { root: 'consensus', rootTaxon: null, clockModel: 'auto', ciMethod: 'fieller', excludedTaxa: [], units: 'years' }
+		options: {
+			root: 'consensus',
+			rootTaxon: null,
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			excludedTaxa: [],
+			units: 'years',
+			useModel: false,
+			distanceMode: 'auto'
+		}
 	};
 
 	it('carries one reason and one next action, and no numbers at all', () => {

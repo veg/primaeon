@@ -11,6 +11,11 @@
  * that never asked for an estimate is in — so the version bump is a label on the shape, not a
  * migration, and no stored review is lost.
  *
+ * SCHEMA 3 IS THE SAME KIND OF BUMP. `TimeSetOptions` gained `useModel` and `distanceMode`, and
+ * `DatingResult` gained an optional `model` block. A v2 record reads back as `useModel: false`,
+ * `distanceMode: 'auto'` and `model: undefined` — which is exactly what it was, because the build
+ * that wrote it had no dating graph to load. Nothing is migrated and nothing is dropped.
+ *
  * READING IS DEFENSIVE IN ONE DIRECTION ONLY. `fromStored()` fills in what a v1 record may be
  * missing and never removes what it does not recognise, so a record written by a later build opens
  * in an earlier one with its own fields intact — the same non-destructive rule `lib/storage/
@@ -107,7 +112,12 @@ const DEFAULT_OPTIONS: TimeSetOptions = {
 	rootTaxon: null,
 	clockModel: 'auto',
 	ciMethod: 'fieller',
-	excludedTaxa: []
+	excludedTaxa: [],
+	// Phase 4. A v1 or v2 record was written by a build whose /time route could not load a graph at
+	// all, so `false` and `auto` are not guesses about what the reader wanted — they are what that
+	// build did.
+	useModel: false,
+	distanceMode: 'auto'
 };
 
 /** Fill in what an older record is missing; never drop a field this build does not know. */

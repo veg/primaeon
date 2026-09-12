@@ -14,6 +14,7 @@ import { WorkerClient } from './client';
 import type {
 	AnalyzeWorkerRequest,
 	AnalyzeWorkerResponse,
+	DatingModelRequest,
 	DatingRequest,
 	DatingResponse,
 	InferRequest,
@@ -26,6 +27,7 @@ let prep: WorkerClient<PrepRequest, PrepResponse> | null = null;
 let infer: WorkerClient<InferRequest, InferResponse> | null = null;
 let analyze: WorkerClient<AnalyzeWorkerRequest, AnalyzeWorkerResponse> | null = null;
 let dating: WorkerClient<DatingRequest, DatingResponse> | null = null;
+let datingModel: WorkerClient<DatingModelRequest, DatingResponse> | null = null;
 
 export function prepClient(): WorkerClient<PrepRequest, PrepResponse> {
 	prep ??= new WorkerClient(() => new Worker(new URL('./prep.worker.ts', import.meta.url), { type: 'module' }));
@@ -51,6 +53,18 @@ export function analyzeClient(): WorkerClient<AnalyzeWorkerRequest, AnalyzeWorke
 export function datingClient(): WorkerClient<DatingRequest, DatingResponse> {
 	dating ??= new WorkerClient(() => new Worker(new URL('./dating.worker.ts', import.meta.url), { type: 'module' }));
 	return dating;
+}
+
+/**
+ * The `/time` route's model-based ancestor-date worker, and the ONLY thing on that route that ever
+ * loads a graph. It is a separate module from `datingClient` for the reason `datingModel.worker.ts`
+ * gives: the model-free worker's import graph is the proof that reviewing dates costs no model
+ * byte, and a shared worker would make it a promise instead. Nothing constructs this until a reader
+ * asks for the model estimate.
+ */
+export function datingModelClient(): WorkerClient<DatingModelRequest, DatingResponse> {
+	datingModel ??= new WorkerClient(() => new Worker(new URL('./datingModel.worker.ts', import.meta.url), { type: 'module' }));
+	return datingModel;
 }
 
 /** True where Web Workers exist (a browser, not the prerenderer). */

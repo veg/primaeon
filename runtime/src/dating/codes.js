@@ -239,8 +239,14 @@ export const DATING_MESSAGES = Object.freeze({
 		'A pair of sequences is too diverged for a TN93 distance to exist ({error}). The distance is ' +
 		'the logarithm of a quantity that has gone non-positive — the alignment is saturated at this ' +
 		'depth, and a number here would be fiction rather than a distance.',
+	/**
+	 * `{reason}` CARRIES THE WHOLE CLAIM, and the sentence around it must not add one: "no dating
+	 * graph in this build" and "the reader did not ask for it" are different facts and a page shows
+	 * both. An earlier draft asserted the first in the template and passed the second in as the
+	 * parenthesis, which read as a contradiction on a build that has the graph.
+	 */
 	MODEL_GRAPH_ABSENT:
-		'The two model-based estimators did not run: this build has no dating graph ({reason}). They ' +
+		'The two model-based estimators did not run: {reason}. They ' +
 		'need a taxon-by-taxon attention matrix and per-taxon embeddings, which the backbone graph ' +
 		'does not emit — it carries the ROOT token\'s attention row and the ROOT token\'s vector, ' +
 		'vectors where these are matrices, and neither can be derived from the other. The ordinary ' +

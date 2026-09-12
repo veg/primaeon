@@ -28,7 +28,9 @@ const OPTIONS: TimeSetOptions = {
 	rootTaxon: null,
 	clockModel: 'auto',
 	ciMethod: 'fieller',
-	excludedTaxa: []
+	excludedTaxa: [],
+	useModel: false,
+	distanceMode: 'auto'
 };
 
 function record(id = 'abc') {

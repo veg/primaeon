@@ -14,7 +14,32 @@
  *     ensemble.t_mrca   1893.91   ci      [1860.96, 1926.86]   ← a THIRD interval off the first fit
  *     record.t_mrca     1938.77                                 ← because active_model is the spline
  *
- * THE PAGE QUOTES THE OLS ESTIMATE, AND THAT IS A DELIBERATE DEPARTURE FROM `active_model`. The
+ * PHASE 4 ADDED THE TWO ESTIMATORS THE MODEL FEEDS, AND WITH THEM A SECOND DISAGREEMENT THAT IS
+ * NOT ABOUT WHICH ESTIMATOR TO QUOTE BUT ABOUT WHAT IS BEING FITTED. `--distance-mode auto` — the
+ * reference's default — resolves to `latent` the moment a dating graph is present and there is no
+ * tree (dating.py:2520-2523), and the latent root's distances are then fed to EVERY estimator, the
+ * ordinary one included. Measured on the same flagship example, same sequences, same dates:
+ *
+ *     model off, TN93 divergences      ols 1893.91  mu 1.169e-3   pgls —        spline 1938.77
+ *     model on,  TN93 divergences      ols 1893.91  mu 1.169e-3   pgls 1841.61  spline 1864.55
+ *     model on,  latent divergences    ols 1926.81  mu 5.551e-4   pgls 1633.07  spline −1974.64
+ *
+ * Three things in that table are worth more than the numbers. The ordinary fit MOVES when the model
+ * is turned on, because its input changed and not its arithmetic (`divergenceSentence` is the line
+ * that says so, and `DATING_LATENT_DIVERGENCES` is the runtime's). The SPLINE moves on divergences
+ * that did not move, because `dating.py:2844` hands it the model's covariance the moment the model
+ * runs, so it is a generalised fit here and an ordinary one otherwise (`DATING_MODEL_SPLINE_
+ * REWEIGHTED`). And the generalised fit can deflate the rate five-fold with a worse R² — the
+ * reference's own clade-attenuation test, which takes the headline away from it AND bars it from
+ * the averaged row, so a record can carry a PGLS fit that appears in neither.
+ *
+ * THE PAGE DOES NOT AVERAGE THE THREE. `agreementNote` says, in the run's own numbers, why they
+ * differ and which one answers; the ensemble stays one row of the estimator table with its own
+ * arithmetic stated. Averaging an ordinary fit with a generalised one whose slope is not
+ * distinguishable from zero produces a number no reader could defend.
+ *
+ * THE PAGE QUOTES THE HEADLINE MODEL, WHICH IS `active_model` UNLESS ITS INTERVAL IS DEGENERATE.
+ * The
  * curvature test does prefer the spline here, and the section says so in full (`clockNote`), with
  * the spline's date and the test that chose it. But the spline has no interval at all: its
  * bootstrap raises on every replicate upstream (`dating.py:1917` hands numpy's `rcond=` to
@@ -23,6 +48,12 @@
  * that cannot be argued with is not the one to headline, so the headline is the straight line —
  * from the model the test rejects — and the section states that in one paragraph rather than
  * leaving a reader to discover that the page and the CLI's top-level `t_mrca` differ by 45 years.
+ *
+ * That rule is stated as a rule (`headlineOf`) rather than as "always OLS", and phase 4 is why: on
+ * TN93 divergences with the model on, `active_model` is `pgls` and its Fieller interval is finite
+ * and positive-width, so the page quotes the generalised fit and agrees with the CLI's own
+ * top-level `t_mrca`. The only model the rule ever refuses is the spline, and only because of the
+ * dead bootstrap. `headlineOf().departed` is what the section prints the departure sentence from.
  *
  * THE ENSEMBLE IS NOT A SECOND ANSWER. `dating.py:2916` converts each interval to a standard error
  * by `(hi − lo) / (2 × 1.96)` and re-forms a symmetric one, which applied to a deliberately skewed
@@ -160,6 +191,23 @@ export interface DatingView {
 	/** True when Fieller returned `[-Infinity, hi]`: print the clause, never a symmetric pair. */
 	unbounded: boolean;
 	units: TimeUnits;
+
+	// ---- phase 4 ---------------------------------------------------------------------------------
+	/** Which fit the numbers above come from, and whether that is the reference's own selection. */
+	headline: ModelKey;
+	activeModel: ModelKey;
+	/** The reference's own `selected_clock` sentence, byte for byte. */
+	selectedClock: string;
+	/** True when this run loaded `<variant>_taxa.onnx`. */
+	modelRan: boolean;
+	/** `'tn93' | 'latent'`, off the record. */
+	distanceMode: 'tn93' | 'latent';
+	/** What the y axis IS — a sequence distance, or a distance in the model's own space. */
+	divergence: string;
+	/** Why the fits disagree and which one answers; null when there is only one. */
+	agreement: string | null;
+	/** The latent root's scale, correlation and anchor sequences; null when it did not run. */
+	latent: LatentRootView | null;
 }
 
 /** The one place a `*_REFUSAL` code becomes a next action. */
@@ -171,8 +219,65 @@ const NEXT_ACTION: Record<string, string> = {
 	DATING_NO_TIME_SPAN: 'Supply sequences collected at more than one time; a clock is a slope against time.',
 	DATING_TN93_UNCOMPUTABLE: 'Estimate on a less divergent subset, or remove the saturated sequences.',
 	DATING_NON_POSITIVE_RATE: 'Check the dates in section 1 and the root above; a clock running backwards is usually one of the two.',
-	DATING_MRCA_AFTER_EARLIEST_SAMPLE: 'Check the date on the earliest sequence, and the root above.'
+	DATING_MRCA_AFTER_EARLIEST_SAMPLE: 'Check the date on the earliest sequence, and the root above.',
+	DATING_MODEL_TOO_MANY_TAXA:
+		'Estimate without the model, which has no such limit, or date a subset. The reference stops at the same ' +
+		'number and quietly falls back to the ordinary fit; this refuses instead, because the covariance the ' +
+		'fallback does not build is the whole difference between the two answers.'
 };
+
+/**
+ * What the page can say about the model-based half BEFORE a run: whether it can be offered at all,
+ * and if not, which of the three reasons it is. This is application judgement and not the run's —
+ * the run does not exist yet — so it lives beside the other sentences rather than in the runtime.
+ */
+export interface ModelOffer {
+	available: boolean;
+	/** The one sentence under the button, offered or refused. */
+	reason: string;
+	/** The cost, stated before a reader waits for it. Empty when the offer is refused. */
+	cost: string;
+}
+
+export function modelOffer(args: {
+	workers: boolean;
+	dated: number;
+	codons: number | null;
+	/** The cap `runDating` refuses above (`DATING_NEURAL_MAX_TAXA`). */
+	maxTaxa: number;
+}): ModelOffer {
+	const { workers, dated, codons, maxTaxa } = args;
+	if (!workers) {
+		return {
+			available: false,
+			reason: 'This browser has no Web Workers, so the model pass has nowhere to run that can be cancelled.',
+			cost: ''
+		};
+	}
+	if (dated > maxTaxa) {
+		return {
+			available: false,
+			reason:
+				`${dated} dated sequences is more than the ${maxTaxa} the model-based estimators are run at. The ` +
+				`reference stops at the same number and falls back to the ordinary fit without saying so; this build ` +
+				`refuses, because the covariance the fallback does not build is the whole difference between the two ` +
+				`answers.`,
+			cost: ''
+		};
+	}
+	const sites = codons && Number.isFinite(codons) ? `${codons.toLocaleString()} codons` : 'every codon';
+	return {
+		available: true,
+		reason:
+			'The two model-based estimators need a taxon-by-taxon attention matrix and per-taxon embeddings, which ' +
+			'only the dating graph emits. Running them loads one.',
+		cost:
+			`It is a second forward pass over ${sites} — every site, not the variable ones — through a 7.3 MB graph ` +
+			`this page downloads once. Measured at four threads on the development machine, 143 sequences × 981 ` +
+			`codons took 7.3 seconds after the download; the model-free estimate above takes about a third of a ` +
+			`second and loads nothing. It runs in its own worker and can be cancelled.`
+	};
+}
 
 function warningFor(run: DatingResult, code: string): { message: string } | null {
 	return run.warnings.find((w) => w.code === code) ?? null;
@@ -180,10 +285,26 @@ function warningFor(run: DatingResult, code: string): { message: string } | null
 
 type ModelRecord = Record<string, number | number[] | string | boolean | null>;
 
-function modelOf(run: DatingResult, key: 'ols' | 'spline'): ModelRecord | null {
+export type ModelKey = 'ols' | 'pgls' | 'spline';
+
+function modelOf(run: DatingResult, key: ModelKey): ModelRecord | null {
 	const value = (run.record as Record<string, unknown>)[key];
 	return value && typeof value === 'object' ? (value as ModelRecord) : null;
 }
+
+/** The English name of each fit, used in the table, the sentences and the provenance alike. */
+export const MODEL_NAMES: Record<ModelKey, string> = {
+	ols: 'Root-to-tip OLS (TempEst)',
+	pgls: 'Attention PGLS',
+	spline: 'Restricted spline clock'
+};
+
+/** The short name, for running text where the full one would read as a citation. */
+export const MODEL_SHORT: Record<ModelKey, string> = {
+	ols: 'the ordinary fit',
+	pgls: 'the generalised fit',
+	spline: 'the spline'
+};
 
 function n(model: ModelRecord | null, key: string): number {
 	const v = model?.[key];
@@ -224,6 +345,46 @@ export function isUnbounded(ci: readonly number[] | null): boolean {
 	return Boolean(ci && ci.length === 2 && !Number.isFinite(ci[0]) && Number.isFinite(ci[1]));
 }
 
+/** True when an interval is `[x, x]` — a point estimate wearing an interval's shape. */
+export function isDegenerate(ci: readonly number[] | null): boolean {
+	return Boolean(ci && ci.length === 2 && Number.isFinite(ci[0]) && ci[0] === ci[1]);
+}
+
+export interface HeadlineModel {
+	key: ModelKey;
+	/** The record block itself, so every caller reads one object rather than re-branching. */
+	model: ModelRecord;
+	/** True when the page quotes something other than the reference's own `active_model`. */
+	departed: boolean;
+	/** The model the reference selected, always — named even when it is the one quoted. */
+	activeKey: ModelKey;
+}
+
+/**
+ * WHICH FIT THE PAGE QUOTES. The rule, in full: quote `active_model`, unless its 95 % interval is
+ * a point estimate wearing an interval's shape, in which case quote the ordinary fit instead and
+ * say so. Only the spline ever trips the second clause, and only because its bootstrap is dead
+ * upstream (`DATING_SPLINE_NO_INTERVAL`); a fit whose interval cannot be argued with is not the
+ * one to headline.
+ *
+ * It is deliberately NOT "always OLS". With the model on TN93 divergences the reference selects
+ * PGLS and its Fieller interval is finite and has width, so the page quotes it and agrees with the
+ * CLI's top-level `t_mrca` — which is the outcome a reader diffing the two would expect, and the
+ * one the phase-3 rule could not produce.
+ */
+export function headlineOf(run: DatingResult): HeadlineModel | null {
+	const activeKey = (String(run.record.active_model ?? 'ols') as ModelKey) || 'ols';
+	const ols = modelOf(run, 'ols');
+	const active = modelOf(run, activeKey) ?? ols;
+	const usable = (m: ModelRecord | null) =>
+		Boolean(m && Number.isFinite(Number(m.t_mrca)) && !isDegenerate(pair(m, 'ci_mrca')));
+	if (usable(active)) return { key: activeKey, model: active as ModelRecord, departed: false, activeKey };
+	if (ols && Number.isFinite(Number(ols.t_mrca))) {
+		return { key: 'ols', model: ols, departed: activeKey !== 'ols', activeKey };
+	}
+	return active ? { key: activeKey, model: active, departed: false, activeKey } : null;
+}
+
 /**
  * The root, in words. `root_description` is the reference's own provenance token
  * (`explicit_root_CONSENSUS`, `time_decay_consensus_root (γ=3.0030)`), not a sentence, so it is
@@ -231,6 +392,15 @@ export function isUnbounded(ci: readonly number[] | null): boolean {
  */
 export function rootSentence(run: DatingResult): string {
 	const d = run.rootDescription ?? '';
+	// Phase 4's root case, and it is tested FIRST because it has no `rootCase` at all: under
+	// `--distance-mode latent` there is no consensus and no named sequence, only a position the
+	// model found inside the convex hull of its own representation of the alignment
+	// (dating.py:2586-2599). `rootCase` is null there, and the γ branch below would otherwise
+	// describe it as a time-decay consensus, which is a different object entirely.
+	if (d.startsWith('latent_convex_hull')) {
+		const alpha = /α=([0-9.eE+-]+)/.exec(d)?.[1];
+		return `a root the model placed inside its own representation of your sequences${alpha ? `, rescaled at α = ${alpha} substitutions per site per latent unit` : ''}`;
+	}
 	if (run.rootCase === 1) {
 		const name = d.startsWith('explicit_root_') ? d.slice('explicit_root_'.length) : d;
 		return `${name}, the sequence you named as the root`;
@@ -283,44 +453,81 @@ export function holdoutSentence(run: DatingResult, units: TimeUnits): string | n
 	);
 }
 
-/** Everything the reader is told about the estimate, in `dl.stats`'s six-entry idiom. */
+/**
+ * Everything the reader is told about the estimate, in `dl.stats`'s six-entry idiom, off the
+ * HEADLINE fit rather than off OLS unconditionally.
+ *
+ * The fourth entry is the one that changes shape, and it has to: the OLS record carries `p_value`
+ * from an F statistic and the PGLS record does not carry one at all (dating.py:1441-1460 returns
+ * neither an F nor a p for the generalised fit). Printing an em dash there would read as a missing
+ * number rather than as a fit that does not produce one, so the generalised fit shows Pagel's λ*
+ * instead — which is the quantity that says how much of the residual covariance the model called
+ * phylogenetic, and therefore the honest answer to "how far is this from the line above it".
+ */
 export function statEntries(run: DatingResult, units: TimeUnits): StatEntry[] {
-	const ols = modelOf(run, 'ols');
-	const shown = pair(ols, ciKey(run));
+	const head = headlineOf(run);
+	const m = head?.model ?? modelOf(run, 'ols');
+	const shown = pair(m, ciKey(run)) ?? pair(m, 'ci_mrca');
 	const label = ciMethodOf(run) === 'delta' ? 'delta method' : 'Fieller';
 	const word = ancestorWord(units);
-	return [
+	const rate = Number.isFinite(n(m, 'mu')) ? n(m, 'mu') : n(m, 'rate_ancestral');
+	const entries: StatEntry[] = [
 		{
 			label: word[0].toUpperCase() + word.slice(1),
-			value: yr(n(ols, 't_mrca')),
+			value: yr(n(m, 't_mrca')),
 			qualifier: `95 % interval (${label}): ${intervalText(shown, units)}`
 		},
 		{
 			label: 'Clock rate',
-			value: sci(n(ols, 'mu')),
-			qualifier: `substitutions per site per ${unitWord(units)}, ± ${sci(n(ols, 'se_mu'))}`
+			value: sci(rate),
+			qualifier: `substitutions per site per ${unitWord(units)}${Number.isFinite(n(m, 'se_mu')) ? `, ± ${sci(n(m, 'se_mu'))}` : ''}`
 		},
 		{
 			label: 'R²',
-			value: num(n(ols, 'r2'), 3),
-			qualifier: `over ${n(ols, 'n')} sequences in the fit`
-		},
-		{
+			value: num(n(m, 'r2'), 3),
+			qualifier:
+				head?.key === 'pgls'
+					? `generalised (Buse), over ${n(m, 'n')} sequences in the fit`
+					: `over ${n(m, 'n')} sequences in the fit`
+		}
+	];
+	if (head?.key === 'pgls') {
+		entries.push({
+			label: 'Pagel λ*',
+			value: num(n(m, 'pagel_lambda'), 4),
+			qualifier: 'how much of the residual covariance the model read as shared ancestry, by profile REML'
+		});
+	} else {
+		entries.push({
 			label: 'Slope p',
-			value: sci(n(ols, 'p_value'), 3),
+			value: sci(n(m, 'p_value'), 3),
 			qualifier: 'from the F statistic on 1 and n − 2 degrees of freedom'
-		},
+		});
+	}
+	entries.push(
 		{
 			label: 'Residual RMSE',
-			value: sci(n(ols, 'rmse')),
+			value: sci(n(m, 'rmse')),
 			qualifier: 'substitutions per site, about the fitted line'
 		},
 		{
-			label: 'Root',
-			value: run.rootCase === 1 ? (run.rootDescription ?? '').replace('explicit_root_', '') : 'consensus',
+			label: 'Divergence measured to',
+			value: distanceModeOf(run) === 'latent' ? 'a latent root' : run.rootCase === 1 ? (run.rootDescription ?? '').replace('explicit_root_', '') : 'consensus',
 			qualifier: rootSentence(run)
 		}
-	];
+	);
+	return entries;
+}
+
+/** `'tn93' | 'latent'` — read off the record, never assumed from whether a model ran. */
+export function distanceModeOf(run: DatingResult): 'tn93' | 'latent' {
+	return String(run.record.distance_mode ?? 'tn93') === 'latent' ? 'latent' : 'tn93';
+}
+
+/** True when this run loaded the dating graph; the record's own `primaeon.model_pass` says so. */
+export function modelRan(run: DatingResult | null): boolean {
+	const p = (run?.record?.primaeon ?? {}) as Record<string, unknown>;
+	return p.model_pass != null;
 }
 
 /**
@@ -328,20 +535,77 @@ export function statEntries(run: DatingResult, units: TimeUnits): StatEntry[] {
  * root in the same breath, because the root is a choice and the date moves with it.
  */
 export function verdictSentence(run: DatingResult, units: TimeUnits): string {
-	const ols = modelOf(run, 'ols');
-	const ci = pair(ols, ciKey(run));
+	const head = headlineOf(run);
+	const m = head?.model ?? modelOf(run, 'ols');
+	const ci = pair(m, ciKey(run)) ?? pair(m, 'ci_mrca');
 	const label = ciMethodOf(run) === 'delta' ? 'delta method' : 'Fieller';
-	const fit = n(ols, 'n');
+	const fit = n(m, 'n');
 	const where = units === 'years' ? 'in' : 'at';
+	const rate = Number.isFinite(n(m, 'mu')) ? n(m, 'mu') : n(m, 'rate_ancestral');
 	const interval = isUnbounded(ci)
 		? `with a 95 % interval (${label}) that has no lower bound and an upper bound of ${yr(ci![1])}`
 		: `with a 95 % interval (${label}) from ${yr(ci?.[0] ?? NaN)} to ${yr(ci?.[1] ?? NaN)}`;
+	const which = head && head.key !== 'ols' ? `, by ${MODEL_SHORT[head.key]},` : '';
 	return (
-		`These ${fit} sequences share a common ancestor ${where} ${yr(n(ols, 't_mrca'))}, ${interval}. ` +
-		`The clock runs at ${sci(n(ols, 'mu'))} substitutions per site per ${unitWord(units)} and accounts for ` +
-		`${Math.round(n(ols, 'r2') * 100)} % of the spread in divergence (R² ${num(n(ols, 'r2'), 3)}). ` +
+		`These ${fit} sequences${which} share a common ancestor ${where} ${yr(n(m, 't_mrca'))}, ${interval}. ` +
+		`The clock runs at ${sci(rate)} substitutions per site per ${unitWord(units)} and accounts for ` +
+		`${Math.round(n(m, 'r2') * 100)} % of the spread in divergence (R² ${num(n(m, 'r2'), 3)}). ` +
 		`Divergence is measured to ${rootSentence(run)}.`
 	);
+}
+
+/**
+ * What the divergences on the y axis ARE, which phase 4 made a question. In a model-free run they
+ * are TN93 distances to a root and the sentence is short; under `--distance-mode latent` they are
+ * `α × ‖z_i − z_root‖` in the model's representation space, EVERY estimator is fitted against them
+ * (the ordinary one included), and the ancestor date above is therefore model-dependent even when
+ * the estimator quoting it is not. `DATING_LATENT_DIVERGENCES` is the runtime's version of this;
+ * the difference is that this one is a sentence in the section rather than a diagnostic in a strip.
+ */
+export function divergenceSentence(run: DatingResult, units: TimeUnits): string {
+	const lat = latentRootView(run);
+	if (!lat) {
+		return (
+			`Divergence is a TN93 distance from each sequence to ${rootSentence(run)}, computed in this ` +
+			`browser. No model is involved in it.`
+		);
+	}
+	return (
+		`Divergence here is not a sequence distance. The model placed a root inside the convex hull of ` +
+		`its own representation of your ${lat.n} sequences and every divergence below is the distance to ` +
+		`that root in that space, rescaled to substitutions per site by one slope (α = ${sci(lat.alpha)}) ` +
+		`fitted against the observed pairwise differences. That root's own correlation with ` +
+		`${axisWord(units)} is R = ${num(lat.r, 3)} (R² ${num(lat.r2, 3)}). Every estimator in the table ` +
+		`below is fitted against these divergences, the ordinary one included, which is what ` +
+		`\`--distance-mode auto\` resolves to once a dating graph is present and there is no tree.`
+	);
+}
+
+export interface LatentRootView {
+	alpha: number;
+	r: number;
+	r2: number;
+	n: number;
+	/** The reference's own `anchor_taxa`, in its own order (`np.argsort(-w)`). */
+	anchors: Array<{ taxon: string; weight: number; date: number }>;
+}
+
+/**
+ * `record.latent_root`, or null when the latent root did not run — which is TWO different facts and
+ * the section says which: no dating graph at all, or a reader who pinned `--distance-mode tn93` and
+ * asked for the covariance without the root.
+ */
+export function latentRootView(run: DatingResult | null): LatentRootView | null {
+	const l = (run?.record?.latent_root ?? null) as Record<string, unknown> | null;
+	if (!l || typeof l !== 'object') return null;
+	const anchors = Array.isArray(l.anchor_taxa) ? (l.anchor_taxa as Array<Record<string, unknown>>) : [];
+	return {
+		alpha: Number(l.alpha),
+		r: Number(l.temporal_r),
+		r2: Number(l.temporal_r2),
+		n: Number((run?.record?.taxa_count as number) ?? anchors.length),
+		anchors: anchors.map((a) => ({ taxon: String(a.taxon), weight: Number(a.weight), date: Number(a.date) }))
+	};
 }
 
 /**
@@ -357,11 +621,17 @@ export function clockNote(run: DatingResult, units: TimeUnits): string | null {
 	const p = n(spline, 'p_f_test');
 	const daic = n(spline, 'delta_aic');
 	const df = n(spline, 'n') - 3;
+	// DATING Q10. `dating.py:2844` hands the spline the model's covariance the moment the model
+	// runs, so the same curvature test on the same divergences is a generalised fit here and an
+	// ordinary one in a model-free run. On korber's TN93 divergences that moves its ancestor date
+	// from 1938.77 to 1864.55 and flips `is_nonlinear_preferred` from true to false — the test's
+	// ANSWER changes, not only its numbers — so the clause has to be in the sentence that reports it.
+	const gls = modelRan(run) ? ' The test was fitted against the model’s covariance, not against independent residuals, so it is a generalised fit here and an ordinary one in a model-free run; the two are not comparable.' : '';
 	if (!preferred) {
 		return (
 			`The automatic clock test looked for curvature and did not find enough to prefer it: ` +
-			`F = ${num(f)} on 1 and ${df} d.f., p = ${num(p, 4)}, ΔAIC = ${signed(daic)}. The straight line above is ` +
-			`the model the test kept.`
+			`F = ${num(f)} on 1 and ${df} d.f., p = ${num(p, 4)}, ΔAIC = ${signed(daic)}. The straight line is ` +
+			`the model the test kept.${gls}`
 		);
 	}
 	const ratio = n(spline, 'rate_ratio');
@@ -373,7 +643,7 @@ export function clockNote(run: DatingResult, units: TimeUnits): string | null {
 		`p = ${num(p, 4)}, ΔAIC = ${signed(daic)}). That model puts the ${ancestorWord(units)} at ${yr(n(spline, 't_mrca'))}. ` +
 		`This build computes no interval for it — the reference's own bootstrap raises on every replicate — so the ` +
 		`estimate above, from the model the test rejects, is the one quoted, because it is the one that can be ` +
-		`argued with.`
+		`argued with.${gls}`
 	);
 }
 
@@ -388,7 +658,7 @@ export function estimatorRows(run: DatingResult, units: TimeUnits): EstimatorRow
 	const method = ciMethodOf(run) === 'delta' ? 'delta' : 'Fieller';
 	const rows: EstimatorRow[] = [
 		{
-			name: 'Root-to-tip OLS (TempEst)',
+			name: MODEL_NAMES.ols,
 			date: yr(n(ols, 't_mrca')),
 			interval: `${intervalText(pair(ols, ciKey(run)), units)} (${method})`,
 			rate: sci(n(ols, 'mu')),
@@ -397,20 +667,47 @@ export function estimatorRows(run: DatingResult, units: TimeUnits): EstimatorRow
 			built: true
 		}
 	];
+	// The generalised fit sits directly under the ordinary one because the pair is the comparison a
+	// reader is being asked to make: same response vector, same design matrix, one of them told that
+	// closely related sequences are not independent observations.
+	const pgls = modelOf(run, 'pgls');
+	if (pgls) {
+		const g = n(pgls, 'fieller_g');
+		const lam = n(pgls, 'pagel_lambda');
+		const attenuated = run.warnings.some((w) => w.code === 'DATING_CLADE_ATTENUATED');
+		const notes: string[] = [];
+		if (Number.isFinite(lam)) notes.push(`Pagel λ* = ${num(lam, 4)}`);
+		if (Number.isFinite(g) && g >= 1) notes.push(`slope not distinguishable from zero (Fieller g = ${num(g)} ≥ 1)`);
+		if (attenuated) notes.push('clade attenuated: kept out of the headline and out of the averaged row');
+		rows.push({
+			name: MODEL_NAMES.pgls,
+			date: yr(n(pgls, 't_mrca')),
+			interval: `${intervalText(pair(pgls, ciKey(run)), units)} (${method})`,
+			rate: sci(n(pgls, 'mu')),
+			r2: num(n(pgls, 'r2'), 3),
+			note: notes.join('; ') || null,
+			built: true
+		});
+	}
 	if (spline) {
 		const degenerate = (() => {
 			const ci = pair(spline, 'ci_mrca');
 			return Boolean(ci && ci[0] === ci[1]);
 		})();
 		rows.push({
-			name: 'Restricted spline clock',
+			name: MODEL_NAMES.spline,
 			date: yr(n(spline, 't_mrca')),
 			interval: degenerate
 				? 'not computed — the reference’s bootstrap raises on every replicate, so its interval collapses to the point estimate'
 				: intervalText(pair(spline, 'ci_mrca'), units),
 			rate: sci(n(spline, 'rate_ancestral')),
 			r2: num(n(spline, 'r2'), 3),
-			note: spline.is_nonlinear_preferred === true ? 'the model the curvature test selected' : 'tested and not preferred',
+			note: [
+				spline.is_nonlinear_preferred === true ? 'the model the curvature test selected' : 'tested and not preferred',
+				modelRan(run) ? 'fitted against the model’s covariance (dating.py:2844), so not the spline a model-free run draws' : null
+			]
+				.filter(Boolean)
+				.join('; '),
 			built: true
 		});
 	}
@@ -440,6 +737,130 @@ export function estimatorRows(run: DatingResult, units: TimeUnits): EstimatorRow
 	return rows;
 }
 
+/**
+ * WHY THE THREE ESTIMATES DIFFER, IN THIS RUN'S OWN NUMBERS — the paragraph that replaces averaging
+ * them.
+ *
+ * The reference's record presents them side by side and says nothing about the relationship; its
+ * `selected_clock` sentence names a winner without naming a margin, and its `ensemble` block
+ * averages whichever of them happen to have an interval with width. Neither is an explanation. What
+ * a reader needs is the size of the disagreement and its cause, and on this pillar the cause is
+ * always one of three things, all of them readable off the record:
+ *
+ *   1. THE GENERALISED FIT DEFLATED THE RATE. `mu_pgls / mu_ols` is the reference's own `attr`
+ *      (dating.py:2884), and when the fit is clade attenuated the same test bars it from the
+ *      averaged row as well, so a record can carry a fit that appears in neither.
+ *   2. THE GENERALISED FIT'S SLOPE IS NOT DISTINGUISHABLE FROM ZERO. Fieller g >= 1 gives an
+ *      interval with no lower bound, and the reference then prefers the ordinary fit
+ *      (dating.py:2969-2971). On korber under latent divergences that is exactly what happens:
+ *      g = 1.72 against the ordinary fit's 0.173.
+ *   3. THE CURVATURE TEST PREFERRED A SPLINE WHOSE INTERVAL IS DEAD. Phase 3's own case.
+ *
+ * Returns null on a model-free run with no spline, where there is only one estimate and nothing to
+ * reconcile.
+ */
+export function agreementNote(run: DatingResult, units: TimeUnits): string | null {
+	const head = headlineOf(run);
+	if (!head) return null;
+	const ols = modelOf(run, 'ols');
+	const pgls = modelOf(run, 'pgls');
+	const spline = modelOf(run, 'spline');
+	const dates: Array<{ key: ModelKey; t: number }> = [];
+	for (const key of ['ols', 'pgls', 'spline'] as ModelKey[]) {
+		const m = key === 'ols' ? ols : key === 'pgls' ? pgls : spline;
+		const t = n(m, 't_mrca');
+		if (m && Number.isFinite(t)) dates.push({ key, t });
+	}
+	if (dates.length < 2) return null;
+
+	const lo = dates.reduce((a, b) => (a.t <= b.t ? a : b));
+	const hi = dates.reduce((a, b) => (a.t >= b.t ? a : b));
+	const word = unitWord(units);
+	const parts: string[] = [
+		`The ${dates.length} fits below do not agree, and the page does not average them: they span ` +
+			`${yr(lo.t)} to ${yr(hi.t)}, ${num(hi.t - lo.t, 1)} ${word}s apart.`
+	];
+
+	if (pgls && ols) {
+		const attr = n(pgls, 'mu') / n(ols, 'mu');
+		const g = n(pgls, 'fieller_g');
+		parts.push(
+			`${MODEL_SHORT.pgls[0].toUpperCase()}${MODEL_SHORT.pgls.slice(1)} is the same straight line told that ` +
+				`closely related sequences are not independent observations: its errors are correlated by a covariance ` +
+				`built from the model's own cross-taxa attention and per-taxon embeddings, with Pagel's ` +
+				`λ* = ${num(n(pgls, 'pagel_lambda'), 4)} estimated by profile REML. It puts the clock at ` +
+				`${sci(n(pgls, 'mu'))} against the ordinary fit's ${sci(n(ols, 'mu'))}` +
+				(Number.isFinite(attr) && attr > 0 && attr < 1 ? `, ${num(1 / attr, 1)} times slower` : '') +
+				`, and explains ${num(n(pgls, 'r2'), 3)} of the variance against ${num(n(ols, 'r2'), 3)}.`
+		);
+		if (run.warnings.some((w) => w.code === 'DATING_CLADE_ATTENUATED')) {
+			parts.push(
+				`That deflation with a worse fit is the reference's clade-attenuation signature — a sample whose ` +
+					`phylogenetic structure and whose sampling dates are confounded, so the generalised fit attributes the ` +
+					`temporal signal to shared ancestry. It is disqualified from the headline AND from the averaged row ` +
+					`(dating.py:2884-2891, :2905), which is why it can appear in neither.`
+			);
+		} else if (Number.isFinite(g) && g >= 1) {
+			parts.push(
+				`Its slope is not distinguishable from zero at 95 % (Fieller g = ${num(g)} ≥ 1), so its interval has no ` +
+					`lower bound and its ancestor ${units === 'years' ? 'date' : 'time'} of ${yr(n(pgls, 't_mrca'))} is not ` +
+					`one you can argue with. The ordinary fit answers, and that is the reference's own rule ` +
+					`(dating.py:2969-2971), not this page's preference.`
+			);
+		}
+	}
+
+	if (head.departed) {
+		const active = head.activeKey;
+		parts.push(
+			`The reference selected ${MODEL_SHORT[active]} and this page quotes ${MODEL_SHORT[head.key]} instead, for ` +
+				`one reason: ${MODEL_SHORT[active]}'s 95 % interval is its point estimate repeated, because its bootstrap ` +
+				`raises on every replicate upstream. An estimate that cannot be argued with is not the one to headline.`
+		);
+	} else if (head.key !== 'ols' && ols) {
+		parts.push(
+			`The reference selected ${MODEL_SHORT[head.key]} and the ${ancestorWord(units)} above is therefore the same ` +
+				`number the command line prints as \`t_mrca\`; the ordinary fit's ${yr(n(ols, 't_mrca'))} is in the table ` +
+				`below, not hidden behind it.`
+		);
+	}
+	return parts.join(' ');
+}
+
+/**
+ * The one line a reader needs when the model is switched on and the ORDINARY fit moves — which is
+ * the most surprising thing in this phase, because nothing about that estimator changed. Its input
+ * did: `--distance-mode auto` swaps TN93 distances for the latent root's. Measured on the flagship
+ * example, 1893.9 becomes 1926.8 and the rate halves.
+ *
+ * It compares two runs the reader made in this session; there is no stored history and no attempt
+ * to reconstruct one, because a comparison between a run you watched and a run you did not is not a
+ * comparison a page should make for you.
+ */
+export function modeShiftSentence(
+	current: DatingResult | null,
+	prior: DatingResult | null,
+	units: TimeUnits
+): string | null {
+	if (!current?.ok || !prior?.ok) return null;
+	const a = distanceModeOf(prior);
+	const b = distanceModeOf(current);
+	if (a === b) return null;
+	const before = modelOf(prior, 'ols');
+	const after = modelOf(current, 'ols');
+	const t0 = n(before, 't_mrca');
+	const t1 = n(after, 't_mrca');
+	if (!Number.isFinite(t0) || !Number.isFinite(t1)) return null;
+	const name = (mode: 'tn93' | 'latent') => (mode === 'latent' ? 'the latent root' : 'TN93 distances');
+	return (
+		`The ordinary fit moved from ${yr(t0)} to ${yr(t1)} — ${num(Math.abs(t1 - t0), 1)} ${unitWord(units)}s — between ` +
+		`your last two runs, and its arithmetic did not change. Its INPUT did: divergence was measured to ` +
+		`${name(a)} and is now measured to ${name(b)}, and the rate went from ${sci(n(before, 'mu'))} to ` +
+		`${sci(n(after, 'mu'))}. The two are not one estimator disagreeing with itself; they are two response ` +
+		`vectors.`
+	);
+}
+
 /** The whole section's view model. One call from the component. */
 export function datingView(run: DatingResult | null, units: TimeUnits): DatingView | null {
 	if (!run) return null;
@@ -453,7 +874,15 @@ export function datingView(run: DatingResult | null, units: TimeUnits): DatingVi
 		estimators: [],
 		clockNote: null,
 		unbounded: false,
-		units
+		units,
+		headline: 'ols',
+		activeModel: (String(run.record.active_model ?? 'ols') as ModelKey) || 'ols',
+		selectedClock: run.selectedClock ?? '',
+		modelRan: modelRan(run),
+		distanceMode: distanceModeOf(run),
+		divergence: '',
+		agreement: null,
+		latent: latentRootView(run)
 	};
 	if (!run.ok) {
 		const code = run.refusal ?? 'DATING_ALIGNMENT_EMPTY';
@@ -469,6 +898,10 @@ export function datingView(run: DatingResult | null, units: TimeUnits): DatingVi
 	const ols = modelOf(run, 'ols');
 	const status = String(ols?.status ?? '');
 	if (status !== 'OK' || !Number.isFinite(n(ols, 't_mrca'))) {
+		// The ordinary fit is the floor: if IT has no answer, nothing above it does either, whichever
+		// model the reference selected. A generalised fit on the same failed response vector is not a
+		// second opinion, and offering one would be the plausible wrong number this pillar exists to
+		// avoid.
 		const code = status === 'NON_POSITIVE_RATE' ? 'DATING_NON_POSITIVE_RATE' : 'DATING_MRCA_AFTER_EARLIEST_SAMPLE';
 		return {
 			...base,
@@ -480,7 +913,8 @@ export function datingView(run: DatingResult | null, units: TimeUnits): DatingVi
 			}
 		};
 	}
-	const ci = pair(ols, ciKey(run));
+	const head = headlineOf(run);
+	const ci = pair(head?.model ?? ols, ciKey(run));
 	return {
 		...base,
 		ok: true,
@@ -490,7 +924,10 @@ export function datingView(run: DatingResult | null, units: TimeUnits): DatingVi
 		stats: statEntries(run, units),
 		estimators: estimatorRows(run, units),
 		clockNote: clockNote(run, units),
-		unbounded: isUnbounded(ci)
+		unbounded: isUnbounded(ci),
+		headline: head?.key ?? 'ols',
+		divergence: divergenceSentence(run, units),
+		agreement: agreementNote(run, units)
 	};
 }
 
@@ -527,7 +964,11 @@ export interface DatingFigureModel {
  */
 export function figureModel(run: DatingResult | null): DatingFigureModel | null {
 	if (!run?.ok || run.rows.length === 0) return null;
-	const ols = modelOf(run, 'ols');
+	// The line and the bracket are the HEADLINE fit's, so the figure and the sentence above it
+	// cannot quote different numbers. The points and the curve are the ACTIVE model's, because
+	// `fitted_divergence` in the record is computed from whichever model the reference selected.
+	const head = headlineOf(run);
+	const ols = head?.model ?? modelOf(run, 'ols');
 	const spline = modelOf(run, 'spline');
 	const points: DatingPoint[] = run.rows.map((r) => ({
 		taxon: r.taxon,

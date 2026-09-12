@@ -44,12 +44,13 @@
 	import { digest, readText } from '$lib/analyze/inputs';
 	import { setHandoff, takeHandoff } from '$lib/handoff';
 	import { clockPreview } from '$lib/time/clock';
-	import { crossCheckSentence, datingView, figureModel, predictionCaveat, taxonRows } from '$lib/time/dating';
+	import { crossCheckSentence, datingView, figureModel, modeShiftSentence, modelOffer, predictionCaveat, taxonRows } from '$lib/time/dating';
 	import { DATING_CSV_NAME, DATING_DOWNLOAD_NOTE, DATING_JSON_NAME, datingCsv, datingJson } from '$lib/time/datingDownloads';
 	import DatingSection from '$lib/time/DatingSection.svelte';
 	import TaxonDatingTable from '$lib/time/TaxonDatingTable.svelte';
-	import { datingClient, workersAvailable } from '$lib/workers/clients';
-	import type { DatingRequest, DatingResponse } from '$lib/workers/protocol';
+	import { datingClient, datingModelClient, workersAvailable } from '$lib/workers/clients';
+	import type { DatingModelRequest, DatingRequest, DatingResponse } from '$lib/workers/protocol';
+	import { DATING_NEURAL_MAX_TAXA } from '@veg/hyphaeon-runtime/dating';
 	import {
 		diagnosis,
 		pageState,
@@ -119,6 +120,33 @@
 	let datingFailure = $state<string | null>(null);
 	let datingAbort: AbortController | null = null;
 
+	// ---- the model-based half (phase 4) ----------------------------------------------------------
+	/**
+	 * `--distance-mode`, which with a model present is a decision about the WHOLE record and not
+	 * just about which estimators exist: `auto` resolves to `latent` (dating.py:2520-2523) and then
+	 * every estimator, the ordinary one included, is fitted against the latent root's divergences.
+	 * The reader gets the choice because the reference has it and because the two answers are both
+	 * defensible; the page's job is to name which one it is showing.
+	 */
+	let distanceMode = $state<'auto' | 'tn93'>('auto');
+	/** What the LAST estimate did. Not a preference — the two runs produce different records. */
+	let usedModel = $state(false);
+	/**
+	 * The previous run, kept for exactly one sentence: when the distance mode changed between two
+	 * runs the reader made, the ordinary fit moves without its arithmetic changing, and that is the
+	 * single most surprising consequence of turning the model on. It is NOT persisted — a comparison
+	 * between a run you watched and a run you did not is not one this page should make for you.
+	 */
+	let priorDating = $state<DatingResult | null>(null);
+	/**
+	 * Whether this build ships a dating graph, read from `models/manifest.json` ONCE, and only after
+	 * an alignment with usable dates is loaded — so the empty route still requests nothing at all.
+	 * `'absent'` is a fact about the build and is said in place; it is not a failure.
+	 */
+	let modelProbe = $state<'idle' | 'checking' | 'ready' | 'absent' | 'failed'>('idle');
+	let modelGraph = $state<{ variant: string; file: string; sha256: string } | null>(null);
+	let modelProbeNote = $state<string | null>(null);
+
 	// ---- derived: the whole review, re-derived on every edit --------------------------------------
 	const names = $derived(alignmentText ? alignmentHeaders(alignmentText) : null);
 	const taxa = $derived(alignmentText ? taxaForDates(alignmentText) : []);
@@ -159,6 +187,17 @@
 	const datingFigure = $derived(figureModel(dating));
 	const datingTaxa = $derived(taxonRows(dating, excludedTaxa));
 	const datingCaveat = $derived(predictionCaveat(dating, ingest?.time_units ?? 'years'));
+	/** What can be offered before a run, and the honest reason when nothing can. */
+	const offer = $derived(
+		modelOffer({
+			workers: workersAvailable(),
+			dated: ingest?.coverage.dated ?? 0,
+			codons: null,
+			maxTaxa: DATING_NEURAL_MAX_TAXA
+		})
+	);
+	/** One sentence, and only when the reader's last two runs measured divergence differently. */
+	const modeShift = $derived(modeShiftSentence(dating, priorDating, ingest?.time_units ?? 'years'));
 	/**
 	 * The one line that stops the page printing two ancestor numbers with nothing between them. The
 	 * width it compares against is the interval section 3 quotes, so "they disagree by more than the
@@ -296,7 +335,9 @@
 			rootTaxon,
 			clockModel: 'auto',
 			ciMethod: 'fieller',
-			excludedTaxa: [...excludedTaxa]
+			excludedTaxa: [...excludedTaxa],
+			useModel: usedModel,
+			distanceMode
 		};
 	}
 
@@ -390,7 +431,42 @@
 			datingRoot = stored.options.datingRoot;
 			rootTaxon = stored.options.rootTaxon;
 			excludedTaxa = [...stored.options.excludedTaxa];
+			distanceMode = stored.options.distanceMode === 'tn93' ? 'tn93' : 'auto';
+			usedModel = stored.options.useModel;
 			dating = stored.dating;
+		})();
+	});
+
+	/**
+	 * Whether this build ships a dating graph. One same-origin read of `models/manifest.json`
+	 * (about 1.5 kB), and only once the page has an alignment whose dates are usable — so the empty
+	 * route, and a route whose dates are not ready, still request literally nothing. The manifest
+	 * names no graph on a build that did not export one, and `'absent'` is then said in place rather
+	 * than discovered by a reader who pressed a button.
+	 */
+	$effect(() => {
+		if (!ingest || !gate.ready || modelProbe !== 'idle') return;
+		modelProbe = 'checking';
+		void (async () => {
+			try {
+				const res = await fetch(`${base}/models/manifest.json`, { cache: 'force-cache' });
+				if (!res.ok) throw new Error(`models/manifest.json answered ${res.status}`);
+				const doc = (await res.json()) as {
+					variants?: Record<string, { taxa_onnx_sha256?: string; taxa_onnx_file?: string }>;
+					default_variant?: string;
+				};
+				const name = doc.default_variant ?? Object.keys(doc.variants ?? {})[0] ?? 'general';
+				const v = doc.variants?.[name];
+				if (!v?.taxa_onnx_sha256) {
+					modelProbe = 'absent';
+					return;
+				}
+				modelGraph = { variant: name, file: v.taxa_onnx_file ?? `${name}_taxa.onnx`, sha256: v.taxa_onnx_sha256 };
+				modelProbe = 'ready';
+			} catch (err) {
+				modelProbe = 'failed';
+				modelProbeNote = err instanceof Error ? err.message : String(err);
+			}
 		})();
 	});
 
@@ -407,6 +483,37 @@
 		if (datingRoot === 'unweighted') return 'unweighted_consensus';
 		if (datingRoot === 'earliest') return 'earliest';
 		return null;
+	}
+
+	/** The dated rows, in alignment order — the one payload both estimates share. */
+	function datedRows(): Array<{ taxon: string; value: number }> {
+		return (ingest?.rows ?? [])
+			.filter((r) => r.value != null && Number.isFinite(r.value))
+			.map((r) => ({ taxon: r.taxon, value: r.value as number }));
+	}
+
+	/**
+	 * What a finished run becomes. Both estimates land here, so the record's shape is identical
+	 * whichever produced it and the section reads one object.
+	 */
+	function adopt(response: DatingResponse, model: boolean) {
+		// The previous run is kept ONLY to compare distance modes; see `priorDating`'s declaration.
+		priorDating = dating;
+		usedModel = model;
+		dating = {
+			...response,
+			ranAtIso: new Date().toISOString(),
+			options: {
+				root: datingRoot,
+				rootTaxon,
+				clockModel: 'auto',
+				ciMethod: 'fieller',
+				excludedTaxa: [...excludedTaxa],
+				units: ingest?.time_units ?? 'years',
+				useModel: model,
+				distanceMode: model ? distanceMode : 'tn93'
+			}
+		};
 	}
 
 	async function estimateAncestor() {
@@ -434,18 +541,7 @@
 					datingProgress = total > 0 ? `${message} (${done} of ${total})` : message;
 				}
 			});
-			dating = {
-				...response,
-				ranAtIso: new Date().toISOString(),
-				options: {
-					root: datingRoot,
-					rootTaxon,
-					clockModel: 'auto',
-					ciMethod: 'fieller',
-					excludedTaxa: [...excludedTaxa],
-					units: ingest.time_units
-				}
-			};
+			adopt(response, false);
 		} catch (err) {
 			const e = err instanceof Error ? err : new Error(String(err));
 			// A cancel is not a failure, and it leaves whatever the previous run produced in place.
@@ -455,6 +551,58 @@
 			datingProgress = '';
 			datingAbort = null;
 		}
+	}
+
+	/**
+	 * The same run WITH the model: a forward pass through `<variant>_taxa.onnx` over every codon,
+	 * then the same estimator chain with the two matrices handed in. It is a second, separate action
+	 * and not a checkbox on the first, for two reasons the section states in words: it downloads a
+	 * 7.3 MB graph and takes seconds rather than milliseconds, and under the reference's own default
+	 * it changes what divergence MEANS, so it produces a different record rather than more fields on
+	 * the same one.
+	 */
+	async function estimateWithModel() {
+		if (!ingest || !gate.ready || !workersAvailable()) return;
+		datingFailure = null;
+		datingProgress = 'Preparing the dating graph…';
+		datingState = 'running';
+		datingAbort = new AbortController();
+		const request: DatingModelRequest = {
+			alignmentText,
+			alignmentName,
+			dates: datedRows(),
+			rootTaxon: rootArgument(),
+			excludedTaxa: [...excludedTaxa],
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			timeUnits: ingest.time_units,
+			manifestUrl: absolute('/models/manifest.json'),
+			modelsBase: absolute('/models/'),
+			ortBase: absolute('/ort/'),
+			numThreads: Math.max(1, Math.min(16, navigator?.hardwareConcurrency ?? 1)),
+			distanceMode
+		};
+		try {
+			const response = await datingModelClient().call<DatingResponse>(request, {
+				signal: datingAbort.signal,
+				onProgress: (_phase, done, total, message) => {
+					datingProgress = total > 0 ? `${message} (${done} of ${total})` : message;
+				}
+			});
+			adopt(response, true);
+		} catch (err) {
+			const e = err instanceof Error ? err : new Error(String(err));
+			if (e.name !== 'AbortError') datingFailure = e.message;
+		} finally {
+			datingState = 'idle';
+			datingProgress = '';
+			datingAbort = null;
+		}
+	}
+
+	/** A worker's `location` is the bundle, so every URL it is handed has to be absolute. */
+	function absolute(path: string): string {
+		return new URL(`${base}${path}`, globalThis.location?.href ?? 'http://localhost/').href;
 	}
 
 	function cancelEstimate() {
@@ -659,7 +807,7 @@
 	<section class="section" id="dating" aria-labelledby="dating-title">
 		<header class="section__head">
 			<h2 id="dating-title">Ancestor date</h2>
-			<p class="eyebrow"><code>hyphaeon dating --method ols --no-tree</code>, ported</p>
+			<p class="eyebrow"><code>hyphaeon dating --method all --no-tree</code>, ported</p>
 		</header>
 		{#if ingest}
 			{#if datingFailure}
@@ -679,8 +827,15 @@
 				{rootTaxon}
 				excludedCount={excludedTaxa.length}
 				{alignmentName}
+				{offer}
+				{modelProbe}
+				{modelGraph}
+				{modelProbeNote}
+				{modeShift}
+				bind:distanceMode
 				onRoot={setRoot}
 				onRun={() => void estimateAncestor()}
+				onRunModel={() => void estimateWithModel()}
 				onCancel={cancelEstimate}
 			/>
 		{:else}
@@ -744,14 +899,39 @@
 					<dt>Ancestor date</dt>
 					<dd>
 						{#if dating?.ok}
-							tree-free TN93, root {dating.rootDescription}
+							{datingResult?.distanceMode === 'latent' ? 'latent-root divergences' : 'tree-free TN93'}, root {dating.rootDescription}
 							<span class="qual"
-								>{dating.selectedClock}; the page quotes the straight line, because the spline's
-								interval is degenerate upstream. Excluded: {excludedTaxa.length === 0 ? 'none' : excludedTaxa.join(', ')}.
-								No root search, no bootstrap, no random numbers anywhere on this path.</span
+								>{dating.selectedClock}; the page quotes {datingResult?.headline === 'pgls'
+									? 'the generalised fit'
+									: datingResult?.headline === 'spline'
+										? 'the spline'
+										: 'the straight line'}{datingResult && datingResult.headline !== datingResult.activeModel
+									? ', because the selected model’s interval is degenerate upstream'
+									: ''}. Excluded: {excludedTaxa.length === 0 ? 'none' : excludedTaxa.join(', ')}. No root
+								search, no bootstrap, no random numbers anywhere on this path.</span
 							>
 						{:else}
-							not estimated<span class="qual">section 3 starts it; no model is loaded either way</span>
+							not estimated<span class="qual">section 3 starts it; the model-free estimate loads nothing</span>
+						{/if}
+					</dd>
+				</div>
+				<div>
+					<dt>Dating graph</dt>
+					<dd>
+						{#if dating?.model}
+							{dating.model.file} · {dating.model.variant}
+							<span class="qual mono">sha256 {dating.model.sha256.slice(0, 12)}…</span>
+							<span class="qual"
+								>{dating.model.taxa} sequences × {dating.model.codons} codons in {dating.model.passSeconds.toFixed(1)} s at
+								{dating.model.numThreads} thread{dating.model.numThreads === 1 ? '' : 's'}; every site, no taxon cap and
+								no duplicate pruning, which is what the reference's dating pass reads.</span
+							>
+						{:else if modelProbe === 'absent'}
+							not in this build<span class="qual">models/manifest.json declares no <span class="mono">taxa_onnx_sha256</span>, so the two model-based estimators cannot run</span>
+						{:else if modelProbe === 'ready' && modelGraph}
+							{modelGraph.file}, not loaded<span class="qual">section 3 offers it; nothing has been downloaded</span>
+						{:else}
+							not loaded<span class="qual">no graph has been requested on this route</span>
 						{/if}
 					</dd>
 				</div>
@@ -775,14 +955,20 @@
 		{/if}
 
 		<p class="note">
-			This page reads dates, shows what it read, and estimates an ancestor date from them without
-			loading a model. Two upstream quirks are replicated on purpose and worth naming here: the
+			This page reads dates, shows what it read, and estimates an ancestor date from them. The
+			default estimate loads nothing; the model-based one loads one graph and says so before it
+			does. Four upstream quirks are replicated on purpose and worth naming here: the
 			model-averaged row reads a deliberately skewed interval as a symmetric Gaussian one
-			(<span class="mono">dating.py:2916</span>), and the spline clock's own interval collapses to its
+			(<span class="mono">dating.py:2916</span>); the spline clock's own interval collapses to its
 			point estimate because its bootstrap raises on every replicate
-			(<span class="mono">dating.py:1917</span>). The temporal-selection pillar — per-site
-			trajectories, velocities and wave modes — is not ported; <span class="mono">hyphaeon temporal</span>
-			computes it today at the command line.
+			(<span class="mono">dating.py:1917</span>); loading the model turns that same spline into a
+			generalised fit on divergences that did not move
+			(<span class="mono">dating.py:2844</span>); and the ridge the command line prints is not the
+			ridge the generalised fit used — a fit built from Pagel's λ* ignores the ridge argument
+			entirely (<span class="mono">dating.py:1352-1357</span>), so this page shows λ* and never both
+			numbers under one word. The temporal-selection pillar — per-site trajectories, velocities and
+			wave modes — is not ported; <span class="mono">hyphaeon temporal</span> computes it today at the
+			command line.
 		</p>
 	</section>
 </article>

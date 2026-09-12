@@ -232,7 +232,34 @@ declare module '@veg/hyphaeon-runtime/dating' {
 	export const RECORD_KEYS: readonly string[];
 	/** What this build declines to estimate, and why, carried in the record so a page can say it. */
 	export const NOT_BUILT: ReadonlyArray<{ name: string; reason: string }>;
+	/** Phase 4: the two entries that appear ONLY when the dating graph did not run. */
+	export const NOT_BUILT_WITHOUT_MODEL: ReadonlyArray<{ name: string; reason: string }>;
+	export const DATING_DISTANCE_MODES: readonly string[];
+	/** `dating.py:2745`'s 1,500. Above it a model-based run is refused rather than downgraded. */
+	export const DATING_NEURAL_MAX_TAXA: number;
+	export function resolveDistanceMode(
+		requested: 'auto' | 'tn93' | 'latent',
+		hasModel: boolean
+	): { mode: 'tn93' | 'latent'; reason: string };
 
+	/**
+	 * What `runDatingModelPass` returns: the two matrices `splits.py:152-153` produces, over ALL
+	 * alignment taxa in alignment order and already divided. Declared here rather than in the main
+	 * module because the estimators that consume it live here.
+	 */
+	export interface DatingModelPass {
+		crossAttn: Float64Array;
+		taxaRepr: Float64Array;
+		taxa: string[];
+		N: number;
+		L: number;
+		embedDim: number;
+		rowLayers: number;
+		batchSize: number;
+		calls: number;
+		starsRewritten: number;
+		elapsedSeconds: number;
+	}
 	export interface DatingWarning {
 		code: string;
 		severity: string;
@@ -264,14 +291,21 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		coverage: Float64Array;
 		trainIndices: number[];
 		ols: Record<string, unknown>;
+		/** Phase 4: null unless the dating graph ran. */
+		pgls: Record<string, unknown> | null;
+		latent: Record<string, unknown> | null;
 		spline: Record<string, unknown> | null;
+		distanceMode: 'tn93' | 'latent';
+		distanceModeReason: string;
+		pagelLambda: number | null;
+		printedRidge: number | null;
 		active: Record<string, unknown>;
-		activeName: 'ols' | 'spline';
+		activeName: 'ols' | 'pgls' | 'spline';
 		selectedClock: string;
 		ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
 		methods: string[];
 		rootDescription: string;
-		rootCase: 1 | 2 | 3 | 4;
+		rootCase: 1 | 2 | 3 | 4 | null;
 		rootSequence: string | null;
 	}
 	/**
@@ -289,6 +323,16 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		excludedTaxa?: readonly string[];
 		clockModel?: 'auto' | 'linear' | 'spline';
 		ciMethod?: 'fieller' | 'delta' | 'linear';
+		/**
+		 * Phase 4. `auto` — the reference's default — resolves to `latent` when `neural` is supplied
+		 * and to `tn93` when it is not; `latent` without `neural` is a RangeError, because the latent
+		 * root is a position in the MODEL'S space and there is nothing to approximate it with.
+		 */
+		distanceMode?: 'auto' | 'tn93' | 'latent';
+		/** What `runDatingModelPass` returned, or null. Its absence is a fact, not an error. */
+		neural?: DatingModelPass | null;
+		/** Why `neural` is absent, when the caller knows; reported as DATING_MODEL_GRAPH_ABSENT. */
+		modelUnavailableReason?: string | null;
 		timeUnits?: string;
 		allowStopCodons?: boolean;
 		autoTrimTrailing?: boolean;
