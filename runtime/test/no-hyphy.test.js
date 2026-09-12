@@ -86,14 +86,17 @@ describe('HyPhy is not in this package', () => {
 		const pkg = JSON.parse(readFileSync(join(RUNTIME, 'package.json'), 'utf8'));
 		// The list is exact so a new subpath has to be added deliberately; './tn93-wasm' is the
 		// compiled TN93 loader, and 'vendor' ships with it because the module reads its own files.
-		// './dates' is PLAN-TEMPORAL.md phase 2's date ingestion layer, and it is a subpath for the
-		// same delivery reason the others are: the `/time` route reviews dates without a model, so
-		// it must be able to import that code without pulling in the ONNX surface through '.'.
+		// './dates' is PLAN-TEMPORAL.md phase 2's date ingestion layer, and './dating' is phase 3's
+		// model-free ancestor dating; both are subpaths for the same delivery reason the others are:
+		// the `/time` route reviews dates and dates an ancestor without a model, so it must be able
+		// to import that code without pulling in the ONNX surface through '.'. `dating-port.test.js`
+		// asserts the import graph under `src/dating/` cannot reach a session or a manifest at all.
 		expect(Object.keys(pkg.exports)).toEqual([
 			'.',
 			'./web',
 			'./node',
 			'./dates',
+			'./dating',
 			'./clock',
 			'./prescreen',
 			'./prescreen/scope',
