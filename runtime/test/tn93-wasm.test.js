@@ -136,6 +136,39 @@ describe.skipIf(!ready)('the compiled engine against the library JavaScript', ()
 	}, 120000);
 });
 
+describe.skipIf(!ready)('input the compiled tool would refuse', () => {
+	it('a stop-codon asterisk does not fail the run, and does not change a number', async () => {
+		// examples/korber_env_gp160.fasta carries four '*' in one of its 143 sequences. The tool drops
+		// characters outside its alphabet and then refuses the run because the surviving lengths
+		// differ; the library keeps them as unknowns and never notices. Before the rewrite this was a
+		// bare "tn93 exited 1" in the browser, on a real alignment.
+		const sequences = {
+			a: 'ACGTACGTACGT',
+			b: 'ACG*ACGTACGT',
+			c: 'ACGTACGTATGT'
+		};
+		const names = ['a', 'b', 'c'];
+		const compiled = tn93DistanceMatrix(sequences, names, await tn93WasmOptions());
+		const js = tn93DistanceMatrix(sequences, names);
+		expect(Array.from(compiled)).toEqual(Array.from(js));
+	}, 120000);
+
+	it('a ragged alignment is padded rather than refused', async () => {
+		// dataset.py pads shorter sequences with gaps on this path and says so; the library instead
+		// compares each pair over the shorter of the two. Both come to the same matrix, because a gap
+		// carries no weight, but only one of them is something the tool will accept.
+		const sequences = {
+			a: 'ACGTACGTACGT',
+			b: 'ACGTACGTAC',
+			c: 'ACGTACGTATGT'
+		};
+		const names = ['a', 'b', 'c'];
+		const compiled = tn93DistanceMatrix(sequences, names, await tn93WasmOptions());
+		const js = tn93DistanceMatrix(sequences, names);
+		expect(Array.from(compiled)).toEqual(Array.from(js));
+	}, 120000);
+});
+
 describe.skipIf(!ready)('saturation', () => {
 	it('refuses with the port\'s own error rather than scoring an omitted pair', async () => {
 		// Four sequences with no shared history: every pair reaches the tool's 1.0 threshold, so it

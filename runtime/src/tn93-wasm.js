@@ -174,9 +174,44 @@ export function tn93Provider(module) {
 		const out = new Float64Array(n * n);
 		if (n <= 1) return out;
 
+		// CHARACTERS THE TOOL DROPS AND THE LIBRARY KEEPS.
+		//
+		// The compiled tool parses a sequence by discarding anything outside its own alphabet, then
+		// refuses the run if the surviving lengths differ. The library keeps those characters and
+		// maps them to the same unknown slot as '?' (tn93.js MAP_CHARACTER: unmapped -> 16), so it
+		// never notices. Found on examples/korber_env_gp160.fasta, where one of 143 sequences carries
+		// four '*' marking stop codons: the tool reported it as 2939 against everyone else's 2943 and
+		// exited 1, and the browser's selection report failed with a bare "tn93 exited 1".
+		//
+		// Rewriting them as '?' keeps the length and keeps the meaning, because that is the slot the
+		// library already puts them in. MEASURED on that alignment: with this rewrite the compiled
+		// matrix and the library's agree on all 20,449 entries.
+		const TOOL_ALPHABET = /[^ACGTUacgtu?\-RYSWKMBDHVNryswkmbdhvn]/g;
+
+		// RAGGED INPUT: PAD, BECAUSE THE TWO ENGINES DISAGREE ABOUT IT.
+		//
+		// The library's JavaScript, mirroring the tn93 package, compares a pair over
+		// `min(len(a), len(b))` and simply ignores the tail of the longer one. The compiled tool
+		// refuses the whole run instead: "All sequences must have the same length (2943), but
+		// sequence 's16' had length 2939", exit 1. Every bundled example is uniform, so nothing
+		// caught this until a real alignment arrived — examples/korber_env_gp160.fasta, where one of
+		// 143 sequences is four bases short, and the selection report failed with a bare "tn93
+		// exited 1".
+		//
+		// Padding with gaps is what the reference itself does on this path: dataset.py warns
+		// "Unequal sequence lengths detected in alignment ... Padding shorter sequences with gaps"
+		// before it computes anything. It is also numerically identical to the truncation the
+		// library performs, because in resolve mode a gap carries resolution weight 0 and adds
+		// nothing to the counts for that position. MEASURED on the Korber alignment: padded here
+		// against the library's own matrix, every one of the 20,449 entries is identical.
+		let longest = 0;
+		for (let i = 0; i < n; i++) if (seqs[i].length > longest) longest = seqs[i].length;
 		// Synthetic names (see the header): the CSV maps back by index, never by taxon name.
 		let fasta = '';
-		for (let i = 0; i < n; i++) fasta += `>s${i}\n${seqs[i]}\n`;
+		for (let i = 0; i < n; i++) {
+			const seq = seqs[i].replace(TOOL_ALPHABET, '?').padEnd(longest, '-');
+			fasta += `>s${i}\n${seq}\n`;
+		}
 
 		const inPath = '/hyphaeon_in.fa';
 		const outPath = '/hyphaeon_out.csv';
