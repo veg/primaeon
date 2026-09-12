@@ -51,7 +51,7 @@
 	import { DATES_CSV_COLUMNS, datesCsv, datesJson, saveText } from '$lib/time/downloads';
 	import { buildRecord, fromStored } from '$lib/time/record';
 	import { alignmentHeaders, classifyDropped, isDateSource } from '$lib/time/sources';
-	import type { TimeSetOptions, TimeUnits } from '$lib/time/types';
+	import type { TimeSetOptions, TimeSetRecord, TimeUnits } from '$lib/time/types';
 	import DateReviewTable from '$lib/time/DateReviewTable.svelte';
 	import CoverageFigure from '$lib/time/CoverageFigure.svelte';
 	import ClockPreview from '$lib/time/ClockPreview.svelte';
@@ -290,7 +290,9 @@
 					// simply does not carry the id.
 				}
 			}
-			saveTimeSet({ ...record, id: recordId }).catch((err) => {
+			// $state.snapshot: the record is assembled from runes, and IndexedDB cannot clone a Proxy.
+			// This is the call site because the rune only exists in compiled Svelte files.
+			saveTimeSet($state.snapshot({ ...record, id: recordId }) as TimeSetRecord).catch((err) => {
 				storageNote = err instanceof Error ? err.message : String(err);
 			});
 		}, SAVE_INTERVAL_MS);

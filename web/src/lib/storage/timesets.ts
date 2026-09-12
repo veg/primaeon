@@ -31,6 +31,14 @@ export { QUOTA_MESSAGE, isAvailable, newRunId };
 /** Store a review; resolves to its id. `put`, so re-saving the same id replaces it. */
 export async function saveTimeSet(record: TimeSetRecord): Promise<string> {
 	if (!record.id) throw new Error('saveTimeSet: record.id is required');
+	// THE RECORD MUST ALREADY BE PLAIN. IndexedDB stores through the structured clone algorithm,
+	// which refuses a Proxy, and every value a Svelte 5 rune hands out is one: the write fails with
+	// "#<Object> could not be cloned", the caller's catch reports that the review was not saved, and
+	// nothing reaches the store. Measured on the /time route with the Korber alignment, where the id
+	// reached the address bar and `timesets` stayed empty. The un-proxying belongs at the call site,
+	// because `$state.snapshot` is a compiler rune and exists only inside .svelte and .svelte.ts —
+	// calling it from this plain module throws "$state is not defined" at runtime, which is the
+	// second way this same bug appeared.
 	const db = await openDb();
 	const tx = db.transaction(TIMESETS_STORE, 'readwrite');
 	await requestToPromise(tx.objectStore(TIMESETS_STORE).put(record));
