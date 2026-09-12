@@ -15,19 +15,32 @@
  * session.run, not a silent coercion. dist_matrix and mds_coords are float32. The busted head's
  * `mask` is a bool tensor, which onnxruntime takes as a Uint8Array of 0/1.
  *
- * OUTPUTS ARE REQUESTED BY NAME, AND ONLY THE ONES ASKED FOR ARE COMPUTED. `session.run(feeds,
- * fetches)` with an explicit fetch list lets ORT prune the graph to the requested outputs, so a
- * `meme` run that needs `lrt` alone does not pay for the attention pooling and the root
- * representation (`inference.py:162-192` requests neither: `forward_cached` returns `(y, _)`
- * there and `return_hidden=True` only in cmd_busted). The fetch list is intersected with what
- * the loaded graph declares, so a v1 single-output graph is asked for `lrt` alone; anything the
- * graph returns beyond the manifest's list is never passed through (`dropped_heads_policy:
- * "omit"`) and a missing optional head is absent from the returned object — never zero-filled.
- * A fake session in the tests may ignore the fetch argument and return everything; the read-back
- * still filters to the requested names.
+ * OUTPUTS ARE REQUESTED BY NAME — AND THE FETCH LIST SELECTS WHAT IS RETURNED, NOT WHAT IS
+ * COMPUTED. This header said the opposite until Phase 4 measured it, and three other files leaned
+ * on that claim. MEASURED (onnxruntime, CPU, min of 7 reps after 2 warmups) on a prototype that
+ * folded the dating pillar's two extra reductions into the backbone: fetching `['lrt']` alone cost
+ * 189.0 ms against 188.2 ms for all five outputs at N=143/B=24, and 309.2 against 310.6 ms at
+ * N=256/B=16 — the same, within noise. ORT does not prune.
+ *
+ * The existing three-output graph hides this because `mean_root_attns` and `root_repr` are near-free
+ * reductions of tensors the `lrt` path already materialises: on `general.onnx` at N=143/B=24 one
+ * thread, fetching `['lrt']` took 528 ms and fetching all three 511 ms. So the contract costs
+ * nothing whichever way it is asked, and the fetch list is still worth passing — it avoids COPYING
+ * large tensors out of WASM or native memory into JavaScript, and it is intersected with what the
+ * loaded graph declares so a v1 single-output graph is asked for `lrt` alone. What it does NOT buy
+ * is arithmetic, and that is why the dating pillar's `cross_attn_sum` / `taxa_repr_sum` live on a
+ * separate artifact (`<variant>_taxa.onnx`) rather than as two more outputs here: the same folded
+ * prototype cost every caller +2.5 % to +7.3 % at one thread and +15 % to +19 % at eight, on every
+ * MEME, BUSTED, epistasis, DMS and phenotype site of every run, for outputs only dating reads.
+ *
+ * Anything the graph returns beyond the manifest's list is never passed through
+ * (`dropped_heads_policy: "omit"`) and a missing optional head is absent from the returned object —
+ * never zero-filled. A fake session in the tests may ignore the fetch argument and return
+ * everything; the read-back still filters to the requested names. `runTaxaSites` is the one
+ * exception to the omit policy and says why at its own definition.
  */
 
-import { DEFAULT_OUTPUT_NAMES } from './manifest.js';
+import { DEFAULT_OUTPUT_NAMES, TAXA_OUTPUT_NAMES } from './manifest.js';
 
 /**
  * Build the feed dictionary for one batch.
@@ -84,6 +97,51 @@ export async function runSites(session, bundle, ort, outputNames = DEFAULT_OUTPU
 	for (const name of outputNames) {
 		if (name === 'lrt' || !out[name]) continue;
 		result[name] = out[name].data;
+	}
+	return result;
+}
+
+/**
+ * Run a batch of sites through the DATING graph (`<variant>_taxa.onnx`).
+ *
+ * Same four inputs as the backbone, so `buildFeeds` is reused unchanged; two outputs, both already
+ * reduced over the batch, so what comes back does not grow with the number of sites in the call:
+ *
+ *   `cross_attn_sum`  [N, N]          Σ over this call's sites of the head-mean of `attn[1:, 1:]`,
+ *                                     accumulated over the graph's row layers (splits.py:131-132)
+ *   `taxa_repr_sum`   [N, embed_dim]  Σ over this call's sites of `x_full[:, 1:, central, :]`
+ *                                     (splits.py:147-149)
+ *
+ * THEY ARE SUMS AND THE NAMES SAY SO. `splits.py` receives the whole alignment in one call and
+ * divides at :151-153; the runtime cannot make that call, so it accumulates across batches and
+ * divides once — by `sites * taxa_row_layers` and by `sites`. A per-call mean would have to be
+ * re-multiplied by the batch size to be accumulated, losing precision for nothing.
+ *
+ * THIS REFUSES WHERE `runSites` OMITS. `runSites` drops an absent optional head because
+ * `dropped_heads_policy` is "omit" and a meme run is still a meme run without the attention. Here a
+ * missing output is not a degraded answer, it is a covariance kernel built from nothing — the
+ * plausible wrong number this pillar exists to avoid — so both outputs are required and their
+ * absence throws.
+ *
+ * @param {any} session an ONNX InferenceSession for the taxa graph
+ * @param {object} bundle the same tensors `runSites` takes
+ * @param {any} ort
+ * @param {readonly string[]} [outputNames] default the manifest's two
+ * @returns {Promise<{cross_attn_sum: Float32Array, taxa_repr_sum: Float32Array}>} flat typed arrays
+ */
+export async function runTaxaSites(session, bundle, ort, outputNames = TAXA_OUTPUT_NAMES) {
+	const out = await session.run(buildFeeds(bundle, ort), [...outputNames]);
+	const result = {};
+	for (const name of outputNames) {
+		const tensor = out[name];
+		if (!tensor || tensor.data === undefined) {
+			throw new Error(
+				`dating graph run returned no \`${name}\` output. The two taxa outputs are both required: ` +
+					`a covariance kernel built from a missing matrix is a plausible wrong date, so this refuses ` +
+					`rather than degrading. Check that the loaded graph is <variant>_taxa.onnx and not the backbone.`
+			);
+		}
+		result[name] = tensor.data;
 	}
 	return result;
 }

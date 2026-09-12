@@ -11,6 +11,7 @@
     "./node": "./src/session-node.js",
     "./dates": "./src/dates/index.js",
 		"./dating": "./src/dating/index.js",
+    "./dating/neural": "./src/datingNeural.js",
     "./clock": "./src/clock.js",
     "./prescreen": "./src/prescreen/hitLikelihood.js",
     "./prescreen/scope": "./src/prescreen/scope.js",
