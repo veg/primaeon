@@ -457,7 +457,9 @@
 					variants?: Record<string, { taxa_onnx_sha256?: string; taxa_onnx_file?: string }>;
 					default_variant?: string;
 				};
-				const name = doc.default_variant ?? Object.keys(doc.variants ?? {})[0] ?? 'general';
+				// The SAME rule the worker's `pickVariant` takes, so the probe cannot advertise a graph
+				// the run would not load: `general` unless the manifest names another default.
+				const name = doc.default_variant ?? 'general';
 				const v = doc.variants?.[name];
 				if (!v?.taxa_onnx_sha256) {
 					modelProbe = 'absent';
@@ -852,7 +854,7 @@
 		</header>
 		{#if dating?.ok && ingest}
 			<p class="note">
-				Every sequence the estimate saw, whether or not it calibrated the clock. Tick a row to leave it
+				Every sequence the estimate saw, whether or not it was in the fit. Tick a row to leave it
 				out and the button in section 3 re-reads; excluded sequences are named in the provenance below
 				and in both downloads, so an estimate can never be quietly conditioned on a hidden exclusion.
 			</p>

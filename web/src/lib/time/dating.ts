@@ -611,7 +611,13 @@ export function latentRootView(run: DatingResult | null): LatentRootView | null 
 /**
  * Which clock model the curvature test chose, what that model says, and why the headline above is
  * not it. Plain `.note`, never a warning: web/DESIGN.md §5 sets caveats in the results' own voice,
- * and orange on this page is reserved for problems with the dates.
+ * and a test that ran and reported its answer is not a caveat at all.
+ *
+ * THE THREE SENTENCES THAT DO GET THE WARNING TREATMENT are the ones that change how every other
+ * number on the page must be read: `divergence` when the mode is latent (the y axis stopped being a
+ * sequence distance), `modeShift` (the ordinary fit moved and its arithmetic did not), and
+ * `predictionCaveat` (a column of dates that are not dates). That is the page's rule — orange for
+ * what changes the answer — and it is narrower than "anything surprising".
  */
 export function clockNote(run: DatingResult, units: TimeUnits): string | null {
 	const spline = modelOf(run, 'spline');

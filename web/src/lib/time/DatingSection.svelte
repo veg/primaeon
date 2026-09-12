@@ -143,6 +143,7 @@
 			<label class="field">
 				<span>Measure divergence to</span>
 				<select
+					aria-label="Root for divergence"
 					value={root === 'taxon' ? `taxon:${rootTaxon ?? ''}` : root}
 					onchange={(e) => {
 						const v = (e.currentTarget as HTMLSelectElement).value;
@@ -181,7 +182,7 @@
 				<div class="controls">
 					<label class="field">
 						<span>Measure divergence with</span>
-						<select bind:value={distanceMode} disabled={state === 'running'}>
+						<select aria-label="Divergence with the model" bind:value={distanceMode} disabled={state === 'running'}>
 							<option value="auto">the model's latent root (the reference's default)</option>
 							<option value="tn93">TN93 distances, and the model for the covariance only</option>
 						</select>

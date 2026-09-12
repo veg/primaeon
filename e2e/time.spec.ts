@@ -19,6 +19,13 @@
  *      flagged and Z59ZR.ZHU held out with a predicted date of 1965.6. It is asserted INSIDE flow 1
  *      on purpose: the "no heavy assets" check at the end of that test then covers the run as well,
  *      which is the only way to prove that dating an alignment here costs no model byte.
+ *   1c. THE MODEL-BASED ESTIMATE (phase 4), in a test of its own for the same reason 1b is inside
+ *      flow 1: this is the run that DOES load a graph, and it must load exactly one. It presses the
+ *      second button, waits for a full forward pass over all 981 codons, and checks that the page
+ *      shows all three fits the reference publishes, says that divergence stopped being a sequence
+ *      distance, and names the size of the move the ordinary fit made because of it. The request
+ *      log is checked from the other side here: one `*.onnx` and it is `general_taxa.onnx`, the ORT
+ *      runtime, and nothing off-origin.
  *   3. THE TRAP, and the reason this page exists. The same alignment with the table rewritten
  *      accession-style. The reference would match zero rows and say nothing; the page must show
  *      both name sets side by side and say plainly that the dates came from the headers instead.
@@ -30,7 +37,7 @@
 import { expect, test } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ENGINE_DIR, HEAVY_ASSET, trackRequests } from './helpers';
+import { ENGINE_DIR, HEAVY_ASSET, HYPHY_ANY, ONNX, ORT_FORBIDDEN, trackRequests } from './helpers';
 
 const EXAMPLES = resolve(ENGINE_DIR, 'examples');
 const KORBER = resolve(EXAMPLES, 'korber_env_gp160.fasta');
@@ -152,7 +159,7 @@ test.describe('flow 1 — korber_env_gp160.fasta, the flagship', () => {
 		await expect(dating.getByRole('heading', { level: 2, name: 'Ancestor date' })).toBeVisible();
 		// The root is a choice and the page says so before it offers the action.
 		await expect(dating).toContainText('The root is a choice, not a datum');
-		await dating.locator('select').selectOption('taxon:CONSENSUS');
+		await dating.getByLabel('Root for divergence').selectOption('taxon:CONSENSUS');
 		await dating.getByRole('button', { name: /^Estimate the ancestor date$/ }).click();
 
 		// The estimate, with the numbers reproduced from the reference run.
@@ -212,6 +219,129 @@ test.describe('flow 1 — korber_env_gp160.fasta, the flagship', () => {
 	});
 });
 
+test.describe('flow 1c — the same file, with the model', () => {
+	test.skip(!haveExamples, 'the engine examples are not checked out beside this repository');
+
+	/**
+	 * THE ONLY TEST IN THIS FILE THAT EXPECTS A GRAPH TO BE FETCHED, and the assertions at the end
+	 * are the point of it: exactly one `*.onnx`, and it is `general_taxa.onnx` — not the backbone,
+	 * which this route has no use for, and not both.
+	 *
+	 * THE NUMBERS ARE THE REFERENCE'S, from `hyphaeon dating -a examples/korber_env_gp160.fasta
+	 * --root-taxon CONSENSUS --no-tree --method all --cpu --distance-mode latent`
+	 * (../HyphAeon/fixtures/dating/run_mrca_dating_model.json, case 001_korber_latent):
+	 *
+	 *     ols    1926.81  mu 5.551e-4  R² 0.140     ← the headline: the reference selects it
+	 *     pgls   1633.07  [-inf, 1836.71]  g 1.72   ← slope not distinguishable from zero
+	 *     spline -1974.64  interval [x, x]          ← the dead bootstrap, still in the table
+	 *     latent root  α 0.05407  R +0.374  anchors led by B85US.ALA1
+	 *
+	 * They are quoted to the precision the page prints (one decimal on a date, four significant
+	 * figures on a rate) and the chain's measured sensitivity is four to six decades below that, so
+	 * a digit moving here is a real change and not float noise. The browser's ORT is a different
+	 * build from the one the runtime suite measured against; if these ever part, the runtime suite's
+	 * element-wise comparison against `splits.py` is where to look first.
+	 */
+	test('runs the two model-based estimators, loads one graph, and says what changed', async ({ page, baseURL }) => {
+		test.setTimeout(360_000);
+		const requests = trackRequests(page);
+		await page.goto('/time/');
+		await page.locator('#dates input[type="file"]').first().setInputFiles(KORBER);
+		const review = page.locator('#dates .review');
+		await expect(review).toHaveAttribute('data-state', /review|ready/, { timeout: 20_000 });
+		await page.getByRole('checkbox', { name: /Continue without the 1 undated sequence/i }).check();
+		await expect(review).toHaveAttribute('data-state', 'ready');
+
+		const dating = page.locator('#dating');
+		await dating.getByLabel('Root for divergence').selectOption('taxon:CONSENSUS');
+
+		// The model-free estimate first, so the page has both runs to compare — and so the shift the
+		// model makes to the ORDINARY fit can be asserted rather than described.
+		await dating.getByRole('button', { name: /^Estimate the ancestor date$/ }).click();
+		await expect(dating.locator('.verdict')).toContainText('1893.9', { timeout: 120_000 });
+		// Nothing heavy yet. This is the phase-3 claim, still true after the section grew.
+		expect(requests.matching(HEAVY_ASSET), 'a heavy asset before the model was asked for').toEqual([]);
+
+		// The offer states its cost before the reader waits for it, and names the graph.
+		const model = dating.locator('.model');
+		await expect(model).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+		await expect(model).toContainText('7.3 MB');
+		await expect(model).toContainText('981 codons');
+		await expect(model).toContainText('general_taxa.onnx');
+
+		await model.getByRole('button', { name: 'Estimate with the model as well' }).click();
+
+		// ---- the three estimates -----------------------------------------------------------------
+		const verdict = dating.locator('.verdict');
+		await expect(verdict).toContainText('1926.8', { timeout: 300_000 });
+		await expect(verdict).toContainText('5.551 × 10⁻⁴');
+		await expect(verdict).toContainText('141 sequences');
+
+		// Divergence stopped being a sequence distance, and the page says so in place.
+		const divergence = dating.locator('.divergence');
+		await expect(divergence).toContainText('not a sequence distance');
+		await expect(divergence).toContainText('the ordinary one included');
+		await expect(divergence).toContainText('5.407 × 10⁻²');
+
+		// The ordinary fit moved 32.9 years without its arithmetic changing.
+		await expect(dating).toContainText('1893.9 to 1926.8');
+		await expect(dating).toContainText('32.9 years');
+		await expect(dating).toContainText('its arithmetic did not change');
+
+		// The disagreement is explained, not averaged.
+		const agreement = dating.locator('.agreement');
+		await expect(agreement).toContainText('does not average them');
+		await expect(agreement).toContainText('Pagel');
+		await expect(agreement).toContainText('clade-attenuation');
+
+		// All three fits are rows, with the generalised one's half-infinite interval as a clause.
+		const rows = dating.locator('table tbody tr');
+		await expect(rows.filter({ hasText: 'Attention PGLS' })).toContainText('1633.1');
+		await expect(rows.filter({ hasText: 'Attention PGLS' })).toContainText('no lower bound');
+		await expect(rows.filter({ hasText: 'Attention PGLS' })).toContainText('Pagel λ* = 0.8591');
+		// THE ONE NUMBER ON THIS PAGE THAT IS NOT ASSERTED TO A DECIMAL, and the reason is the
+		// reference's conditioning rather than the port's. The latent spline's date is −beta_0/beta_1
+		// on an uncentred calendar axis with beta_1 = 9.09e-6, a lever arm of about 2,000 years per
+		// unit relative error in the slope; the runtime suite measured the port landing 0.38 years
+		// from the reference's −1974.64 and pinning lambda* to the reference's own value moved it only
+		// to 0.43, so the residual is the kernel's float32 floor. The browser lands at −1974.2. The
+		// rate it is built from, which is well conditioned, IS asserted exactly.
+		const splineRow = rows.filter({ hasText: 'Restricted spline clock' });
+		await expect(splineRow).toContainText(/-197\d\.\d/);
+		await expect(splineRow).toContainText('9.088 × 10⁻⁶');
+		await expect(splineRow).toContainText('model’s covariance');
+		// And "not built" no longer names them.
+		await expect(dating).not.toContainText('Not built. Needs the dating graph');
+
+		// The latent root's own table, in the reference's order.
+		await expect(dating).toContainText('The root the model placed');
+		await expect(dating.locator('table').last().locator('tbody tr').first()).toContainText('B85US.ALA1');
+
+		// The provenance names the graph the session verified.
+		await expect(page.locator('#data')).toContainText('general_taxa.onnx');
+		await expect(page.locator('#data')).toContainText('eb44892de607');
+
+		// The page never claims the estimate is model-free once it is not.
+		await expect(dating).not.toContainText('it loaded nothing');
+		await expect(dating).toContainText('Three fits, one dataset');
+
+		// ---- exactly one graph, and the right one --------------------------------------------------
+		const onnx = requests.matching(ONNX).map((u) => new URL(u).pathname);
+		expect(onnx, `graphs fetched: ${onnx.join(', ')}`).toHaveLength(1);
+		expect(onnx[0]).toMatch(/\/models\/general_taxa\.onnx$/);
+		expect(requests.matching(ORT_FORBIDDEN)).toEqual([]);
+		expect(requests.matching(HYPHY_ANY)).toEqual([]);
+		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
+		expect(requests.failed()).toEqual([]);
+
+		// The words reserved for the analysis are still absent, with the model on.
+		const body = await page.locator('body').innerText();
+		for (const word of [/TMRCA/i, /calibrated/i, /confidence interval/i, /molecular clock estimate/i]) {
+			expect(body, `the page said ${word}`).not.toMatch(word);
+		}
+	});
+});
+
 test.describe('flow 2 — a metadata table that agrees with the headers', () => {
 	test.skip(!haveExamples, 'the engine examples are not checked out beside this repository');
 
@@ -243,7 +373,7 @@ test.describe('flow 2 — a metadata table that agrees with the headers', () => 
 		await expect(coverage.locator('svg[aria-label="Root-to-tip divergence against sampling date"]')).toBeVisible();
 		await expect(coverage).toContainText('the rate is per tree unit');
 		// Sections 3 and 4 are present and state what they are before anything has been run.
-		await expect(page.locator('#dating')).toContainText('hyphaeon dating --method ols --no-tree');
+		await expect(page.locator('#dating')).toContainText('hyphaeon dating --method all --no-tree');
 		await expect(page.locator('#taxa')).toContainText('No estimate has been made yet.');
 
 		// The words reserved for the analysis appear nowhere on the page — the two new sections
