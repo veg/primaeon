@@ -414,6 +414,9 @@ export function ingestDates(args = {}) {
 	let sourceDates = null;
 	/** @type {Map<string, string>|null} */
 	let sourceRaws = null;
+	/** Every name the source offered, dated or NOT: an undated row reads its reason from here. */
+	/** @type {Map<string, any>} */
+	let sourceParses = new Map();
 	let tableBlock = null;
 	let auspiceBlock = null;
 	let sourceFatal = false;
@@ -494,6 +497,7 @@ export function ingestDates(args = {}) {
 					const map = tableDateMap(read);
 					sourceDates = map.dates;
 					sourceRaws = map.raws;
+					sourceParses = map.parses;
 				}
 			} catch (err) {
 				warnings.push(
@@ -594,8 +598,15 @@ export function ingestDates(args = {}) {
 		sourceKind === 'table' ? 'table' : sourceKind === 'auspice' ? 'auspice' : sourceKind ? 'map' : null;
 
 	// --- 2. match the source's names to the alignment's taxa ------------------------------------
-	const match = matchDateNames(sourceDates?.keys() ?? [], taxa);
-	if (sourceDates && sourceDates.size > 0) {
+	// The match runs over every name the source OFFERED, not only the ones it dated: a taxon whose
+	// row exists but whose cell was unreadable is a MATCHED taxon with an undated cell, and saying
+	// "not in the table" about it would send the reader looking for the wrong problem.
+	const sourceNames =
+		sourceParses.size > 0
+			? Array.from(sourceParses.keys())
+			: Array.from(sourceDates?.keys() ?? []);
+	const match = matchDateNames(sourceNames, taxa);
+	if (sourceDates && sourceNames.length > 0) {
 		for (const taxon of taxa) {
 			const hit = match.assignments.get(taxon);
 			if (!hit) continue;
@@ -744,11 +755,13 @@ export function ingestDates(args = {}) {
 			// all) — and the reference cannot tell the three apart, because all of them are NaN.
 			// The value the taxon WOULD have had is asked for in source order, so the reason names
 			// the last place a date was actually looked for.
-			const sourceParse = assigned ? (sourceDates?.get(assigned.name) ?? null) : null;
+			const sourceParse = assigned
+				? (sourceParses.get(assigned.name) ?? sourceDates?.get(assigned.name) ?? null)
+				: null;
 			const headerParse = headerParses.get(headerFor(taxon)) ?? null;
 			const reason =
+				(sourceParse && sourceParse.rule !== 'none' ? sourceParse.rule : null) ??
 				(headerParse && headerParse.rule !== 'none' ? headerParse.rule : null) ??
-				(sourceParse ? sourceParse.rule : null) ??
 				emptyParse(timeUnits).rule;
 			rows.push({
 				taxon,
@@ -881,14 +894,14 @@ export function ingestDates(args = {}) {
 		}
 	}
 
-	if (sourceDates && sourceDates.size > 0) {
+	if (sourceDates && sourceNames.length > 0) {
 		const matchedCount = Array.from(match.assignments.keys()).length;
 		if (matchedCount === 0) {
 			const rescued = headerFallback && coverage.dated >= DATE_THRESHOLDS.minDatedTaxa;
 			const parts = [
 				fillMessage(DATE_MESSAGES.TABLE_NO_MATCH, {
-					n: sourceDates.size,
-					metadata: nameSample(Array.from(sourceDates.keys()), cap),
+					n: sourceNames.length,
+					metadata: nameSample(sourceNames, cap),
 					alignment: nameSample(taxa, cap)
 				})
 			];
@@ -907,9 +920,9 @@ export function ingestDates(args = {}) {
 			}
 			warnings.push(
 				warn('DATES_TABLE_NO_MATCH', rescued ? 'warn' : 'refuse', parts.join(' '), {
-					metadata_names: Array.from(sourceDates.keys()).slice(0, cap),
+					metadata_names: sourceNames.slice(0, cap),
 					taxa: taxa.slice(0, cap),
-					metadata_total: sourceDates.size,
+					metadata_total: sourceNames.length,
 					numeric_names: tableBlock?.numericNames ?? 0,
 					tiers_tried: Object.keys(match.tiers),
 					rescued_by_headers: rescued
@@ -920,7 +933,7 @@ export function ingestDates(args = {}) {
 				warn(
 					'DATES_UNMATCHED_METADATA',
 					'warn',
-					`${match.unmatchedMetadata.length} of ${sourceDates.size} names in the metadata source ` +
+					`${match.unmatchedMetadata.length} of ${sourceNames.length} names in the metadata source ` +
 						`name no sequence in this alignment, so they contributed nothing.`,
 					nameBlock(match.unmatchedMetadata, cap)
 				)
@@ -952,7 +965,7 @@ export function ingestDates(args = {}) {
 		}
 	}
 
-	if (coverage.from_header > 0 && sourceDates && sourceDates.size > 0) {
+	if (coverage.from_header > 0 && sourceDates && sourceNames.length > 0) {
 		warnings.push(
 			warn(
 				'DATES_HEADER_FALLBACK',
@@ -1170,7 +1183,7 @@ export function ingestDates(args = {}) {
 		coverage,
 		by_rule: byRule,
 		rows,
-		unmatched_metadata: nameBlock(sourceDates ? match.unmatchedMetadata : [], cap),
+		unmatched_metadata: nameBlock(sourceNames.length > 0 ? match.unmatchedMetadata : [], cap),
 		unmatched_taxa: nameBlock(
 			rows.filter((r) => !Number.isFinite(r.value)).map((r) => r.taxon),
 			cap

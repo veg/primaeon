@@ -527,18 +527,30 @@ export function readDateTable(text, options = {}) {
  * cell each answer came from. Separated from `readDateTable` so the duplicate policy is one visible
  * line rather than a property of a loop.
  *
+ * `parses` holds EVERY row's parse, dated or not, where `dates` holds only the dated ones. The
+ * difference is the whole point of a review table: a cell reading `1500` gives `rule:
+ * 'out_of_range'` — the value was read and the [1800, 2100] gate rejected it — and a cell reading
+ * `nonsense` gives `rule: 'unparsed'`. The reference returns NaN for both and the two are then
+ * indistinguishable, so a row that lost its date cannot say which happened to it.
+ *
  * @param {DateTableRead} read
- * @returns {{dates: Map<string, any>, raws: Map<string, string>}}
+ * @returns {{dates: Map<string, any>, parses: Map<string, any>, raws: Map<string, string>}}
  */
 export function tableDateMap(read) {
 	/** @type {Map<string, any>} */
 	const dates = new Map();
+	/** @type {Map<string, any>} */
+	const parses = new Map();
 	/** @type {Map<string, string>} */
 	const raws = new Map();
 	for (const e of read.entries) {
-		if (!Number.isFinite(e.parse.value)) continue;
+		parses.set(e.name, e.parse);
+		if (!Number.isFinite(e.parse.value)) {
+			if (!raws.has(e.name)) raws.set(e.name, e.raw);
+			continue;
+		}
 		dates.set(e.name, e.parse);
 		raws.set(e.name, e.raw);
 	}
-	return { dates, raws };
+	return { dates, parses, raws };
 }

@@ -124,10 +124,16 @@ export const TIME_UNITS = lib.TIME_UNITS ?? Object.freeze(['years', 'generations
 /** `'years'`. */
 export const CALENDAR_TIME_UNITS = lib.CALENDAR_TIME_UNITS ?? 'years';
 
-/** The calendar gate, temporal.py:106. */
-export const CALENDAR_YEAR_MIN = lib.CALENDAR_YEAR_MIN ?? 1800;
+/**
+ * The calendar gate, temporal.py:106, re-exported RAW — with no `??` default, deliberately. Writing
+ * the two numbers here would put a second copy of the gate in this package, which is exactly what
+ * the no-second-parser rule forbids and what `date-ingestion.test.js` greps for. They are
+ * `undefined` against a library too old to carry the date layer, and `hasDateLayer()` is what a
+ * caller asks about that, not a silently plausible default.
+ */
+export const CALENDAR_YEAR_MIN = lib.CALENDAR_YEAR_MIN;
 /** @see CALENDAR_YEAR_MIN */
-export const CALENDAR_YEAR_MAX = lib.CALENDAR_YEAR_MAX ?? 2100;
+export const CALENDAR_YEAR_MAX = lib.CALENDAR_YEAR_MAX;
 
 /**
  * `str(row[col])` for a cell of a `parsePhenotypeTable` frame — the library keeps its own
