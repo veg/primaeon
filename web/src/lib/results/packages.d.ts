@@ -212,6 +212,103 @@ declare module '@veg/hyphaeon-runtime/clock' {
 	): { values: Array<{ label: string; tMrca: number }>; spread: number; wide: boolean } | null;
 }
 
+/**
+ * The dating pillar (runtime/src/dating/), Phase 3. Its own subpath for the same reason `/dates`
+ * has one: nothing under it imports a manifest, a session or `predict.js`, so the `/time` route and
+ * its worker reach the estimators without reaching ORT — which is what keeps the route's "no
+ * `*.onnx`, no `ort-*.wasm`" assertion true by construction rather than by care.
+ */
+declare module '@veg/hyphaeon-runtime/dating' {
+	export const DATING_SCHEMA_VERSION: number;
+	export const DATING_DIAGNOSTIC_CODES: readonly string[];
+	export const DATING_REFUSALS: Readonly<Record<string, string>>;
+	export const DATING_THRESHOLDS: Readonly<Record<string, number>>;
+	export const DATING_MESSAGES: Readonly<Record<string, string>>;
+	export const DATING_CI_METHODS: readonly string[];
+	export const PREDICTION_METHODS: readonly string[];
+	/** `dating.py:3052-3062`'s ten columns, in its order; the CSV download's contract. */
+	export const TAXON_COLUMNS: readonly string[];
+	/** `dating.py:3150-3181`'s 22 top-level keys, in its order. */
+	export const RECORD_KEYS: readonly string[];
+	/** What this build declines to estimate, and why, carried in the record so a page can say it. */
+	export const NOT_BUILT: ReadonlyArray<{ name: string; reason: string }>;
+
+	export interface DatingWarning {
+		code: string;
+		severity: string;
+		message: string;
+		data?: unknown;
+	}
+	export interface DatingTaxonRow {
+		taxon: string;
+		sampling_date: number;
+		root_divergence: number;
+		fitted_divergence: number;
+		predicted_date: number;
+		divergence_residual: number;
+		temporal_residual: number;
+		z_score: number;
+		is_outlier: boolean;
+		is_holdout: boolean;
+		prediction_method: string;
+	}
+	export interface DatingRun {
+		ok: boolean;
+		refusal: string | null;
+		warnings: DatingWarning[];
+		record: Record<string, unknown>;
+		rows: DatingTaxonRow[];
+		taxa: string[];
+		times: Float64Array;
+		divergences: Float64Array;
+		coverage: Float64Array;
+		trainIndices: number[];
+		ols: Record<string, unknown>;
+		spline: Record<string, unknown> | null;
+		active: Record<string, unknown>;
+		activeName: 'ols' | 'spline';
+		selectedClock: string;
+		ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+		methods: string[];
+		rootDescription: string;
+		rootCase: 1 | 2 | 3 | 4;
+		rootSequence: string | null;
+	}
+	/**
+	 * `hyphaeon dating -a <alignment> --no-tree --method ols`, in process. Never throws except on an
+	 * unported `ciMethod` (a RangeError) and on abort (`err.name === 'AbortError'`).
+	 */
+	export function runDating(args: {
+		alignmentText?: string | null;
+		sequences?: Map<string, string> | Record<string, string> | null;
+		alignmentName?: string | null;
+		dates: Map<string, number> | Record<string, number> | { rows: Array<{ taxon: string; value: number | null }> };
+		rootTaxon?: string | null;
+		decayGamma?: number | null;
+		decayHalfLife?: number | null;
+		excludedTaxa?: readonly string[];
+		clockModel?: 'auto' | 'linear' | 'spline';
+		ciMethod?: 'fieller' | 'delta' | 'linear';
+		timeUnits?: string;
+		allowStopCodons?: boolean;
+		autoTrimTrailing?: boolean;
+		progress?: (phase: string, done: number, total: number, message: string) => void;
+		signal?: AbortSignal;
+		provenance?: Record<string, unknown>;
+	}): DatingRun;
+	export function rankTaxonRows(rows: DatingTaxonRow[]): DatingTaxonRow[];
+	export function sortDatingWarnings<W extends { code: string }>(warnings: W[]): W[];
+	export function datingJsonText(
+		record: Record<string, unknown>,
+		options?: { includeProvenance?: boolean; predictionMethod?: boolean }
+	): string;
+	export function datingCsvText(rows: DatingTaxonRow[], options?: { predictionMethod?: boolean }): string;
+	export function datingDownloads(
+		run: DatingRun,
+		options?: { stem?: string }
+	): Array<{ name: string; type: string; text: string }>;
+}
+
 declare module '@veg/hyphaeon-js' {
 	/** js/src/dates.js: the 21 rule ids every DateParse reports; the /time page maps them to words. */
 	export const DATE_RULES: Readonly<Record<string, string>>;

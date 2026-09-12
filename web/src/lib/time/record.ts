@@ -6,6 +6,11 @@
  * object. Converting between the two in a component would put the schema in the markup, and the
  * schema is the thing phase 3 will reference by id. So the conversion is here, with a test.
  *
+ * SCHEMA 2 ADDED ONE KEY, `dating`, AND CHANGED NOTHING ELSE. A v1 record opens with `dating: null`
+ * and the five new `TimeSetOptions` fields at their defaults, which is exactly the state a review
+ * that never asked for an estimate is in — so the version bump is a label on the shape, not a
+ * migration, and no stored review is lost.
+ *
  * READING IS DEFENSIVE IN ONE DIRECTION ONLY. `fromStored()` fills in what a v1 record may be
  * missing and never removes what it does not recognise, so a record written by a later build opens
  * in an earlier one with its own fields intact — the same non-destructive rule `lib/storage/
@@ -17,6 +22,7 @@ import type { DateIngestLike } from './dateReview';
 import {
 	TIME_SET_SCHEMA_VERSION,
 	type DateEntry,
+	type DatingResult,
 	type DateSummary,
 	type TimeSetInputs,
 	type TimeSetOptions,
@@ -59,10 +65,12 @@ export interface BuildInput {
 	options: TimeSetOptions;
 	ingest: DateIngestLike;
 	ready: boolean;
+	/** Phase 3: the ancestor-date run, or null until the reader asks for one. */
+	dating?: DatingResult | null;
 	now?: number;
 }
 
-export function buildRecord({ id, inputs, options, ingest, ready, now = Date.now() }: BuildInput): TimeSetRecord {
+export function buildRecord({ id, inputs, options, ingest, ready, dating = null, now = Date.now() }: BuildInput): TimeSetRecord {
 	return {
 		id: id ?? newRunId(),
 		schemaVersion: TIME_SET_SCHEMA_VERSION,
@@ -78,7 +86,8 @@ export function buildRecord({ id, inputs, options, ingest, ready, now = Date.now
 			unmatchedMetadata: [...(ingest.unmatched_metadata?.names ?? [])]
 		},
 		warnings: ingest.warnings.map((w) => ({ code: w.code, severity: w.severity, message: w.message, data: w.data })),
-		ready
+		ready,
+		dating
 	};
 }
 
@@ -93,7 +102,12 @@ const DEFAULT_OPTIONS: TimeSetOptions = {
 	delimiter: null,
 	dropUndated: false,
 	rootMode: 'midpoint',
-	outgroup: null
+	outgroup: null,
+	datingRoot: 'consensus',
+	rootTaxon: null,
+	clockModel: 'auto',
+	ciMethod: 'fieller',
+	excludedTaxa: []
 };
 
 /** Fill in what an older record is missing; never drop a field this build does not know. */
@@ -115,7 +129,10 @@ export function fromStored(raw: unknown): TimeSetRecord | null {
 			unmatchedMetadata: dates.unmatchedMetadata ?? []
 		},
 		warnings: record.warnings ?? [],
-		ready: record.ready ?? false
+		ready: record.ready ?? false,
+		// A v1 record has no `dating` key at all; filling it with null is the additive read this
+		// file's header promises, and a record written by a LATER build keeps whatever it carries.
+		dating: record.dating ?? null
 	};
 }
 
