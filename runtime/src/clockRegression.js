@@ -17,6 +17,18 @@
  * interval. A preview that quoted a narrow interval which then widened under the real run would be
  * worse than one that quotes none. Standard errors only, labelled as such.
  *
+ * WHY THIS IS NOT IN THE LIBRARY, ANSWERED AGAINST THE SPLIT RULE ITSELF. A review of this phase
+ * read the sentence above — "mirrors run_ols_dating formula by formula" — and concluded, reasonably,
+ * that a file mirroring the Python belongs in `@veg/hyphaeon-js`. Two things decide it the other
+ * way. First, what this file actually exports beyond the arithmetic is RESULT SEMANTICS:
+ * `CLOCK_STATUS` and `CLOCK_REFUSALS`, the vocabulary a page uses to tell a reader why it will not
+ * draw a line. CLAUDE.md's own test puts "a warning to show" on the application's side. Second,
+ * phase 3 ports the pillar properly, intervals and all, and a port is worth far more when there is
+ * an independent implementation to compare it against: fold this into the library now and the port
+ * has nothing to disagree with. Recorded as a deliberate exception in PLAN-TEMPORAL.md rather than
+ * left as an unexplained violation. If phase 3's port lands and this file survives unchanged beside
+ * it, that is the signal to revisit — not before.
+ *
  * WHY THE FIT IS CENTRED ON `t_ref = mean(t)` (dating.py:1191, and its docstring at :1183-1188).
  * With `X = [t - t_ref, 1]`, `XᵀX = diag(Σx², n)` — off-diagonal exactly zero. Three things follow.
  *   1. The standard errors are closed forms with no matrix inverse: `se_mu = sqrt(sigma2 / Σx²)`,

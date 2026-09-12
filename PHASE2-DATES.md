@@ -498,3 +498,20 @@ standard errors so the fact cannot quietly go away.
    of eight.
 7. **Rewriting the three engine commit messages** that carry AI attribution, before the branch is
    shared.
+
+## The clock preview stays in the application, deliberately
+
+A review of this phase read `runtime/src/clockRegression.js`, saw that it mirrors `run_ols_dating`
+formula by formula, and concluded it belongs in `@veg/hyphaeon-js`. That is the right instinct from
+the split rule, and it is being declined here for two reasons, recorded so nobody has to rediscover
+the argument.
+
+What the file exports beyond the arithmetic is result semantics: the statuses and refusal codes a
+page uses to tell a reader why it will not draw a line. The project's own test puts anything that
+knows about a message to show on the application's side. And phase 3 ports the pillar properly,
+confidence intervals included; a port is worth much more when there is an independent implementation
+to disagree with it. Folding this into the library now would delete the only check the port will
+have.
+
+The condition for revisiting is explicit: if phase 3's port lands and this file survives unchanged
+beside it, move it then.
