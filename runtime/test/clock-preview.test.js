@@ -476,3 +476,24 @@ describe('rooting', () => {
 		expect(branchLengthGate(tree).ok).toBe(true);
 	});
 });
+
+describe('a clock that runs backwards', () => {
+	it('predicts no dates at all, as the reference refuses to', () => {
+		// Divergence FALLING with sampling date: the fit has a negative slope. The reference stops at
+		// `mu <= 1e-12` with NON_POSITIVE_RATE and derives nothing further (dating.py:1220). Testing
+		// the magnitude of the rate instead let this through, and every predicted date then ran the
+		// clock backwards: more diverged meant sampled earlier.
+		const fit = clockRegression({
+			taxa: ['a', 'b', 'c', 'd'],
+			times: [2000, 2001, 2002, 2003],
+			divergence: [0.4, 0.3, 0.2, 0.1]
+		});
+		expect(fit.mu).toBeLessThan(0);
+		expect(fit.status).toBe(CLOCK_STATUS.NON_POSITIVE_RATE);
+		expect(Number.isNaN(fit.tMrca)).toBe(true);
+		for (const row of fit.rows) {
+			expect(Number.isNaN(row.predictedDate)).toBe(true);
+			expect(Number.isNaN(row.temporalResidual)).toBe(true);
+		}
+	});
+});

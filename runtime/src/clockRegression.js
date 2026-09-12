@@ -178,7 +178,13 @@ export function clockRegression(input) {
 	for (let i = 0; i < n; i++) {
 		const fitted = d0 + mu * (t[i] - tRef);
 		const residual = d[i] - fitted;
-		const predicted = Math.abs(mu) > PREDICT_RATE_FLOOR ? tRef + (d[i] - d0) / mu : Number.NaN;
+		// A PREDICTED DATE NEEDS A POSITIVE RATE, NOT MERELY A NON-ZERO ONE. The reference refuses
+		// outright at `mu <= 1e-12` (dating.py:1220 and :856, status NON_POSITIVE_RATE) and returns
+		// nothing derived from the fit. Testing the MAGNITUDE instead let a negative slope through,
+		// and a negative slope predicts dates by running the clock backwards: the more diverged a
+		// sequence, the EARLIER it would be said to have been sampled. The status above already
+		// records NON_POSITIVE_RATE for this fit; the per-taxon rows must agree with it.
+		const predicted = mu > PREDICT_RATE_FLOOR ? tRef + (d[i] - d0) / mu : Number.NaN;
 		const z = residual / residualSd;
 		rows.push({
 			taxon: taxa[i],
