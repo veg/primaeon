@@ -192,7 +192,9 @@
 		modelOffer({
 			workers: workersAvailable(),
 			dated: ingest?.coverage.dated ?? 0,
-			codons: null,
+			// The model-free run counted them; before one has been made the sentence says "every codon"
+			// rather than guessing, which is why this is nullable rather than parsed here.
+			codons: ((dating?.record?.primaeon ?? {}) as { codon_count?: number }).codon_count ?? null,
 			maxTaxa: DATING_NEURAL_MAX_TAXA
 		})
 	);

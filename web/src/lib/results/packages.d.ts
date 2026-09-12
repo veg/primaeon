@@ -341,6 +341,37 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		provenance?: Record<string, unknown>;
 	}): DatingRun;
 	export function rankTaxonRows(rows: DatingTaxonRow[]): DatingTaxonRow[];
+	/**
+	 * The adjudication (`dating.py:2943-2996`) and the admission rule (`:2894-2941`), pure and
+	 * exported separately so a caller can replay them on a record it did not produce — which is how
+	 * `datingModel.test.ts` checks this build's `selected_clock` sentence against the reference's own
+	 * bytes without running a model.
+	 */
+	export function selectClockModel(args: {
+		ols: Record<string, unknown> | null;
+		pgls?: Record<string, unknown> | null;
+		spline: Record<string, unknown> | null;
+		clockModel?: 'auto' | 'linear' | 'spline';
+	}): {
+		name: 'ols' | 'pgls' | 'spline';
+		model: Record<string, unknown>;
+		selectedClock: string;
+		cladeAttenuated: boolean;
+		attenuation: number;
+		warnings: DatingWarning[];
+	};
+	export function admitEnsembleCandidates(args: {
+		ols: Record<string, unknown> | null;
+		pgls?: Record<string, unknown> | null;
+		spline: Record<string, unknown> | null;
+		minSampleTime: number;
+		selected?: string | null;
+		cladeAttenuated?: boolean;
+	}): {
+		ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+		admitted: string[];
+		warnings: DatingWarning[];
+	};
 	export function sortDatingWarnings<W extends { code: string }>(warnings: W[]): W[];
 	export function datingJsonText(
 		record: Record<string, unknown>,
