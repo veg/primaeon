@@ -30,7 +30,6 @@
 	import { goto } from '$app/navigation';
 	import { readText } from '$lib/analyze/inputs';
 	import DropZone from '$lib/analyze/DropZone.svelte';
-	import { setHandoff, type Handoff } from '$lib/handoff';
 	import catalogue from '$lib/gallery/examples.json';
 	import type { GalleryExample } from '$lib/gallery/types';
 

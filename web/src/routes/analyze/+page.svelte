@@ -36,7 +36,6 @@
 	import { reportPath } from '$lib/api';
 	import { DEMOS, chooseReference, loadDemo, readText } from '$lib/analyze/inputs';
 	import { hasEmbeddedTree, sequenceNames, sniffFormat } from '$lib/analyze/sniff';
-	import { takeHandoff } from '$lib/handoff';
 	import { panelModel, treePlanText, type PanelModel, type PrescreenResult } from '$lib/diagnostics/panel';
 	import { planTree, startReport } from '$lib/report/run.svelte';
 	import { DEFAULT_DMS_WORK_BUDGET, DEFAULT_PERMUTATIONS, DEFAULT_SEED, isAvailable as storageAvailable } from '$lib/storage/reports';
