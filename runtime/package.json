@@ -13,6 +13,7 @@
 		"./dating": "./src/dating/index.js",
     "./dating/neural": "./src/datingNeural.js",
     "./clock": "./src/clock.js",
+    "./temporal": "./src/temporal/index.js",
     "./prescreen": "./src/prescreen/hitLikelihood.js",
     "./prescreen/scope": "./src/prescreen/scope.js",
     "./package.json": "./package.json",
