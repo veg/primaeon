@@ -29,6 +29,8 @@
 	import { setHandoff, type Handoff } from '$lib/handoff';
 	import { goto } from '$app/navigation';
 	import { readText } from '$lib/analyze/inputs';
+	import DropZone from '$lib/analyze/DropZone.svelte';
+	import { setHandoff, type Handoff } from '$lib/handoff';
 	import catalogue from '$lib/gallery/examples.json';
 	import type { GalleryExample } from '$lib/gallery/types';
 
@@ -36,7 +38,6 @@
 
 	const TREE_EXT = /\.(nwk|newick|tree|tre|nex|nexus)$/i;
 
-	let dragging = $state(false);
 	let pasted = $state('');
 	let error = $state<string | null>(null);
 	let busy = $state(false);
@@ -75,18 +76,6 @@
 		}
 	}
 
-	function onDrop(event: DragEvent) {
-		event.preventDefault();
-		dragging = false;
-		void acceptFiles(event.dataTransfer?.files);
-	}
-
-	function onPick(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		void acceptFiles(input.files);
-		input.value = '';
-	}
-
 	async function startPasted() {
 		if (!pasted.trim()) return;
 		await start({ alignmentText: pasted, alignmentName: null, treeText: null, treeName: null });
@@ -110,18 +99,17 @@
 	<h1>PrimAeon</h1>
 	<p class="lede">Drop a codon alignment. Every analysis runs here, in seconds, and nothing leaves your browser.</p>
 
-	<label
-		class="dropzone"
-		class:dropzone--active={dragging}
-		class:dropzone--busy={busy}
-		ondragover={(e) => { e.preventDefault(); dragging = true; }}
-		ondragleave={() => (dragging = false)}
-		ondrop={onDrop}
-	>
-		<input type="file" multiple accept=".fasta,.fa,.fna,.aln,.nex,.nexus,.phy,.phylip,.gz,.nwk,.newick,.tree,.tre" onchange={onPick} disabled={busy} />
-		<span class="dropzone__title">{busy ? 'Reading…' : 'Drop your alignment here'}</span>
-		<span class="dropzone__hint">FASTA, NEXUS or PHYLIP, optionally gzipped. Add a Newick tree if you have one; otherwise one is built here. Or <u>choose files</u>.</span>
-	</label>
+	{#snippet dropHint()}
+		FASTA, NEXUS or PHYLIP, optionally gzipped. Add a Newick tree if you have one; otherwise one is built here. Or <u>choose files</u>.
+	{/snippet}
+	<DropZone
+		title="Drop your alignment here"
+		hint={dropHint}
+		accept=".fasta,.fa,.fna,.aln,.nex,.nexus,.phy,.phylip,.gz,.nwk,.newick,.tree,.tre"
+		multiple
+		{busy}
+		onFiles={(files) => void acceptFiles(files)}
+	/>
 
 	<details class="paste">
 		<summary>Or paste sequences</summary>
@@ -132,6 +120,10 @@
 	{#if error}
 		<p class="error notice--error" role="alert"><strong>Not accepted.</strong> {error}</p>
 	{/if}
+
+	<p class="dated">
+		Sequences with sampling dates? <a href="{base}/time/">Review the dates on the time page.</a>
+	</p>
 
 	<p class="examples">
 		<span class="examples__label">Or try an example:</span>
@@ -154,45 +146,6 @@
 		margin-bottom: var(--space-6);
 	}
 
-	.dropzone {
-		position: relative;
-		display: grid;
-		gap: var(--space-2);
-		justify-items: start;
-		text-align: left;
-		padding: var(--space-6) var(--space-5);
-		border: 1px dashed var(--rule);
-		cursor: pointer;
-	}
-	.dropzone:hover,
-	.dropzone--active {
-		border-color: var(--text);
-	}
-	.dropzone--busy {
-		opacity: 0.45;
-		cursor: progress;
-	}
-	.dropzone input {
-		position: absolute;
-		inset: 0;
-		opacity: 0;
-		cursor: pointer;
-	}
-	.dropzone__title {
-		font-size: var(--text-lg);
-		font-weight: 700;
-		line-height: var(--leading-tight);
-	}
-	.dropzone__hint {
-		font-size: var(--text-md);
-		color: var(--text-muted);
-		max-width: var(--measure);
-	}
-	.dropzone__hint u {
-		color: var(--text);
-		text-underline-offset: 0.16em;
-	}
-
 	.paste {
 		margin-top: var(--space-4);
 	}
@@ -208,8 +161,14 @@
 		font-size: var(--text-md);
 	}
 
+	.dated {
+		margin-top: var(--space-5);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+	}
+
 	.examples {
-		margin-top: var(--space-6);
+		margin-top: var(--space-4);
 		font-size: var(--text-md);
 		color: var(--text-muted);
 	}

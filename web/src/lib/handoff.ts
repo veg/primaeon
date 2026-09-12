@@ -30,6 +30,12 @@ export type Handoff = {
 	alignmentName: string | null;
 	treeText: string | null;
 	treeName: string | null;
+	/**
+	 * A metadata table carrying sampling dates, when the reader supplied one. Only /time sets these;
+	 * every other caller leaves them undefined, and the analysis page ignores them.
+	 */
+	metadataText?: string | null;
+	metadataName?: string | null;
 };
 
 /** The key the fallback uses. Unchanged, so a hand-off written by an older build is still read. */

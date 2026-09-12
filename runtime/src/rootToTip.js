@@ -45,6 +45,19 @@
  * if the root is too deep every divergence gains a constant a and the ancestor date moves earlier
  * by exactly a/mu. The scale threatens the rate; the root threatens the date.
  *
+ * AND ONE MEASURED DIVERGENCE FROM phylotree, found by the oracle test and pinned there
+ * (`web/src/lib/time/clock.test.ts`). Both implementations pick the SAME midpoint edge and the same
+ * breakpoint. But when that edge is not a direct child of the stored root, phylotree's `reroot`
+ * loses the branch between the old root and the intervening node on the far side (the
+ * `__reroot_top_clade` / uninitialised `stashed_bl` path, `src/rooting.js:126-128`): on
+ * `(((t1:0.02,t2:0.031):0.014,(t3:0.007,t4:0.05):0.022):0.011,((t5:0.04,t6:0.018):0.009,
+ * (t7:0.027,t8:0.033):0.016):0.006);` every tip on the far side comes back exactly 0.011 short —
+ * the length of that branch — and its two extreme tips then sum to 0.127 against the 0.138 its own
+ * `computeMidpoint` measured. The invariant settles it without a second opinion: at a true midpoint
+ * the two tips of the longest path are equidistant from the root and sum to the path. This walk
+ * satisfies it; phylotree's does not. Hence the divergence vector is ours, and phylotree is the
+ * oracle only where the two agree.
+ *
  * THE FRACTION CONVENTION IS phylotree's, measured rather than assumed: `tree.reroot(node, f)`
  * places the root at `f * branchLength(node)` FROM THE NODE, toward its parent. Verified on
  * `((A:0.1,B:0.2):0.3,(C:0.15,D:0.25):0.05);` — `computeMidpoint` returns the AB clade with

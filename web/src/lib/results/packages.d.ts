@@ -50,7 +50,172 @@ declare module '@veg/hyphaeon-runtime' {
 	export function memeCsvText(result: unknown): string;
 }
 
+/**
+ * The date ingestion layer (runtime/src/dates/), reached through its own subpath so the /time route
+ * never imports the runtime's main entry and therefore never pulls in ORT or the graph manifest.
+ */
+declare module '@veg/hyphaeon-runtime/dates' {
+	export interface DateParseRow {
+		taxon: string;
+		raw: string | null;
+		value: number | null;
+		rule: string;
+		source: 'map' | 'auspice' | 'table' | 'regex' | 'header' | 'none';
+		imputed: boolean;
+		imputations: { month: boolean; day: boolean; dayClamped: boolean };
+		matched: string | null;
+		matched_name: string | null;
+		match_tier: string | null;
+	}
+	export interface DateIngest {
+		schema_version: number;
+		ok: boolean;
+		time_units: 'years' | 'generations' | 'days' | 'arbitrary';
+		time_units_source: 'supplied' | 'inferred';
+		time_units_evidence: Record<string, unknown>;
+		source: string;
+		sources_used: string[];
+		source_name: string | null;
+		source_kind: string | null;
+		coverage: {
+			taxa_total: number;
+			dated: number;
+			undated: number;
+			coverage: number;
+			from_map: number;
+			from_auspice: number;
+			from_table: number;
+			from_regex: number;
+			from_header: number;
+			imputed: number;
+			day_clamped: number;
+			out_of_range: number;
+			archival_1959: number;
+		};
+		by_rule: Record<string, number>;
+		rows: DateParseRow[];
+		unmatched_metadata: { count: number; names: string[]; sample: string[] };
+		unmatched_taxa: { count: number; names: string[]; sample: string[] };
+		match_tier: string | null;
+		match_tiers: Record<string, number>;
+		ambiguous: Array<{ name: string; taxa: string[]; tier: string }>;
+		span: { min: number; max: number; span: number; unique: number; tied: number; finite: number } | null;
+		table: Record<string, unknown> | null;
+		auspice: Record<string, unknown> | null;
+		regex: Record<string, unknown> | null;
+		headers: Record<string, unknown> | null;
+		warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
+	}
+	export function ingestDates(args: {
+		taxa: string[];
+		headerOf?: Map<string, string> | Record<string, string> | null;
+		source?: string | object | null;
+		sourceName?: string;
+		sourceKind?: string;
+		timeUnits?: string | null;
+		strainCol?: string | null;
+		dateCol?: string | null;
+		delimiter?: string | null;
+		dateRegex?: string | null;
+		regexFlags?: string;
+		archival1959?: boolean;
+		headerFallback?: boolean;
+		sampleNames?: number;
+	}): DateIngest;
+	export function taxaForDates(alignmentText: string): string[];
+	export function detectDateSourceKind(text: string, fileName?: string): string;
+	export function compileDateRegex(
+		pattern: string,
+		options?: { flags?: string }
+	): { regex: RegExp | null; valid: boolean; error: string | null; code: string | null; groups: number; pattern: string; flags: string; source: string };
+	export function archival1959Candidates(taxa: string[]): string[];
+	export function sniffDelimiter(
+		text: string,
+		options?: { fileName?: string; delimiter?: string | null; candidates?: string[]; lines?: number }
+	): { delimiter: string; source: string; confidence: number; fields: number; extensionHint: string | null; agrees: boolean };
+	export function readDateTable(
+		text: string,
+		options?: { fileName?: string; delimiter?: string | null; strainCol?: string | null; dateCol?: string | null; timeUnits?: string }
+	): { columns: string[]; strain: { column: string | null; source: string }; date: { column: string | null; source: string }; rowsRead: number; rowsDated: number };
+	export function hasDateLayer(): boolean;
+	export const DATE_MATCH_TIERS: readonly string[];
+	export const DATE_SOURCES: readonly string[];
+	export const DATE_DIAGNOSTIC_CODES: readonly string[];
+	export const DATE_THRESHOLDS: Readonly<Record<string, number>>;
+}
+
+/**
+ * The clock preview (runtime/src/rootToTip.js + clockRegression.js), through `./clock`, for the
+ * same reason: /time loads no model.
+ */
+declare module '@veg/hyphaeon-runtime/clock' {
+	export const TREE_REFUSALS: Readonly<Record<string, string>>;
+	export const CLOCK_STATUS: Readonly<Record<string, string>>;
+	export const CLOCK_REFUSALS: Readonly<Record<string, string>>;
+	export const MIN_DATED: number;
+	export const OUTLIER_Z: number;
+	export const NEGLIGIBLE_RATE: number;
+	export const NEGLIGIBLE_R2: number;
+	export interface PhyloTreeLike {
+		name: Array<string | null>;
+		branchLength: Array<number | null>;
+		children: number[][];
+		parent: Int32Array | number[];
+		root: number;
+	}
+	export function parseClockTree(text: string | null | undefined): PhyloTreeLike | null;
+	export function leafNames(tree: PhyloTreeLike): string[];
+	export function branchLengthGate(tree: PhyloTreeLike): {
+		ok: boolean;
+		code: string | null;
+		branches: number;
+		positive: number;
+		ratio: number;
+		nonFinite: number;
+		unit: boolean;
+		tips: number;
+	};
+	export function midpointRoot(
+		tree: PhyloTreeLike
+	): { node: number; fraction: number; pathLength: number; tips: [string, string] } | null;
+	export function outgroupRoot(tree: PhyloTreeLike, name: string, fraction?: number): { node: number; fraction: number } | null;
+	export function rootToTipDivergences(
+		tree: PhyloTreeLike,
+		rooting: { node: number; fraction: number }
+	): { names: string[]; divergence: Float64Array } | null;
+	export function populationStd(values: ArrayLike<number> | Iterable<number>): number;
+	export function treeDivergences(
+		treeText: string | null,
+		options?: { root?: 'midpoint' | 'outgroup'; outgroup?: string | null }
+	): {
+		ok: boolean;
+		code: string | null;
+		tree: PhyloTreeLike | null;
+		gate: ReturnType<typeof branchLengthGate> | null;
+		rooting: { node: number; fraction: number } | null;
+		rootLabel: string;
+		names: string[];
+		divergence: Float64Array | null;
+		sd: number;
+	};
+	export function pearson(x: ArrayLike<number>, y: ArrayLike<number>): number;
+	export function clockRegression(input: {
+		taxa: string[];
+		divergence: ArrayLike<number>;
+		times: ArrayLike<number>;
+		undated?: number;
+		units?: string;
+	}): Record<string, unknown> & { ok: boolean; rows: Array<Record<string, number | string | boolean>> };
+	export function rootSensitivity(
+		fits: Array<{ label: string; fit: unknown }>,
+		samplingSpan: number
+	): { values: Array<{ label: string; tMrca: number }>; spread: number; wide: boolean } | null;
+}
+
 declare module '@veg/hyphaeon-js' {
+	/** js/src/dates.js: the 21 rule ids every DateParse reports; the /time page maps them to words. */
+	export const DATE_RULES: Readonly<Record<string, string>>;
+	export const TIME_UNITS: readonly string[];
 	/** js/src/writers.js: `nx.write_graphml` (cli.py:821-833) over the co-selection edges. */
 	export function graphml(
 		edges: Array<{ site_u: number | string; site_v: number | string; similarity: number; cesi: number; shared_branches: number; fdr_q: number }>,
@@ -82,7 +247,18 @@ declare module 'phylotree' {
 		display: TreeRender | undefined;
 		render(options: Record<string, unknown>): TreeRender;
 		getNewick(): string;
+		/** `src/rooting.js`: MUTATES the tree and rebuilds its hierarchy. Root then walk, never the reverse. */
+		reroot(node: PhyloNode, fraction?: number): phylotree;
+		getNodeByName(name: string): PhyloNode | undefined;
 	}
+	/** `src/metrics/compute-midpoint.js:68-71`. Its two fields are the two arguments `reroot` wants. */
+	export function computeMidpoint(tree: phylotree): { location: PhyloNode; breakpoint: number };
+	/** `src/metrics/root-to-tip.js:160`: annotates each leaf with `data.rootToTip`. THROWS A BARE STRING. */
+	export function rootToTip(tree: phylotree): void;
+	/** `src/metrics/root-to-tip.js`: best-root search by max R². Not on any production path; see clock.test.ts. */
+	export function fitRootToTip(tree: phylotree, options?: Record<string, unknown>): Record<string, unknown>;
+	/** `src/extract-dates.js`: a date getter anchored to the end of a name. Unusable here; see clock.test.ts. */
+	export function extractDates(tree: phylotree, options?: Record<string, unknown>): unknown;
 	export interface TreeRender {
 		nodeLabel(fn: (node: import('d3').HierarchyNode<{ name: string }>) => string): TreeRender;
 		style_edges(

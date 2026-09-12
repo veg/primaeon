@@ -4,7 +4,8 @@
 
 	WHY THIS FILE EXISTS. PLAN.md §4.0 / D21: the only user action is uploading a dataset, so this
 	route has no analysis picker and no options form on the way to results. It receives the inputs
-	(the landing page's in-memory hand-off with `?autorun=1`, or `?demo=<id>&autorun=1`), runs
+	(the landing page's in-memory hand-off with `?autorun=1`, lib/handoff.ts, or
+	`?demo=<id>&autorun=1`), runs
 	the library's `diagnose()` in the prep worker, follows the diagnostics' variant suggestion, then
 	calls `startReport()` (lib/report/run.svelte.ts), which creates the record in IndexedDB and
 	starts the ONE analyze worker that hosts the whole orchestrator, and navigates to the report
@@ -35,6 +36,7 @@
 	import { reportPath } from '$lib/api';
 	import { DEMOS, chooseReference, loadDemo, readText } from '$lib/analyze/inputs';
 	import { hasEmbeddedTree, sequenceNames, sniffFormat } from '$lib/analyze/sniff';
+	import { takeHandoff } from '$lib/handoff';
 	import { panelModel, treePlanText, type PanelModel, type PrescreenResult } from '$lib/diagnostics/panel';
 	import { planTree, startReport } from '$lib/report/run.svelte';
 	import { DEFAULT_DMS_WORK_BUDGET, DEFAULT_PERMUTATIONS, DEFAULT_SEED, isAvailable as storageAvailable } from '$lib/storage/reports';
@@ -114,6 +116,8 @@
 	});
 
 	function loadHandoff() {
+		// lib/handoff.ts: memory first, session storage only as a reload fallback. This route
+		// ignores `metadataText` / `metadataName`, which only /time supplies.
 		const h = takeHandoff();
 		if (!h) {
 			autorun = false;
@@ -422,6 +426,7 @@
 				{#if starting}<button type="button" class="button button--secondary" onclick={cancel}>Cancel</button>{/if}
 			</div>
 			{#if startError}<p class="error notice--error" role="alert"><strong>The run did not start.</strong> {startError}</p>{/if}
+			<p class="hint">These sequences are dated? <a href="{base}/time/">Review the dates first.</a></p>
 		</form>
 	{/if}
 </div>

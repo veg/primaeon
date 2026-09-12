@@ -36,11 +36,14 @@ export const DB_NAME = 'hyphaeon';
 /**
  * Bump when a store or index is added; `onupgradeneeded` below must stay additive. Version 2
  * (Phase 2) adds the `reports` store (lib/storage/reports.ts) beside `runs`; the v1 `runs` records
- * are kept and read through `reports.ts`'s legacy wrapper rather than migrated in place.
+ * are kept and read through `reports.ts`'s legacy wrapper rather than migrated in place. Version 3
+ * (PrimAeon phase 2, the /time route) adds `timesets` (lib/storage/timesets.ts), a reviewed set of
+ * sampling dates for one DATASET — which outlives any one run, and so cannot live on a report.
  */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const RUNS_STORE = 'runs';
 export const REPORTS_STORE = 'reports';
+export const TIMESETS_STORE = 'timesets';
 export const CREATED_INDEX = 'createdAt';
 
 /** The message DM3 showed on QuotaExceededError, reworded for this app's vocabulary. */
@@ -91,6 +94,10 @@ export function openDb(): Promise<IDBDatabase> {
 			}
 			if (!db.objectStoreNames.contains(REPORTS_STORE)) {
 				const store = db.createObjectStore(REPORTS_STORE, { keyPath: 'id' });
+				store.createIndex(CREATED_INDEX, 'createdAt', { unique: false });
+			}
+			if (!db.objectStoreNames.contains(TIMESETS_STORE)) {
+				const store = db.createObjectStore(TIMESETS_STORE, { keyPath: 'id' });
 				store.createIndex(CREATED_INDEX, 'createdAt', { unique: false });
 			}
 		};
