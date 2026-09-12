@@ -520,6 +520,62 @@ acceptance('the acceptance run, against `hyphaeon temporal`\'s own output', () =
 		}
 	});
 
+	it('changes nothing but two columns when the invariable codons are not scored', async () => {
+		// THE ONE REAL DIVERGENCE this application has from the reference (see `run.js`'s header),
+		// asserted rather than argued. The reference sends every codon through the model; a browser
+		// chaining this onto an existing analyze pass may send only the variable ones. MEASURED on
+		// this machine: 12.89 s against 0.91 s for the model pass, a 93 % saving.
+		const alignmentText = readFileSync(join(EXAMPLES, 'H1N1_2009_pandemic.fasta'), 'utf8');
+		const session = await createSession({ modelsBase: MODELS, variant: 'general', threads: 4 });
+		const lean = await runTemporal({
+			loaded: chain.prep.loaded,
+			dates: ingestDates({ taxa: taxaForDates(alignmentText) }),
+			session: session.backbone,
+			options: { numTimePoints: 60, permutations: 100, scoreInvariableSites: false }
+		});
+		const full = chain.record;
+		expect(lean.primaeon.scored_codons).toBe(HEADLINE.codons_variable);
+		// Identical where it matters: the same candidates, the same sweeps, the same labels.
+		expect(Array.from(lean.candidates)).toEqual(Array.from(full.candidates));
+		expect(lean.confirmed_sweeps).toBe(full.confirmed_sweeps);
+		expect(Array.from(lean.sites.classification)).toEqual(Array.from(full.sites.classification));
+		expect(Array.from(lean.sites.mutation_label)).toEqual(Array.from(full.sites.mutation_label));
+		// The SELECTED quantities are bit-equal, which is what proves the two runs took the same
+		// path. The COMPUTED ones are equal at the graph class and not bit for bit, because scoring
+		// 273 codons rather than 4,384 changes the batch composition and onnxruntime's reductions
+		// with it — the same property `predict.js` measured for the batch-size bound. MEASURED here:
+		// 2.5e-8 relative on `auc`, four orders inside the class the fixture is compared at.
+		let worstAuc = 0;
+		let worstLrt = 0;
+		for (let s = 0; s < full.codons_total; s++) {
+			expect(lean.sites.peak_date[s]).toBe(full.sites.peak_date[s]);
+			expect(lean.sites.fwhm_years[s]).toBe(full.sites.fwhm_years[s]);
+			const den = Math.max(Math.abs(full.sites.auc[s]), 1e-300);
+			worstAuc = Math.max(worstAuc, Math.abs(lean.sites.auc[s] - full.sites.auc[s]) / den);
+		}
+		expect(worstAuc).toBeLessThan(1e-6);
+		expect(worstAuc).toBeLessThan(1e-7);
+		// And different in exactly two columns, at exactly the unscored codons, by being ABSENT.
+		let absent = 0;
+		for (let s = 0; s < full.codons_total; s++) {
+			if (full.sites.invariable[s]) {
+				expect(Number.isNaN(lean.sites.lrt[s])).toBe(true);
+				expect(Number.isNaN(lean.sites.p_static[s])).toBe(true);
+				absent++;
+			} else {
+				worstLrt = Math.max(worstLrt, Math.abs(lean.sites.lrt[s] - full.sites.lrt[s]));
+			}
+		}
+		expect(absent).toBe(HEADLINE.codons_invariable);
+		expect(worstLrt).toBeLessThan(CLASS.lrtAbs);
+		// q_static is untouched at the same class: BH runs over the variable subset alone
+		// (temporal.py:529), so nothing the 4,111 absent LRTs would have said enters its denominator.
+		let worstQ = 0;
+		for (let s = 0; s < full.codons_total; s++) worstQ = Math.max(worstQ, Math.abs(lean.sites.q_static[s] - full.sites.q_static[s]));
+		expect(worstQ).toBeLessThan(CLASS.qStatic);
+		expect(lean.sig_static_q10).toBe(full.sig_static_q10);
+	}, 120_000);
+
 	it('streams the deterministic half before the null and the null before the waves', () => {
 		// The app-side reordering `run.js` documents: the gate runs before the null, and a page sees
 		// trajectories and candidates within a second with the labels arriving last.

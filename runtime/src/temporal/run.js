@@ -68,18 +68,31 @@
  * on the record as `dates.beyond_reference` so no surface can quietly benefit from it.
  *
  * COST, MEASURED on this machine (Node 22 under Rosetta, 8 intra-op threads, `general.onnx`) on the
- * acceptance run — 100 sequences x 4,384 codons, 95 dated, 246 candidates, T = 60:
+ * acceptance alignment — 100 sequences x 4,384 codons, 95 dated, 246 candidates:
  *
- *     the model pass, all 4,384 codons          17.5 s      (35 forward calls at batch 128)
- *     everything from attention to stage one     0.16 s
- *     the shape gate and the wave decomposition  0.01 s
- *     the null at B = 100 (the fixture's own)    0.045 s
- *     the null at B = 1000 (the reference's)     0.390 s
+ *     phase            all 4,384 codons   variable only   all, at the CLI's own defaults
+ *                      B = 100,  T = 60   B = 100, T = 60  B = 1000, T = 250
+ *     temporal-infer         12.89 s           0.91 s            12.13 s
+ *     temporal-smooth         0.07 s           0.03 s             0.07 s
+ *     temporal-null           0.13 s           0.07 s             1.76 s
+ *     temporal-waves          0.03 s           0.01 s             0.12 s
+ *     TOTAL                  13.12 s           1.02 s            14.08 s
  *
- * The null is not this pillar's expensive section and the plan's estimate of it was two orders out;
- * see `null.js`'s header for the measurement and the corrected cost model. The model pass is the
- * cost, `scoreInvariableSites: false` removes 94 % of it, and the report's digital DMS still dwarfs
- * both.
+ * The model is 98 % of it and the null is 1 %; PLAN-TEMPORAL §5.1.3's estimate of the null was two
+ * orders out, and `null.js`'s header carries the measurement and the corrected cost model. The
+ * report's digital DMS still dwarfs both.
+ *
+ * AND THE DIVERGENCE COSTS NOTHING BUT TWO COLUMNS, measured on the same two runs: scoring only the
+ * 273 variable codons rather than all 4,384 takes the model pass from 12.89 s to 0.91 s — a 93 %
+ * saving — and produces THE SAME 246 candidates, THE SAME 32 confirmed sweeps, the same
+ * classification at every codon and a BIT-IDENTICAL `peak_date` and `fwhm_years`. Only `lrt` and
+ * `p_static` at the 4,111 invariable codons differ in kind, and they differ by being ABSENT rather
+ * than by being wrong. The computed quantities agree at the graph class rather than bit for bit
+ * (2.5e-8 relative on `auc`, measured) because scoring 273 codons instead of 4,384 changes the batch
+ * composition and onnxruntime's reductions with it — the same property `predict.js` measured when it
+ * bounded the batch size. `temporal-port.test.js` asserts all of that rather than leaving it as an
+ * argument. (The grid is not free in the same way: at T = 250 the same alignment yields 247
+ * candidates, not 246, because the energies are integrals over a finer axis.)
  */
 
 import {
