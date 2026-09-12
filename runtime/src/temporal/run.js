@@ -448,6 +448,11 @@ export async function runTemporal({
 
 	// --- S7: the static baseline (temporal.py:525-532) --------------------------------------------
 	const pStatic = pvalsFromLrtSelfLiang(lrts);
+	// `pvals_from_lrt_self_liang` returns 1.0 wherever the LRT is not positive (temporal.py's own
+	// `np.where(lrt > 0, ...)`), and NaN is not positive — so an unscored codon would come back with
+	// a p-value of 1, which is a REAL claim ("tested, and as unremarkable as a codon can be") about a
+	// codon nothing was asked about. Absent in, absent out.
+	for (let s = 0; s < L; s++) if (!scored[s]) pStatic[s] = NaN;
 	const qStatic = new Float32Array(L).fill(1);
 	/** @type {number[]} */
 	const varIdx = [];
@@ -681,7 +686,10 @@ export async function runTemporal({
 		L, nTaxa, N, T, taxa, validTaxaIndices, taxaDates, tMin, tMax, timespan, bandwidth, denseT,
 		lrts, pStatic, qStatic, nSigStatic, scored, varCount: varIdx.length,
 		curves, stats, mask, candIndices, dates: { ...resolved, beyond, undated: undated.length },
-		nullBlock, r2, gate, confirm, cls, waves, pPerm: tested ? pPerm : null, qPerm: tested ? qPerm : null,
+		// ALWAYS the spread arrays, tested or not: they already carry NaN at a candidate whose null
+		// did not run and the reference's own 1.0 everywhere else, and that distinction is the whole
+		// point of keeping a cancelled or refused run.
+		nullBlock, r2, gate, confirm, cls, waves, pPerm, qPerm,
 		elapsedSec: (Date.now() - started) / 1000
 	});
 	if (onProgress) onProgress(record);

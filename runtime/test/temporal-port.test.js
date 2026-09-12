@@ -948,3 +948,216 @@ function parseCsvText(text) {
 	const lines = text.trim().split('\n');
 	return { header: lines[0].split(','), rows: lines.slice(1).map((l) => l.split(',')) };
 }
+
+// =================================================================================================
+// Layer 4b: the branches no real example reaches, driven through a stub graph
+// =================================================================================================
+
+/**
+ * A small synthetic run with the model replaced by a callback.
+ *
+ * WHY A STUB AND NOT THE REAL GRAPH. Five behaviours below — the escape hatch, an unscored
+ * invariable codon, a cancelled null, a null above the budget, and an explicit root taxon carrying
+ * gaps — cannot be reached from `examples/` at all: the acceptance run confirms sweeps without the
+ * hatch, scores every codon, finishes its null in 45 ms and has no gapped root. A branch that is
+ * only exercised by a real dataset is a branch that is not exercised, so these are built to order.
+ * Nothing here is compared against the reference; what is asserted is the app-side SEMANTICS of
+ * each, which is this layer's half of the split.
+ */
+function stubRun({ L = 12, N = 8, invariable = [], attn = null, lrt = null } = {}) {
+	const taxa = Array.from({ length: N }, (_, i) => `t${i}`);
+	const inv = new Uint8Array(L);
+	for (const s of invariable) inv[s] = 1;
+	// AA tokens: an invariable codon is one residue everywhere; a variable one alternates, so
+	// `delta_root` is nonzero and the trajectory has somewhere to go.
+	const a = new Int32Array(L * N);
+	for (let s = 0; s < L; s++) {
+		for (let n = 0; n < N; n++) a[s * N + n] = inv[s] ? 3 : n < N / 2 ? 3 : 7;
+	}
+	const loaded = { L, N, taxa, a, invariable: inv, notices: { duplicatesCollapsed: 0 } };
+	const dates = Array.from({ length: N }, (_, i) => 2000 + i / (N - 1));
+	const predict = async ({ siteIndices }) => {
+		const out = new Float32Array(L);
+		const rows = new Float32Array(L * N).fill(1 / N);
+		for (const s of siteIndices) out[s] = lrt ? lrt(s) : 1 + (s % 3);
+		if (attn) attn(rows, L, N);
+		return { lrt: out, mean_root_attns: { data: rows, dims: [L, N] } };
+	};
+	return { loaded, dates, predict };
+}
+
+describe('the branches no example reaches', () => {
+	it('reports an unscored invariable codon as ABSENT, and the writer leaves the cell empty', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 10, invariable: [0, 1, 9] });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 20, scoreInvariableSites: false } });
+		expect(r.ok).toBe(true);
+		expect(r.primaeon.score_invariable_sites).toBe(false);
+		expect(r.primaeon.scored_codons).toBe(7);
+		for (const s of [0, 1, 9]) {
+			// NaN, never 0 — a zero LRT is a real claim about a codon and this is the absence of one.
+			expect(Number.isNaN(r.sites.lrt[s]), `site ${s + 1} lrt`).toBe(true);
+			expect(Number.isNaN(r.sites.p_static[s])).toBe(true);
+			// But the trajectory really is zero there, so its q, curve and loadings are untouched.
+			expect(r.sites.q_static[s]).toBe(1);
+			expect(r.sites.peak_intensity[s]).toBe(0);
+		}
+		const written = parseCsvText(temporalSitesCsvText(r));
+		expect(csvColumn(written, 'lrt')[0]).toBe('');
+		expect(csvColumn(written, 'p_static')[0]).toBe('');
+		expect(csvColumn(written, 'lrt')[2]).not.toBe('');
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_INVARIABLE_SITES_UNSCORED');
+		// And the reproduction line stops claiming it would reproduce the run.
+		const { reproduces, caveats } = temporalReferenceCommand(r);
+		expect(reproduces).toBe(false);
+		expect(caveats.join(' ')).toContain('not sent to the model');
+	});
+
+	it('records the escape hatch, which the reference writes into no file at all', async () => {
+		// temporal.py:692-693 fires when the confirmed COUNT is zero on a calendar run that is not
+		// solitary, and then calls everything with `p_perm <= 0.10` OR a static `lrt >= 3.84` — two
+		// hard-coded numbers, neither of them the caller's alpha. Forced here with `permAlpha: 0`,
+		// which no p can ever satisfy (the smallest is 1/(B+1)), because no bundled example reaches
+		// the branch: a CSV of a run that confirmed nothing and a CSV of a run that confirmed thirty
+		// sites through the hatch are indistinguishable upstream, and `escape_hatch_used` is how this
+		// record tells them apart.
+		const { loaded, dates, predict } = stubRun({ L: 12, lrt: (s) => (s % 2 === 0 ? 9 : 0.1) });
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 16, permutations: 30, permAlpha: 0, minR2Fpca: 0.35 }
+		});
+		expect(r.ok).toBe(true);
+		expect(r.solitary_regime).toBe(false);
+		expect(r.stage1_candidates).toBeGreaterThan(3);
+		expect(r.escape_hatch_used).toBe(true);
+		expect(r.confirmed_sweeps).toBeGreaterThan(0);
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_ESCAPE_HATCH');
+		const w = r.warnings.find((x) => x.code === 'TEMPORAL_ESCAPE_HATCH');
+		expect(w.message).toContain('fallback selection');
+		expect(w.data.upstream).toContain('temporal.py:692-693');
+		// Everything it called cleared one of the two hard-coded numbers, and NOT `permAlpha`.
+		for (let s = 0; s < r.codons_total; s++) {
+			if (!r.sites.is_confirmed_sweep[s]) continue;
+			expect(r.sites.lrt[s] >= 3.84 || r.sites.p_perm[s] <= 0.1).toBe(true);
+			expect(r.sites.p_perm[s]).toBeGreaterThan(r.floors.perm_alpha);
+		}
+		// The CSV it writes is silent about all of it, which is the point of the record field.
+		const written = parseCsvText(temporalSitesCsvText(r));
+		expect(written.header).not.toContain('escape_hatch_used');
+	});
+
+	it('withholds the null above the budget and withholds nothing else', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 12 });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 16, workBudget: 1 } });
+		expect(r.ok).toBe(true);
+		expect(r.permutations.skipped).toBe(true);
+		expect(r.permutations.tested).toBe(false);
+		expect(r.confirmed_sweeps).toBe(0);
+		expect(r.escape_hatch_used).toBe(false);
+		// The deterministic half is complete and correct.
+		expect(r.stage1_candidates).toBeGreaterThan(0);
+		expect(r.curves.prevalence.some((v) => v !== 0)).toBe(true);
+		// `p_perm` at a candidate is ABSENT, not 1.0 — "not tested", never "not a sweep".
+		for (const site of r.candidates) expect(Number.isNaN(r.sites.p_perm[site - 1])).toBe(true);
+		// A non-candidate keeps the reference's own 1.0, which is what its CSV says.
+		const nonCandidate = [...Array(r.codons_total).keys()].find((s) => !r.candidates.includes(s + 1));
+		if (nonCandidate !== undefined) expect(r.sites.p_perm[nonCandidate]).toBe(1);
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_NULL_SKIPPED');
+		const { reproduces } = temporalReferenceCommand(r);
+		expect(reproduces).toBe(false);
+	});
+
+	it('keeps the trajectories when the null is cancelled, and says at what draw count', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 12 });
+		const controller = new AbortController();
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 16, permutations: 4000 },
+			signal: controller.signal,
+			onProgress: (p) => {
+				if (p.stage === 'null' && p.permutations.completed >= 5) controller.abort();
+			}
+		});
+		expect(r.ok).toBe(true);
+		expect(r.permutations.cancelled).toBe(true);
+		expect(r.permutations.completed).toBeGreaterThanOrEqual(5);
+		expect(r.permutations.completed).toBeLessThan(4000);
+		expect(r.permutations.tested).toBe(true);
+		expect(r.curves.prevalence.some((v) => v !== 0)).toBe(true);
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_NULL_TRUNCATED');
+		const w = r.warnings.find((x) => x.code === 'TEMPORAL_NULL_TRUNCATED');
+		expect(w.message).toContain(`${r.permutations.completed} of 4000`);
+		// The estimator at the achieved count, which is the same estimator on a coarser grid.
+		for (const site of r.candidates) {
+			expect(r.sites.p_perm[site - 1]).toBeGreaterThanOrEqual(1 / (r.permutations.completed + 1) - 1e-7);
+		}
+	});
+
+	it('names an explicit root, and flags the Alanine that an unknown residue becomes', async () => {
+		// UPSTREAM BUG TEMPORAL Q2 (temporal.py:355). The root taxon's gaps become index 0, so every
+		// other sequence reads as different from the root AT INVARIABLE CODONS TOO, which is the one
+		// configuration in which the model's outputs there are load-bearing. `run.js` therefore pins
+		// `scoreInvariableSites` back on rather than honouring a caller who turned it off.
+		const { loaded, dates, predict } = stubRun({ L: 10, N: 8, invariable: [0, 1] });
+		for (let s = 0; s < 10; s++) loaded.a[s * 8 + 2] = 20; // taxon t2 is a gap everywhere
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 12, permutations: 10, rootTaxon: 't2', scoreInvariableSites: false }
+		});
+		expect(r.root.source).toBe('root-taxon');
+		expect(r.root.taxon).toBe('t2');
+		expect(r.primaeon.score_invariable_sites).toBe(true);
+		const codes = r.warnings.map((w) => w.code);
+		expect(codes).toContain('TEMPORAL_ROOT_UNKNOWN_RESIDUES');
+		const w = r.warnings.find((x) => x.code === 'TEMPORAL_ROOT_UNKNOWN_RESIDUES' && x.severity === 'warn');
+		expect(w.data.count).toBe(10);
+		expect(w.message).toContain('ALANINE');
+		// And the bug's visible consequence: an invariable codon now carries a real trajectory.
+		expect(r.sites.ref_aa[0]).toBe('A');
+		expect(r.sites.peak_intensity[0]).toBeGreaterThan(0);
+	});
+
+	it('falls back to the earliest-sample consensus when the named root is not there', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 8 });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 10, permutations: 10, rootTaxon: 'nope' } });
+		expect(r.root.source).toBe('early-consensus');
+		// temporal.py:366's window: max(3, min(25, int(0.05*N))) — three for anything under 60.
+		expect(r.root.window).toBe(3);
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_ROOT_TAXON_NOT_FOUND');
+	});
+
+	it('takes the fixation branch on a non-calendar axis and says what changed', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 10 });
+		const gens = dates.map((_, i) => i * 500);
+		const r = await runTemporal({ loaded, dates: gens, predict, options: { numTimePoints: 16, permutations: 10, timeUnits: 'generations' } });
+		expect(r.regime.sweep_mode).toBe('fixation');
+		expect(r.regime.non_calendar).toBe(true);
+		expect(r.regime.unit_label).toBe('gen');
+		// temporal.py:494: no ceiling on the bandwidth off the calendar, and no [0.05, 2.0] clamp.
+		expect(r.bandwidth_years).toBeGreaterThan(2.0);
+		// temporal.py:684: non-calendar is always the solitary regime, so the shape gate is bypassed.
+		expect(r.solitary_regime).toBe(true);
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_UNITS_NOT_CALENDAR');
+		// And the quirk: the key still says "years" (upstream TEMPORAL Q10).
+		expect(Object.keys(JSON.parse(temporalSummaryJsonText(r)))).toContain('timespan_years');
+	});
+
+	it('counts the dates our parser reads and the reference\'s cannot', async () => {
+		// D31's honesty rule, driven from a DateIngest rather than a bare vector, because the rule
+		// table only survives that shape. `korber_isolate` is one of the conventions
+		// `temporal.parse_temporal_metadata` does not have at all.
+		const { loaded, predict } = stubRun({ L: 8, N: 8 });
+		const ingest = {
+			schema_version: 1,
+			source: 'headers',
+			by_rule: { korber_isolate: 6, header_decimal_year: 2 },
+			rows: loaded.taxa.map((t, i) => ({ taxon: t, value: 2000 + i / 7 }))
+		};
+		const r = await runTemporal({ loaded, dates: ingest, predict, options: { numTimePoints: 10, permutations: 10 } });
+		expect(r.dates.beyond_reference.count).toBe(6);
+		expect(r.dates.beyond_reference.rules).toEqual({ korber_isolate: 6 });
+		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_DATES_BEYOND_REFERENCE');
+		const { reproduces, caveats } = temporalReferenceCommand(r);
+		expect(reproduces).toBe(false);
+		expect(caveats.join(' ')).toContain('will not reproduce this run');
+	});
+});
