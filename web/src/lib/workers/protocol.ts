@@ -334,3 +334,99 @@ export type AnalyzeWorkerResponse = AnalyzeResponse | PhenotypeResponse;
 export function isPhenotypeRequest(req: AnalyzeWorkerRequest): req is PhenotypeRequest {
 	return (req as PhenotypeRequest).kind === 'phenotype';
 }
+
+// ---- temporal worker (Phase 5: temporal selection) --------------------------------------------
+
+/**
+ * One `hyphaeon temporal` run: prepare the alignment, load the backbone graph, score every codon
+ * once, smooth the attention along the sampling dates, and test the candidates against a
+ * date-shuffling null.
+ *
+ * IT IS A SIXTH WORKER, not a request kind on `analyze.worker.ts` and not a branch of
+ * `dating.worker.ts`, for the two reasons those two are apart from each other. The dating worker's
+ * whole claim is its import graph — `@veg/hyphaeon-runtime/dating` reaches no session and no graph,
+ * which is why `/time` can review dates for nothing and `e2e/time.spec.ts` proves it by watching the
+ * network — and this pillar's first step is a forward pass, so putting it there would turn that
+ * proof into a promise. The analyze worker holds a warm backbone session for a REPORT: reaching it
+ * from `/time` would drag the whole `runEverything` orchestrator into this route's bundle to run a
+ * pillar the report does not have.
+ *
+ * THE DATES TRAVEL AS ROWS PLUS THEIR RULE TABLE. `runTemporal` counts how many of them were read
+ * by a rule `temporal.parse_temporal_metadata` does not have (D31) and puts the count on the record
+ * as `dates.beyond_reference`, so the page can say plainly that the reference would have refused
+ * this file. A bare vector would make that count unknowable, and the runtime deliberately reports
+ * `null` rather than `0` for an unknown provenance.
+ */
+export interface TemporalRequest {
+	alignmentText: string;
+	/** The tree AS SUPPLIED, or '' for the library's tree-free TN93 path (D22). */
+	treeText: string;
+	alignmentName: string | null;
+	treeName: string | null;
+	/** One per dated sequence; an undated one is simply absent. */
+	dates: Array<{ taxon: string; value: number }>;
+	/** The ingest's `by_rule` histogram, so `beyond_reference` is a count and not a shrug. */
+	datesByRule: Record<string, number> | null;
+	datesSource: string | null;
+	timeUnits: string;
+	options: {
+		numTimePoints: number;
+		/** An explicit `-B`, or null to walk the runtime's rounds (200 → 500 → 1,000). */
+		permutations: number | null;
+		bandwidth: number | null;
+		rootTaxon: string | null;
+		scoreInvariableSites: boolean;
+		seed: number;
+		maxSpecies: number;
+	};
+	manifestUrl: string;
+	modelsBase: string;
+	ortBase: string;
+	tn93Base?: string;
+	numThreads: number;
+	/** The manifest variant; the manifest's own default when absent. */
+	variant?: string | null;
+}
+
+/**
+ * What the worker posts as a `section` event, once per stage and once per null chunk.
+ *
+ * THE NULL CHUNKS CARRY THE TWO VECTORS AND NOTHING ELSE, deliberately. The runtime's own interim
+ * payload is a whole record — its arrays are shared references, so building it is free in the
+ * worker — but `postMessage` structured-clones it, and the curve block alone is `2 · L · T` float64
+ * (17.5 MB on the acceptance alignment at the default grid). Cloning that five times a second to
+ * deliver a few kilobytes of p-values would make the progress bar the most expensive thing on the
+ * page. The page merges these two columns into the record it already holds.
+ */
+export type TemporalStagePayload =
+	| { stage: 'scored' | 'complete'; record: Record<string, unknown> }
+	| {
+			stage: 'null';
+			p_perm: Float32Array;
+			q_perm: Float32Array;
+			permutations: Record<string, unknown>;
+	  };
+
+export interface TemporalResponse {
+	/** The `TemporalRecord`, or null when the run refused (never thrown; runtime `codes.js`). */
+	record: Record<string, unknown> | null;
+	refusal: { code: string; message: string; warnings: Array<{ code: string; severity: string; message: string }> } | null;
+	numThreads: number;
+	crossOriginIsolated: boolean;
+	firstLoad: boolean;
+	elapsedMs: number;
+	/** Which graph the session verified, for the provenance line. */
+	model: { variant: string; file: string; sha256: string } | null;
+	/**
+	 * The command line that would reproduce this run, and the reasons it would not — from the
+	 * runtime's own `temporalReferenceCommand`, computed HERE rather than on the page. The page must
+	 * print it without a run of its own, and importing `@veg/hyphaeon-runtime/temporal` on the main
+	 * thread to build one string would pull the pillar, `predict.js` and the whole library into the
+	 * route's initial bundle. The four download files are the other half of that argument and take
+	 * the other route: they are megabytes, so the page dynamic-imports the writers when a reader
+	 * actually clicks (see `+page.svelte`).
+	 */
+	reference: { command: string; reproduces: boolean; caveats: string[] } | null;
+	/** The three sentences that must travel with the downloads (runtime `temporalDownloadNotes`). */
+	downloadNotes: string[];
+}
