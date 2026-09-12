@@ -32,6 +32,10 @@
  *           one worker and not one per phase. Phase 1's third worker fitted branch lengths in a
  *           vendored WebAssembly engine; D22 replaced it with the library's tree-free TN93 path,
  *           so there is no tree worker any more and no second WASM heap to keep apart from ORT's.
+ *   dating  the model-free ancestor-date run (Phase 3). Its own worker precisely BECAUSE it loads
+ *           nothing: its import graph is `@veg/hyphaeon-runtime/dating` alone, so the `/time`
+ *           route's "no `*.onnx`, no `ort-*.wasm`" assertion holds by construction. See
+ *           dating.worker.ts.
  *   infer   the whole `runMeme` — session load, prepare, inference, post-processing — in ONE
  *           worker, with the ORT session created there. This is the simpler of the two designs
  *           the plan allowed (per-phase workers behind an adapter, or one worker running the
@@ -53,6 +57,7 @@ import type {
 	TreeSource
 } from '$lib/api';
 import type { PhenotypeSection } from '$lib/report/types';
+import type { TaxonDatingRow } from '$lib/time/types';
 import type { PrescreenResult } from '$lib/diagnostics/panel';
 
 // ---- envelope ---------------------------------------------------------------------------------
@@ -230,6 +235,47 @@ export interface PhenotypeResponse {
 	numThreads: number;
 	crossOriginIsolated: boolean;
 	firstLoad: boolean;
+	elapsedMs: number;
+}
+
+// ---- dating worker (Phase 3: the ancestor date, with no model at all) -------------------------
+
+/**
+ * One `hyphaeon dating --no-tree --method ols` run. The dates are sent as rows rather than as the
+ * whole `DateIngest`, because the run reads exactly two fields off each and the ingest carries a
+ * per-taxon provenance block the estimator has no use for.
+ *
+ * There is NO seed and NO bootstrap count here, and that is the contract rather than an omission:
+ * this pillar draws no random numbers (the reference's spline bootstrap raises on every replicate
+ * upstream, and the three interval methods that would need a generator are not ported), so a
+ * request that offered either would be advertising something the build does not do.
+ */
+export interface DatingRequest {
+	alignmentText: string;
+	alignmentName: string | null;
+	/** One per dated sequence, in alignment order; an undated one is simply absent. */
+	dates: Array<{ taxon: string; value: number }>;
+	/** A sequence name, one of the reference's magic root strings, or null for the consensus. */
+	rootTaxon: string | null;
+	excludedTaxa: string[];
+	clockModel: 'auto' | 'linear' | 'spline';
+	ciMethod: 'fieller' | 'delta';
+	timeUnits: string;
+}
+
+/** `runDating`'s result minus its typed arrays; see dating.worker.ts for why they are dropped. */
+export interface DatingResponse {
+	ok: boolean;
+	refusal: string | null;
+	warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
+	/** The reference-shaped record: its 22 keys in its order, plus `primaeon`. */
+	record: Record<string, unknown>;
+	rows: TaxonDatingRow[];
+	activeName: string;
+	selectedClock: string;
+	ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+	rootDescription: string;
+	rootCase: number;
 	elapsedMs: number;
 }
 
