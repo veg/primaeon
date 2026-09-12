@@ -66,6 +66,19 @@ export const DATING_FLOAT_KEYS = new Set([
 	'p_value',
 	'sigma2',
 	'rmse',
+	// run_pgls_dating's own additions (dating.py:1440-1466). Every other key it carries is already
+	// in the OLS set above — the two records share their shape, which is what lets the Fieller and
+	// delta intervals be the same code.
+	'ridge',
+	'pagel_lambda',
+	// the latent root's exported four (dating.py:3155-3161). `weight` and `date` are inside
+	// `anchor_taxa`'s dicts: `date` is `float(times[idx])` at dating.py:816, so a whole-year date
+	// must still print as `1985.0` and not as `1985`.
+	'alpha',
+	'temporal_r',
+	'temporal_r2',
+	'weight',
+	'date',
 	// run_restricted_spline_clock_dating (dating.py:1956-1972)
 	'rate_ancestral',
 	'ci_rate_ancestral',

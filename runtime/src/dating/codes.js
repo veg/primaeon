@@ -33,8 +33,14 @@ import { fillMessage, nameSample } from '../dates/codes.js';
 
 export { fillMessage, nameSample };
 
-/** Bumped when `DatingRecord`'s shape changes in a way a stored record cannot be read under. */
-export const DATING_SCHEMA_VERSION = 1;
+/**
+ * Bumped when `DatingRecord`'s shape changes in a way a stored record cannot be read under. Phase 4
+ * takes it to 2: `pgls` and `latent_root` stop being permanently null, `distance_mode` can now say
+ * `'latent'`, and `primaeon` gains the model block (`model_pass`, `pagel_lambda`, `printed_ridge`,
+ * `distance_mode_reason`). A version-1 record is still readable — every added key is additive — but
+ * a reader that shows a PGLS fit must know whether the record could have carried one.
+ */
+export const DATING_SCHEMA_VERSION = 2;
 
 /**
  * Deterministic report order. A warning whose code is not in this list sorts last, stably.
@@ -51,6 +57,12 @@ export const DATING_DIAGNOSTIC_CODES = Object.freeze([
 	'DATING_TAXA_EXCLUDED',
 	'DATING_HOLDOUTS_RESERVED',
 	'DATING_HOLDOUTS_IN_FIT',
+	'DATING_MODEL_GRAPH_ABSENT',
+	'DATING_MODEL_TAXA_MISSING',
+	'DATING_LATENT_DIVERGENCES',
+	'DATING_LATENT_ALPHA_ASSUMED',
+	'DATING_MODEL_SPLINE_REWEIGHTED',
+	'DATING_CLADE_ATTENUATED',
 	'DATING_SPLINE_PREFERRED',
 	'DATING_SPLINE_NO_INTERVAL',
 	'DATING_UNBOUNDED_ANTIQUITY',
@@ -66,7 +78,8 @@ export const DATING_DIAGNOSTIC_CODES = Object.freeze([
 	'DATING_ALIGNMENT_NOT_CODING',
 	'DATING_TOO_FEW_DATED',
 	'DATING_NO_TIME_SPAN',
-	'DATING_TN93_UNCOMPUTABLE'
+	'DATING_TN93_UNCOMPUTABLE',
+	'DATING_MODEL_TOO_MANY_TAXA'
 ]);
 
 /**
@@ -80,7 +93,14 @@ export const DATING_REFUSALS = Object.freeze({
 	ALIGNMENT_NOT_CODING: 'DATING_ALIGNMENT_NOT_CODING',
 	TOO_FEW_DATED: 'DATING_TOO_FEW_DATED',
 	NO_TIME_SPAN: 'DATING_NO_TIME_SPAN',
-	TN93_UNCOMPUTABLE: 'DATING_TN93_UNCOMPUTABLE'
+	TN93_UNCOMPUTABLE: 'DATING_TN93_UNCOMPUTABLE',
+	/**
+	 * `dating.py:2745-2747` gives up on the transformer above 1,500 sequences without a tree and
+	 * falls back to OLS and the spline. A run that ASKED for the model-based estimators at that size
+	 * is refused here instead, because the fallback and the thing that was asked for are different
+	 * answers under one name.
+	 */
+	MODEL_TOO_MANY_TAXA: 'DATING_MODEL_TOO_MANY_TAXA'
 });
 
 /**
@@ -218,7 +238,49 @@ export const DATING_MESSAGES = Object.freeze({
 	TN93_UNCOMPUTABLE:
 		'A pair of sequences is too diverged for a TN93 distance to exist ({error}). The distance is ' +
 		'the logarithm of a quantity that has gone non-positive — the alignment is saturated at this ' +
-		'depth, and a number here would be fiction rather than a distance.'
+		'depth, and a number here would be fiction rather than a distance.',
+	MODEL_GRAPH_ABSENT:
+		'The two model-based estimators did not run: this build has no dating graph ({reason}). They ' +
+		'need a taxon-by-taxon attention matrix and per-taxon embeddings, which the backbone graph ' +
+		'does not emit — it carries the ROOT token\'s attention row and the ROOT token\'s vector, ' +
+		'vectors where these are matrices, and neither can be derived from the other. The ordinary ' +
+		'fit and the curvature test below are unaffected.',
+	MODEL_TAXA_MISSING:
+		'{n} dated sequence(s) are not in the model\'s own taxon list and were dropped from the ' +
+		'covariance and from every fit: {names}. That happens when the alignment the model read and ' +
+		'the sequences being dated are not the same set.',
+	MODEL_TOO_MANY_TAXA:
+		'{n} sequences is more than the {max} the model-based estimators are run at. The reference ' +
+		'stops at the same number and quietly falls back to the ordinary fit (dating.py:2745); this ' +
+		'refuses instead, because the covariance the fallback does not build is the whole difference ' +
+		'between the two answers.',
+	LATENT_DIVERGENCES:
+		'Divergence here is NOT a sequence distance. The model placed a root inside the convex hull ' +
+		'of its own representation of your sequences, and every divergence below is the distance to ' +
+		'that root in that space, rescaled to substitutions per site by one slope (α = {alpha}) fitted ' +
+		'against the observed pairwise differences. EVERY estimator is fitted against it, the ' +
+		'ordinary one included: this is what `--distance-mode auto` resolves to when there is no tree ' +
+		'and a model is available (dating.py:2520-2523). The temporal correlation of that root is ' +
+		'R = {r}.',
+	LATENT_ALPHA_ASSUMED:
+		'The latent-to-substitution scale was not fitted: with no pairwise sequence distances to ' +
+		'calibrate against, the reference assumes 0.05 substitutions per site at the mean latent ' +
+		'distance (dating.py:756-757). The clock rate below is therefore a scale guess and not a ' +
+		'measurement; the ancestor DATE, which is a ratio of two quantities on the same scale, is not ' +
+		'affected.',
+	MODEL_SPLINE_REWEIGHTED:
+		'The curvature test was fitted against the model\'s covariance, not against independent ' +
+		'residuals — `dating.py:2844` hands the spline the same kernel the PGLS fit uses the moment ' +
+		'the model runs. On identical divergences that moves its answer: it is a generalised fit ' +
+		'here and an ordinary one in a model-free run, and the two are not comparable. It is also ' +
+		'regularised differently from the PGLS fit beside it (K + {ridge}·I against λK + (1−λ)I), ' +
+		'which is upstream\'s inconsistency and is reproduced rather than reconciled.',
+	CLADE_ATTENUATED:
+		'The model\'s covariance deflated the clock rate {factor}-fold, from {ols} to {pgls}, while ' +
+		'explaining less of the variance than the ordinary fit. That is the signature of a sample ' +
+		'whose phylogenetic structure and whose sampling dates are confounded: the generalised fit ' +
+		'attributes the temporal signal to shared ancestry instead. The ordinary fit answers, and the ' +
+		'generalised one is kept out of the model-averaged row as well (dating.py:2884-2891, :2905).'
 });
 
 /**

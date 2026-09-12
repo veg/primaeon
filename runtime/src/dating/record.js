@@ -208,10 +208,20 @@ export function rankTaxonRows(rows) {
 /**
  * The reference's record (dating.py:3150-3181) plus one key of ours.
  *
- * `pgls`, `power`, `latent_root` and `loocv` are `null` here exactly as `--method ols` leaves them,
- * so a diff against a CLI run shows nulls and nothing else; `tree` is always `null` because this
- * pillar is tree-free by construction (D34 declines re-rooting). `elapsed_seconds` is the run's own
- * wall clock, which is the one field two runs of the reference itself disagree on.
+ * `power` and `loocv` are `null` here exactly as the reference leaves them under this build's
+ * options (D33 drops the power-law clock; `--loocv` is not offered), and `tree` is always `null`
+ * because this pillar is tree-free by construction (D34 declines re-rooting). `pgls` and
+ * `latent_root` are null ONLY when the model-based half did not run — either because the manifest
+ * declares no dating graph or because the caller did not ask for it — which is what `--method ols`
+ * produces on the reference too. `elapsed_seconds` is the run's own wall clock, which is the one
+ * field two runs of the reference itself disagree on.
+ *
+ * `latent_root` IS A FOUR-KEY SUBSET, not the estimator's whole record. `dating.py:3155-3161`
+ * exports `alpha`, `temporal_r`, `temporal_r2` and `anchor_taxa` and drops `z_root`, `weights`,
+ * `dists`, `dists_latent`, `mu_ols` and `t_mrca_ols` — the 384-vector and the four per-taxon arrays
+ * are not in the download, and `t_mrca_ols` in particular is a DIAGNOSTIC fitted on the uncentred
+ * calendar axis (dating.py:804-806) that would sit beside the real OLS fit looking like a second
+ * opinion. The subset is the reference's and is reproduced exactly.
  *
  * `primaeon` is the added key: a name the reference does not use, so it cannot collide, carrying the
  * provenance a browser run needs and a CLI run has no place for.
@@ -229,6 +239,8 @@ export function buildDatingRecord(args) {
 		elapsedSeconds,
 		activeModel,
 		ols,
+		pgls = null,
+		latentRoot = null,
 		spline,
 		clockModel = 'auto',
 		ciMethod = 'fieller',
@@ -238,7 +250,7 @@ export function buildDatingRecord(args) {
 		primaeon = null
 	} = args;
 
-	const active = activeModel === 'spline' ? spline : ols;
+	const active = activeModel === 'spline' ? spline : activeModel === 'pgls' ? pgls : ols;
 	const tMrca = active && Number.isFinite(active.t_mrca) ? active.t_mrca : null;
 	const mu = active ? (active.mu ?? active.rate_ancestral ?? 0.0) : null;
 
@@ -247,7 +259,7 @@ export function buildDatingRecord(args) {
 		tree: null,
 		root_description: rootDescription,
 		distance_mode: distanceMode,
-		latent_root: null,
+		latent_root: latentRootExport(latentRoot),
 		taxa_count: taxaCount,
 		timespan,
 		elapsed_seconds: elapsedSeconds,
@@ -256,7 +268,9 @@ export function buildDatingRecord(args) {
 		ci_mrca: active ? (active.ci_mrca ?? null) : null,
 		mu,
 		ols: stripArrays(ols, ['residuals', 'fitted', 'times', 'cov_beta']),
-		pgls: null,
+		// dating.py:3169 drops the same three keys from the PGLS record; `cov_beta` is the library's
+		// one addition and joins them for the same reason it does on the OLS record.
+		pgls: stripArrays(pgls, ['residuals', 'fitted', 'times', 'cov_beta']),
 		spline: stripArrays(spline, ['residuals', 'fitted']),
 		power: null,
 		clock_model: clockModel,
@@ -266,6 +280,17 @@ export function buildDatingRecord(args) {
 		loocv: null,
 		taxa_summary: rows,
 		primaeon: primaeon ?? { schema_version: DATING_SCHEMA_VERSION }
+	};
+}
+
+/** `dating.py:3155-3161`'s four keys, in the reference's order. See the note in the header. */
+function latentRootExport(latent) {
+	if (latent == null) return null;
+	return {
+		alpha: latent.alpha,
+		temporal_r: latent.temporal_r,
+		temporal_r2: latent.temporal_r2,
+		anchor_taxa: (latent.anchor_taxa ?? []).map((a) => ({ taxon: a.taxon, weight: a.weight, date: a.date }))
 	};
 }
 

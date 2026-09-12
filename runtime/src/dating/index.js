@@ -35,5 +35,15 @@ export {
 export { verifyCodingAlignment, starsToGaps, coverageHoldout } from './alignment.js';
 export { selectClockModel, admitEnsembleCandidates } from './select.js';
 export { TAXON_COLUMNS, RECORD_KEYS, datingTaxonRecords, rankTaxonRows, buildDatingRecord } from './record.js';
-export { runDating, DATING_CI_METHODS, NOT_BUILT } from './run.js';
+export { runDating, DATING_CI_METHODS, DATING_DISTANCE_MODES, resolveDistanceMode, NOT_BUILT, NOT_BUILT_WITHOUT_MODEL } from './run.js';
+export {
+	DATING_NEURAL_MAX_TAXA,
+	effectiveRidge,
+	fitPgls,
+	latentRoot,
+	latentRootDescription,
+	neuralKernel,
+	sliceRows,
+	sliceSymmetric
+} from './modelFits.js';
 export { datingJsonText, datingCsvText, datingDownloads, DATING_FLOAT_KEYS, DATING_INT_KEYS } from './results.js';
