@@ -30,22 +30,38 @@
 # change on the engine's default branch cannot break this repository's CI by itself; a
 # workflow_dispatch can point one run at another ref without editing the file.
 #
-# Two jobs:
+# WHAT RUNS WHEN, AND WHY IT IS SPLIT THIS WAY (measured on run 34166686659, 2026-09-11)
 #
-#   app     the fast gate: `npm ci`, every workspace's vitest suite, svelte-check, the full web
-#           build (asset copy, gallery prebake, caveats check, vite build), Chromium, Playwright.
-#           The prebake is stamp-cached against the committed gallery records; when a runtime
-#           source or the library changed it rebakes all five examples under onnxruntime-node,
-#           which costs 3-5 minutes on a 4-vCPU runner. node_modules and the Playwright browser
-#           are cached so the rest of the job does not pay for them twice.
+# The first shape of this file ran everything on every pull request and took 14 to 19 minutes.
+# Two steps were four fifths of that: the gallery prebake inside the web build at 8.8 minutes,
+# and the two halves of the parity gate at 9.6 and 8.3. Neither belongs on the path a person
+# waits on, because neither can fail for a reason the faster jobs would miss quietly:
 #
-#   parity  the slow gate (PLAN.md 5.4, PARITY.md): runtime/scripts/parity-node.mjs writes the
-#           `node` surface (and `node-tn93` for the tree-free runs, PLAN.md D22) into the engine
-#           checkout's parity/ directory, then the engine's scripts/parity.py runs the Python
-#           reference on the same examples and compares. Exit 0 means no violation at the plan's
-#           classes; parity/report.json is uploaded either way so a failure can be read.
+#   - The gallery prebake is stamp-cached against the COMMITTED records, so it only costs
+#     anything when a runtime source changed after the last bake, and its output is a demo
+#     artifact rather than a test. The deployment workflow already builds with the committed
+#     records (pages.yml sets HYPHAEON_PREBAKE=skip), so a pull request that skips the prebake
+#     is building exactly what will be served. Staleness is caught on main and nightly instead,
+#     where `gallery` rebakes and fails if the committed records move.
+#   - Parity runs the model over every example on both sides. It is the gate that matters, and
+#     it is slow for a good reason, so it runs on main, nightly, on demand, and on any pull
+#     request that touches code which can move a number (runtime/, mcp/, server/, the lockfile
+#     or this file). A pull request that only touches the web layer cannot move one.
 #
-# Both run on every push to main and on every pull request; one run per ref at a time.
+# Jobs:
+#
+#   scope    ~20 s. Decides whether the slow gates run for this event.
+#   unit     one runner per workspace, in parallel: runtime, web, mcp, server.
+#   web      svelte-check, the build, Chromium, Playwright. Prebake skipped on pull requests.
+#   gallery  main, nightly and on demand: the full prebake, failing if the committed records
+#            are stale.
+#   parity   the slow gate, on the conditions above.
+#
+# The parity gate itself is unchanged (PLAN.md 5.4, PARITY.md): runtime/scripts/parity-node.mjs
+# writes the `node` surface (and `node-tn93` for the tree-free runs, PLAN.md D22) into the engine
+# checkout's parity/ directory, then the engine's scripts/parity.py runs the Python reference on
+# the same examples and compares. Exit 0 means no violation at the plan's classes;
+# parity/report.json is uploaded either way so a failure can be read.
 
 name: ci
 
@@ -53,12 +69,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # The full gate against main once a day, so the slow jobs still run on every change that
+    # reached main through a pull request that did not need them.
+    - cron: "0 7 * * *"
   workflow_dispatch:
     inputs:
       engine_ref:
         description: "veg/HyphAeon ref to check out beside this repository (default: ENGINE_REF below)"
         required: false
         default: ""
+      full:
+        description: "Run the slow gates (gallery prebake and parity) whatever the changed paths say"
+        type: boolean
+        required: false
+        default: false
 
 env:
   # The engine commit these tests run against. Bump together with the library the app consumes.
@@ -81,10 +106,54 @@ permissions:
   contents: read
 
 jobs:
-  app:
-    name: test, check, build, e2e
+  # Twenty seconds of git, so the slow jobs know whether this event needs them. A pull request
+  # that cannot move a number does not pay for the gate that checks numbers.
+  scope:
+    name: what needs to run
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
+    outputs:
+      slow: ${{ steps.decide.outputs.slow }}
+      why: ${{ steps.decide.outputs.why }}
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide
+        id: decide
+        env:
+          FULL: ${{ inputs.full }}
+        run: |
+          slow=true
+          why="push, schedule or manual run: the slow gates always run"
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$FULL" != "true" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            changed="$(git diff --name-only "$base" "$head" || true)"
+            # Anything that can move a number the parity gate compares, or the gallery records.
+            if printf '%s\n' "$changed" | grep -qE '^(runtime/|mcp/|server/|web/scripts/|package-lock\.json|\.github/workflows/ci\.yml)'; then
+              why="this pull request touches code that can move a number"
+            else
+              slow=false
+              why="this pull request touches no runtime, mcp, server, build-script or lockfile path"
+            fi
+          fi
+          echo "slow=$slow" >> "$GITHUB_OUTPUT"
+          echo "why=$why" >> "$GITHUB_OUTPUT"
+          echo "slow gates: $slow ($why)" >> "$GITHUB_STEP_SUMMARY"
+
+  # One runner per workspace. Serially these were 194 s; the long pole alone is about half that,
+  # and a failure now names the workspace in the job list rather than inside a combined log.
+  unit:
+    name: unit (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [runtime, web, mcp, server]
     defaults:
       run:
         working-directory: hyphaeon-app
@@ -110,9 +179,6 @@ jobs:
           cache: npm
           cache-dependency-path: hyphaeon-app/package-lock.json
 
-      # node_modules is restored whole when the lockfile and the Node line are unchanged; the
-      # library link inside it (node_modules/@veg/hyphaeon-js -> ../../HyphAeon/js) is a relative
-      # symlink, so it survives the round trip and points at the fresh engine checkout.
       - name: Cache node_modules
         id: node-modules
         uses: actions/cache@v4
@@ -126,17 +192,63 @@ jobs:
         if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Unit tests (vitest in every workspace with a test script)
-        run: npm run test --workspaces --if-present
+      - name: Test
+        run: npm run test --workspace ${{ matrix.workspace }} --if-present
+
+  web:
+    name: check, build, e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: hyphaeon-app
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: hyphaeon-app
+
+      - name: Check out veg/HyphAeon (the engine, private) beside it
+        uses: actions/checkout@v4
+        with:
+          repository: veg/HyphAeon
+          ref: ${{ inputs.engine_ref || env.ENGINE_REF }}
+          ssh-key: ${{ secrets.ENGINE_DEPLOY_KEY }}
+          path: HyphAeon
+
+      - name: Set up Node (.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: hyphaeon-app/.nvmrc
+          cache: npm
+          cache-dependency-path: hyphaeon-app/package-lock.json
+
+      - name: Cache node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            hyphaeon-app/node_modules
+            hyphaeon-app/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('hyphaeon-app/package-lock.json', 'hyphaeon-app/.nvmrc') }}
+
+      - name: Install (npm ci at the root; links @veg/hyphaeon-js from ../HyphAeon/js)
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
 
       - name: svelte-check
         working-directory: hyphaeon-app/web
         run: npm run check
 
-      # prebuild: copy-assets.mjs (ORT WASM, graphs, manifest, _headers), prebake-gallery.mjs
-      # (stamp-cached; a full rebake is ~3-5 min here), check-caveats.mjs; then vite build.
-      - name: Build the site (full prebake)
+      # prebuild: copy-assets.mjs (ORT WASM, graphs, manifest, _headers), prebake-gallery.mjs,
+      # check-caveats.mjs; then vite build. On a pull request the prebake is skipped and the
+      # committed gallery records are used, which is exactly what pages.yml deploys; the `gallery`
+      # job below is what proves those records are current.
+      - name: Build the site
         working-directory: hyphaeon-app/web
+        env:
+          HYPHAEON_PREBAKE: ${{ github.event_name == 'pull_request' && 'skip' || '' }}
         run: npm run build
 
       - name: Playwright version
@@ -178,8 +290,80 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The prebake is stamp-cached, so this is seconds when the committed records match the current
+  # runtime and about nine minutes when they do not. Either way it ends by asserting the records
+  # in the repository are the ones this code produces, which is the only thing a pull request
+  # skipping the prebake gives up.
+  gallery:
+    name: gallery records are current (advisory)
+    needs: scope
+    if: needs.scope.outputs.slow == 'true'
+    # ADVISORY FOR NOW, deliberately. This job compares a fresh bake with the committed records, and
+    # getting the comparison right took five rounds: a rebake rewrites timestamps, wall times, the
+    # machine it ran on and its own stamp; model numbers differ between macOS and Linux in the last
+    # bits; differences of model outputs amplify that to 4.1e-05; and a ranked list of taxa reorders
+    # when two of them tie. Each round taught the script something real and it now passes locally on
+    # all of those, but it has not yet passed a full CI rebake, and a freshness check for a demo
+    # artifact must not hold up merges while it settles. It still runs, and its result is visible.
+    # Flip this back to blocking once it has been green on main for a few runs.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: hyphaeon-app
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: hyphaeon-app
+
+      - name: Check out veg/HyphAeon (the engine, private) beside it
+        uses: actions/checkout@v4
+        with:
+          repository: veg/HyphAeon
+          ref: ${{ inputs.engine_ref || env.ENGINE_REF }}
+          ssh-key: ${{ secrets.ENGINE_DEPLOY_KEY }}
+          path: HyphAeon
+
+      - name: Set up Node (.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: hyphaeon-app/.nvmrc
+          cache: npm
+          cache-dependency-path: hyphaeon-app/package-lock.json
+
+      - name: Cache node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            hyphaeon-app/node_modules
+            hyphaeon-app/*/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('hyphaeon-app/package-lock.json', 'hyphaeon-app/.nvmrc') }}
+
+      - name: Install (npm ci at the root; links @veg/hyphaeon-js from ../HyphAeon/js)
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Rebake
+        working-directory: hyphaeon-app/web
+        run: npm run build
+
+      # Not `git diff --exit-code`: a rebake rewrites wall times, a timestamp, the Node version and
+      # the thread count, so a plain diff reports six files and 124 lines whenever a rebake happens
+      # at all — which it did on this job's first run, on records whose every number was identical.
+      # The script compares the records with those volatile keys removed and fails only on a value
+      # that means something.
+      - name: The committed records must be what this code bakes
+        working-directory: hyphaeon-app/web
+        run: node scripts/check-gallery-current.mjs
+
   parity:
     name: parity (python reference vs node, node-tn93)
+    needs: scope
+    if: needs.scope.outputs.slow == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
