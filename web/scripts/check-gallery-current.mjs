@@ -37,21 +37,61 @@ const repo = resolve(web, '..');
 const galleryDir = join(web, 'static', 'gallery');
 
 /**
- * A key whose value changes on every bake and says nothing about the science. Two attempts at this
- * as a fixed list both missed one — first `elapsed_sec`, then the prebake stamp itself — so it is a
- * rule now: anything naming a duration, a moment, the machine, or the bookkeeping that decides
- * whether a rebake was needed.
- *
- * The stamp is deliberately here. It is a hash of the inputs the bake depended on, so it differs
- * exactly when a rebake happened, which is the condition that brought us here; whether the records
- * are CURRENT is decided by the numbers below it, not by the bookkeeping above them.
+ * Keys whose value changes on every bake and says nothing about the science, enumerated by walking
+ * all five records rather than guessed. THIS IS A LIST AND NOT A PATTERN ON PURPOSE: three taxa in
+ * these alignments are called felCat, ratRat and canLat, so a rule like "ends in at" would have
+ * quietly ignored real per-taxon values while looking tidy. Four earlier attempts each missed one —
+ * elapsed_sec, the prebake stamp, prebaked_at — which is how the list got this long and this exact.
  */
+const VOLATILE = new Set([
+	// when it ran
+	'at',
+	'createdAt',
+	'created_at',
+	'createdAtIso',
+	'generated_at',
+	'generatedAt',
+	'prebaked_at',
+	// how long it took
+	'timings',
+	'runtime_sec',
+	'reference_runtime_sec',
+	'elapsed_sec',
+	'elapsed_seconds',
+	'elapsedMs',
+	'wallMs',
+	'predictedSeconds',
+	'workPerSecond',
+	// what it ran on
+	'node',
+	'threads',
+	'runtime',
+	'commit',
+	// the bookkeeping that decides whether a rebake was needed; it differs exactly when one happened
+	'stamp'
+]);
+
+/**
+ * Keys under which every number is a DIFFERENCE of model outputs, where relative error amplifies.
+ * The looser class applies to the whole subtree: `mutant_deltas` is keyed by amino acid, so the
+ * numbers sit under keys called D, V and K, and a rule reading only the immediate key missed them.
+ * Measured between a macOS bake and a Linux one: 1.5e-05 on an attribution delta near 0.7, and
+ * 4.1e-05 on a mutant delta near 0.37.
+ */
+const DIFFERENCE_SUBTREE = new Set([
+	'delta_lrt',
+	'mean_delta_lrt',
+	'max_delta_lrt',
+	'min_delta_lrt',
+	'mutant_deltas',
+	'pct_signal_explained',
+	'mean_patristic_depth',
+	'weighted_patristic_depth',
+	'tree_depth_ratio'
+]);
+
 function isVolatile(key) {
-	if (/^(at|createdAt|created_at|createdAtIso|generated_at|generatedAt|timings|node|threads|commit|stamp)$/.test(key)) {
-		return true;
-	}
-	// elapsed, elapsed_sec, elapsedMs, wall, wall_seconds, runtime_sec, duration_ms, ...
-	return /^(elapsed|wall|runtime|duration)/.test(key) || /(_sec|_seconds|_ms|Ms|Sec|Seconds)$/.test(key);
+	return VOLATILE.has(key);
 }
 
 /** The same object with every volatile key dropped, at any depth. */
@@ -79,7 +119,6 @@ const GRAPH_TOL = 1e-5;
  * graph class covers subtraction.
  */
 const DIFFERENCE_TOL = 1e-3;
-const DIFFERENCE_KEY = /^(delta|pct_signal_explained|mean_patristic_depth)/;
 
 /** Two numbers are the same if they differ by less than the class allows. */
 function sameNumber(a, b, tol = GRAPH_TOL) {
@@ -111,9 +150,9 @@ function isTaxonKeyedList(value) {
 }
 
 /** The first path where two stripped structures differ, or null. */
-function firstDifference(a, b, path = '', key = '') {
+function firstDifference(a, b, path = '', loose = false) {
 	if (typeof a === 'number' && typeof b === 'number') {
-		const tol = DIFFERENCE_KEY.test(key) ? DIFFERENCE_TOL : GRAPH_TOL;
+		const tol = loose ? DIFFERENCE_TOL : GRAPH_TOL;
 		return sameNumber(a, b, tol) ? null : { path: path || '(root)', committed: String(a), baked: String(b) };
 	}
 	if (isTaxonKeyedList(a) && isTaxonKeyedList(b)) {
@@ -128,7 +167,7 @@ function firstDifference(a, b, path = '', key = '') {
 					baked: right.has(taxon) ? 'present' : 'absent'
 				};
 			}
-			const found = firstDifference(left.get(taxon), right.get(taxon), `${path}[${taxon}]`);
+			const found = firstDifference(left.get(taxon), right.get(taxon), `${path}[${taxon}]`, loose);
 			if (found) return found;
 		}
 		return null;
@@ -140,7 +179,7 @@ function firstDifference(a, b, path = '', key = '') {
 	}
 	const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
 	for (const k of keys) {
-		const found = firstDifference(a[k], b[k], `${path}.${k}`, k);
+		const found = firstDifference(a[k], b[k], `${path}.${k}`, loose || DIFFERENCE_SUBTREE.has(k));
 		if (found) return found;
 	}
 	return null;
