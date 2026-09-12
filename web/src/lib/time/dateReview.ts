@@ -265,10 +265,39 @@ export interface ReadyGate {
 }
 
 /**
+ * A date read by the bare-number rule is the weakest claim this page can make.
+ *
+ * Under any non-calendar unit the last header pattern (temporal.py:210) takes the first
+ * delimiter-bound number in a name, whatever that number means. On a surveillance file it will
+ * happily read an accession, an isolate index or a patient code as a generation. Measured on the
+ * shipped H1N1 set, whose names carry a decimal year in their last pipe field: choosing
+ * "Generations" dates 95 of 100 sequences by this rule alone, and every one of those numbers is
+ * nonsense. So when it accounts for most of the dates, the reader has to say out loud that the
+ * numbers are what they think they are, exactly as they must for dropped sequences.
+ */
+export const BARE_NUMBER_RULE = 'header_bare_number';
+const BARE_NUMBER_MAJORITY = 0.5;
+
+export function bareNumberDates(ingest: DateIngestLike | null): number {
+	return ingest?.by_rule?.[BARE_NUMBER_RULE] ?? 0;
+}
+
+/** Does the bare-number rule account for most of what was dated? */
+export function bareNumbersDominate(ingest: DateIngestLike | null): boolean {
+	if (!ingest) return false;
+	const bare = bareNumberDates(ingest);
+	return bare > 0 && bare >= ingest.coverage.dated * BARE_NUMBER_MAJORITY;
+}
+
+/**
  * The gate, stated exactly. `ready` unlocks the two downloads and sets the record's `ready` flag;
  * it STARTS NOTHING, because neither time-aware analysis is ported yet.
  */
-export function readyGate(ingest: DateIngestLike | null, dropUndated: boolean): ReadyGate {
+export function readyGate(
+	ingest: DateIngestLike | null,
+	dropUndated: boolean,
+	acceptBareNumbers = false
+): ReadyGate {
 	if (!ingest) return { ready: false, reasons: ['No alignment is loaded.'] };
 	const reasons: string[] = [];
 	const c = ingest.coverage;
@@ -277,6 +306,14 @@ export function readyGate(ingest: DateIngestLike | null, dropUndated: boolean): 
 	}
 	if (ingest.span && ingest.span.span === 0) {
 		reasons.push(`Every dated sequence carries the same date (${ingest.span.min.toFixed(4)}), so there is no time axis.`);
+	}
+	if (bareNumbersDominate(ingest) && !acceptBareNumbers) {
+		const bare = bareNumberDates(ingest);
+		reasons.push(
+			`${bare} of the ${c.dated} dates were read as a bare number in the sequence name, a rule that ` +
+				`claims any number it finds. Confirm below that those numbers are ${ingest.time_units}, or ` +
+				`supply a metadata table.`
+		);
 	}
 	if (c.undated > 0 && !dropUndated) {
 		reasons.push(
@@ -291,12 +328,13 @@ export type PageState = 'empty' | 'undated' | 'review' | 'ready' | 'failed';
 export function pageState(
 	ingest: DateIngestLike | null,
 	failure: string | null,
-	dropUndated: boolean
+	dropUndated: boolean,
+	acceptBareNumbers = false
 ): PageState {
 	if (failure) return 'failed';
 	if (!ingest) return 'empty';
 	if (ingest.coverage.dated === 0) return 'undated';
-	return readyGate(ingest, dropUndated).ready ? 'ready' : 'review';
+	return readyGate(ingest, dropUndated, acceptBareNumbers).ready ? 'ready' : 'review';
 }
 
 /** The line under the table about metadata rows that named no sequence — the most important one. */

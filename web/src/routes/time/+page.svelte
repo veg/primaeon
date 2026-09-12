@@ -45,6 +45,8 @@
 		reviewRows,
 		spanSentence,
 		unmatchedMetadataLine,
+		bareNumberDates,
+		bareNumbersDominate,
 		type DateIngestLike,
 		type ReviewRow
 	} from '$lib/time/dateReview';
@@ -88,6 +90,9 @@
 	let archival1959 = $state(false);
 	let customPattern = $state('');
 	let dropUndated = $state(false);
+	// Set only by the tick below: the reader confirming that bare numbers in names really are the
+	// time coordinate they chose. Cleared whenever the units change, because the claim is about them.
+	let acceptBareNumbers = $state(false);
 
 	let recordId = $state<string | null>(null);
 	let visibleRows = $state<ReviewRow[]>([]);
@@ -122,8 +127,8 @@
 
 	const tableLoaded = $derived(Boolean(metadataText));
 	const rows = $derived(ingest ? reviewRows(ingest, tableLoaded) : []);
-	const gate = $derived(readyGate(ingest, dropUndated));
-	const viewState = $derived(pageState(ingest, failure, dropUndated));
+	const gate = $derived(readyGate(ingest, dropUndated, acceptBareNumbers));
+	const viewState = $derived(pageState(ingest, failure, dropUndated, acceptBareNumbers));
 	const strip = $derived(ingest ? diagnosis(ingest) : null);
 	const unmatched = $derived(ingest ? unmatchedMetadataLine(ingest, metadataName) : null);
 	const anchors = $derived(taxa.length ? archival1959Candidates(taxa) : []);
@@ -474,6 +479,16 @@
 						{#each gate.reasons as reason, i (i)}<span class="gate__reason">{reason}</span>{/each}
 					{/if}
 				</p>
+				{#if bareNumbersDominate(ingest)}
+					<label class="check">
+						<input type="checkbox" bind:checked={acceptBareNumbers} />
+						Those {bareNumberDates(ingest)} bare numbers really are {ingest.time_units}
+					</label>
+					<p class="hint">
+						The rule that read them takes the first number in a name, whatever it means: an accession
+						or an isolate index reads the same as a generation.
+					</p>
+				{/if}
 				{#if ingest.coverage.undated > 0}
 					<label class="check">
 						<input type="checkbox" bind:checked={dropUndated} />
