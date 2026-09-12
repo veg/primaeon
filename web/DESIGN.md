@@ -766,6 +766,46 @@ listed here is as specified; every §6 hook was kept and no spec was edited.
   current ones, pinned by exact-text assertions; only the typography changed and a section that has
   not landed shows an em dash with the phase in the qualifier.
 
+**The `/time` route (PrimAeon phase 2)**
+
+Five places the specification above has no pattern, because it was written for the report. Each is
+resolved here rather than introduced silently.
+
+- **A free-text table column that can run to 60 characters.** §3 sizes mono at 13 px for "codons and
+  hashes", which are short; the review table's "Read from" column holds an arbitrary header
+  substring. It is mono 13 px with `max-width: 22ch` and `text-overflow: ellipsis`, the whole string
+  in `title=` and in the CSV download. **This is the only truncation on the site**, and it is the
+  reason the §7 grep gains one `text-overflow`.
+- **A per-row status vocabulary that is not "called".** The site table has exactly one row-state
+  glyph and §3 reserves the 0.5 em purple square for it. `/time` has four row conditions (clean,
+  imputed, wrongly matched, undated) and takes **no marks at all in the table body**: the conditions
+  are words in their own columns, `--text-faint` for the benign ones and `--warn` as a TEXT colour
+  only for the two that change the answer. The orange square appears once, on the summary line above
+  the table. 143 orange squares down a column would be an alarm, not information.
+- **A table row that is not a control.** `tr.row` in the site table has `cursor: pointer` and a
+  `--surface-2` hover because clicking opens the modal. Nothing happens on click on `/time` in this
+  phase, so its rows deliberately do NOT inherit either: a hover that promises an action there is not
+  is a lie. Per-row date editing has no pattern and is deferred with it.
+- **A one-dimensional coverage figure.** A sampling-date timeline is none of the six plots §3
+  specifies. `CoverageFigure.svelte` is inline SVG: a 1 px `--plot-axis` rule spanning min → max, one
+  6 px `--text-muted` tick per sequence, open ticks in `--plot-uncalled` where the date carries an
+  imputed component, 12 px `--plot-tick` labels at the ends and at whole-unit boundaries, no frame,
+  no grid, no legend, **no colour** — the page has no called sites, so it has no purple.
+- **A second drop target on a page that already has content.** §3 describes `.dropzone` only as the
+  landing hero. `/time`'s alignment drop zone is the full `.dropzone` treatment (the component is now
+  `lib/analyze/DropZone.svelte`, lifted verbatim out of `routes/+page.svelte`, so the landing DOM is
+  unchanged); the metadata file is a **plain file input inside the disclosure**, never a second
+  dashed rectangle, because two dashed rectangles on one page compete for the same meaning.
+
+Two further notes:
+
+- The three counter rules (`counter-reset: section figure table`, `figcaption b::before`,
+  `caption b::before`) moved out of `ReportView.svelte`'s scoped block into `app.css` as a
+  `.numbered` class. The report is `class="report numbered"` and `/time` is
+  `class="timepage numbered"`, so `.report` keeps its name and no report assertion moves.
+- Purple appears on `/time` on links and on exactly two marks: the fit line and the flagged points
+  in the clock figure, where it carries a fact about the data. Nothing in the date table borrows it.
+
 **Measured at integration** (`scratchpad/design/final/contrast.py` over the tokens in `app.css`)
 
 | Scheme | Token | Hex | on `--bg` | on `--surface-2` |

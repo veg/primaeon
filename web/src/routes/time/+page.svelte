@@ -521,7 +521,7 @@
 				<button type="button" class="button button--secondary" onclick={downloadJson} disabled={!gate.ready}>Dates (JSON)</button>
 				<button type="button" class="button button--secondary" onclick={runSelection}>Run the selection report on this alignment</button>
 			</div>
-			<p class="hint">
+			<p class="hint downloads__note">
 				Both files are PrimAeon's own: the CSV carries the columns <span class="mono">{DATES_CSV_COLUMNS.join(', ')}</span>,
 				one row per sequence in the order the table is showing them, and the JSON carries a
 				<span class="mono">{'{sequence: date}'}</span> map beside every option that produced it. Whether
@@ -663,6 +663,9 @@
 		display: block;
 		font-size: var(--text-sm);
 		color: var(--text-faint);
+	}
+	.downloads__note {
+		margin-bottom: var(--space-4);
 	}
 	.downloads {
 		display: flex;
