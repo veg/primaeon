@@ -71,17 +71,67 @@ function stripVolatile(value) {
 /** PLAN.md 5.4's graph class: the tolerance for anything downstream of a forward pass. */
 const GRAPH_TOL = 1e-5;
 
+/**
+ * A DIFFERENCE of two model outputs, where relative error amplifies. The attribution records are
+ * built as `site_lrt - modified_lrt`, so a difference of 1e-7 relative on two likelihood ratios
+ * near 8 lands at 1.5e-05 relative on a delta near 0.7 — measured, on this repository's own records,
+ * between a macOS bake and a Linux one. Compared at the looser class rather than pretending the
+ * graph class covers subtraction.
+ */
+const DIFFERENCE_TOL = 1e-3;
+const DIFFERENCE_KEY = /^(delta|pct_signal_explained|mean_patristic_depth)/;
+
 /** Two numbers are the same if they differ by less than the class allows. */
-function sameNumber(a, b) {
+function sameNumber(a, b, tol = GRAPH_TOL) {
 	if (Number.isNaN(a) && Number.isNaN(b)) return true;
 	if (!Number.isFinite(a) || !Number.isFinite(b)) return a === b;
-	return Math.abs(a - b) <= GRAPH_TOL * Math.max(1, Math.abs(b));
+	return Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
+}
+
+/**
+ * A ranked list whose ORDER is decided by float noise.
+ *
+ * The attribution section ranks the taxa driving a site by their delta. On bat_oas1 site 329, seven
+ * of the nine taxa share the value -0.13568449020385742 to the last bit on this machine, so which
+ * of them lands at position 2 is decided by whatever the arithmetic does on the day: a macOS bake
+ * puts P_kuhl there and a Linux bake puts E_fusc. Both are correct, and demanding one of them would
+ * make this check fail forever on a platform difference.
+ *
+ * So a list of objects carrying a `taxon` is compared as a SET keyed by that taxon: a taxon that
+ * appears or disappears is a real difference and fails; the order among them is not. That the order
+ * is unstable at all is a finding about the product, recorded for the report rather than papered
+ * over here.
+ */
+function isTaxonKeyedList(value) {
+	return (
+		Array.isArray(value) &&
+		value.length > 0 &&
+		value.every((v) => v && typeof v === 'object' && typeof v.taxon === 'string')
+	);
 }
 
 /** The first path where two stripped structures differ, or null. */
-function firstDifference(a, b, path = '') {
+function firstDifference(a, b, path = '', key = '') {
 	if (typeof a === 'number' && typeof b === 'number') {
-		return sameNumber(a, b) ? null : { path: path || '(root)', committed: String(a), baked: String(b) };
+		const tol = DIFFERENCE_KEY.test(key) ? DIFFERENCE_TOL : GRAPH_TOL;
+		return sameNumber(a, b, tol) ? null : { path: path || '(root)', committed: String(a), baked: String(b) };
+	}
+	if (isTaxonKeyedList(a) && isTaxonKeyedList(b)) {
+		const byTaxon = (list) => new Map(list.map((v) => [v.taxon, v]));
+		const left = byTaxon(a);
+		const right = byTaxon(b);
+		for (const taxon of new Set([...left.keys(), ...right.keys()])) {
+			if (!left.has(taxon) || !right.has(taxon)) {
+				return {
+					path: `${path}[taxon ${taxon}]`,
+					committed: left.has(taxon) ? 'present' : 'absent',
+					baked: right.has(taxon) ? 'present' : 'absent'
+				};
+			}
+			const found = firstDifference(left.get(taxon), right.get(taxon), `${path}[${taxon}]`);
+			if (found) return found;
+		}
+		return null;
 	}
 	if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
 		return JSON.stringify(a) === JSON.stringify(b)
@@ -90,7 +140,7 @@ function firstDifference(a, b, path = '') {
 	}
 	const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
 	for (const k of keys) {
-		const found = firstDifference(a[k], b[k], `${path}.${k}`);
+		const found = firstDifference(a[k], b[k], `${path}.${k}`, k);
 		if (found) return found;
 	}
 	return null;
