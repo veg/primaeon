@@ -796,8 +796,14 @@ export function ingestDates(args = {}) {
 				dayClamped: Boolean(p.imputations?.dayClamped)
 			},
 			matched: p.matched ?? null,
-			matched_name: hit.matchedName,
-			match_tier: hit.tier,
+			// WHETHER THE TAXON WAS MATCHED IS NOT THE SAME QUESTION AS WHERE ITS DATE CAME FROM.
+			// A taxon can be matched to a metadata row whose date cell is unreadable and then be
+			// dated from its own header instead: the header path records no matched name, so reading
+			// the match off `hit` alone printed "not in table" for a taxon that is plainly in the
+			// table, and sent the reader looking for a name-matching problem that does not exist.
+			// The undated branch above already reports `assigned` for exactly this reason.
+			matched_name: hit.matchedName ?? assigned?.name ?? null,
+			match_tier: hit.tier ?? assigned?.tier ?? null,
 			used: undefined
 		});
 		coverage.dated++;

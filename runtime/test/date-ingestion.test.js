@@ -1122,3 +1122,23 @@ suite('the layer opens nothing and re-implements nothing', () => {
 		expect(missingDateExports()).toEqual([]);
 	});
 });
+
+describe('a taxon matched in the table but dated from its header', () => {
+	it('still reports the match, rather than claiming it is not in the table', () => {
+		// The trap: the table HAS a row for this taxon, and its date cell is unreadable, so the date
+		// comes from the header fallback instead. Reading the match off the dated hit alone printed
+		// "not in table" for a taxon plainly in it, which sends the reader after the wrong problem.
+		const taxon = 'A/Texas/2009|2009-04-15';
+		const ing = ingestDates({
+			taxa: [taxon, 'B/Ohio/2010|2010-04-15', 'C/Utah/2011|2011-04-15'],
+			source: `strain,date\n${taxon},not-a-date\nB/Ohio/2010|2010-04-15,2010-04-15\nC/Utah/2011|2011-04-15,2011-04-15\n`,
+			sourceName: 'meta.csv'
+		});
+		const row = ing.rows.find((r) => r.taxon === taxon);
+		expect(row).toBeDefined();
+		expect(Number.isFinite(row.value)).toBe(true);
+		expect(row.source).toBe('header');
+		expect(row.matched_name).toBe(taxon);
+		expect(row.match_tier).toBeTruthy();
+	});
+});
