@@ -88,7 +88,21 @@ function worstRelative(ref, got, key) {
 	return { worst, at };
 }
 
-describe.skipIf(!ready)('meme, tree-free, against the CLI\'s own --use-tn93 files', () => {
+/**
+ * THE SLOW BLOCK BELOW IS A PARITY CHECK, AND IT CAN BE SKIPPED ON A PULL REQUEST.
+ *
+ * It scores a whole real alignment through the graph and compares the result with the reference
+ * CLI's own output. That is worth doing, and it is also the single longest thing in this suite,
+ * which made it the long pole of continuous integration's fast path. `HYPHAEON_SKIP_SLOW_TESTS=1`
+ * skips it; the workflow sets that on pull requests only, so it still runs on main, on the nightly
+ * schedule and for every developer who just types `npm test`. Nothing is lost quietly: the numbers
+ * this block checks are covered more thoroughly by the parity gate, which runs on exactly the pull
+ * requests that can move them, and the surface wiring is covered by the faster blocks beside it.
+ */
+const SKIP_SLOW = process.env.HYPHAEON_SKIP_SLOW_TESTS === '1';
+if (SKIP_SLOW) console.warn('[slow tests skipped] HYPHAEON_SKIP_SLOW_TESTS=1 — the full-alignment fixture comparisons in this file did not run.');
+
+describe.skipIf(!ready || SKIP_SLOW)('meme, tree-free, against the CLI\'s own --use-tn93 files', () => {
 	for (const [name, file, expectedReason] of [
 		['camelid', 'e2e/meme_camelid_tn93.json', 'no_branch_lengths'],
 		['HIV1_RT', 'e2e/meme_HIV1_RT_tn93.json', 'no_branch_lengths']

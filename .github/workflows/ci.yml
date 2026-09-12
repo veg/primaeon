@@ -192,13 +192,28 @@ jobs:
         if: steps.node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The full-alignment fixture comparisons inside the runtime and mcp suites are parity checks
+      # living in unit suites: 30.7 s of mcp's 32 and 22.4 s of runtime's 23 on a developer machine,
+      # and the long pole of this job in CI. They are skipped on pull requests, where the parity gate
+      # covers the same numbers for exactly the changes that can move them, and they run everywhere
+      # else. Measured locally: mcp 32.0 s -> 13.3 s, runtime 23.1 s -> 16.5 s.
       - name: Test
+        env:
+          HYPHAEON_SKIP_SLOW_TESTS: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: npm run test --workspace ${{ matrix.workspace }} --if-present
 
+  # Sharded, because with the prebake off the build is eight seconds and Playwright is the whole
+  # job: 124 s of 147 measured on run 34657059261. Three shards of a 62-spec suite put the fast
+  # path under a minute and a half. Each shard rebuilds rather than passing an artifact around,
+  # which costs eight seconds and saves an upload and a download.
   web:
-    name: check, build, e2e
+    name: check, build, e2e (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     defaults:
       run:
         working-directory: hyphaeon-app
@@ -242,13 +257,13 @@ jobs:
         run: npm run check
 
       # prebuild: copy-assets.mjs (ORT WASM, graphs, manifest, _headers), prebake-gallery.mjs,
-      # check-caveats.mjs; then vite build. On a pull request the prebake is skipped and the
-      # committed gallery records are used, which is exactly what pages.yml deploys; the `gallery`
-      # job below is what proves those records are current.
-      - name: Build the site
+      # check-caveats.mjs; then vite build. The prebake is always skipped here and the committed
+      # gallery records are used, which is exactly what pages.yml deploys; the `gallery` job below
+      # is what proves those records are current, and it is the only job that pays for a rebake.
+      - name: Build the site with the committed gallery records
         working-directory: hyphaeon-app/web
         env:
-          HYPHAEON_PREBAKE: ${{ github.event_name == 'pull_request' && 'skip' || '' }}
+          HYPHAEON_PREBAKE: skip
         run: npm run build
 
       - name: Playwright version
@@ -277,13 +292,13 @@ jobs:
         working-directory: hyphaeon-app/e2e
         env:
           PLAYWRIGHT_HTML_OPEN: never
-        run: npx playwright test --reporter=github,html
+        run: npx playwright test --shard=${{ matrix.shard }}/3 --reporter=github,html
 
       - name: Upload the Playwright report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             hyphaeon-app/e2e/playwright-report
             hyphaeon-app/e2e/test-results
