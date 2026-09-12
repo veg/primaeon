@@ -12,10 +12,17 @@
  * all — which is whenever a runtime source moved since the last bake, even by a change that cannot
  * touch a number. A check that cries wolf on its first run teaches everyone to ignore it.
  *
- * WHAT THIS COMPARES. Every committed record against the freshly baked one with the volatile keys
- * below removed, and nothing else. A difference in any remaining value — an LRT, a p-value, a call,
- * a taxon count, a provenance field — is a real difference and fails the job. A difference only in
- * timing is reported and passes, because the rebake's own numbers agree with what is committed.
+ * WHAT THIS COMPARES. Every committed record against the freshly baked one, with the volatile keys
+ * below removed and every number compared at PLAN.md 5.4's graph class rather than exactly.
+ *
+ * WHY A TOLERANCE AND NOT EQUALITY. The second attempt compared numbers exactly and failed on CI
+ * against records baked on a developer's machine: `hyphaeon_lrt` 2.7579092979431152 committed
+ * against 2.757908582687378 baked, and four more like it. That is 2.6e-07 relative — the same
+ * cross-platform float32 difference between macOS and Linux that mcp/test/phenotype.test.js already
+ * documents for the sector coherence at 9.4e-08. It is not a stale record; it is the arithmetic.
+ * So numbers are equal within 1e-5 of max(1, |value|), which is the class every other comparison in
+ * this project uses for anything downstream of a forward pass, and everything else — a call, a
+ * tier, a count, a taxon name — must still match exactly.
  *
  * USAGE: node scripts/check-gallery-current.mjs   (from web/, after a build that rebaked)
  */
@@ -50,7 +57,11 @@ const VOLATILE = new Set([
 	'wall_seconds',
 	'timings',
 	'node',
-	'threads'
+	'threads',
+	// Which engine checkout baked the records. Real provenance, and it moves whenever the pin does,
+	// which says nothing about whether the numbers are current — that is what the tolerance above
+	// is for.
+	'commit'
 ]);
 
 /** The same object with every volatile key dropped, at any depth. */
@@ -67,8 +78,21 @@ function stripVolatile(value) {
 	return value;
 }
 
+/** PLAN.md 5.4's graph class: the tolerance for anything downstream of a forward pass. */
+const GRAPH_TOL = 1e-5;
+
+/** Two numbers are the same if they differ by less than the class allows. */
+function sameNumber(a, b) {
+	if (Number.isNaN(a) && Number.isNaN(b)) return true;
+	if (!Number.isFinite(a) || !Number.isFinite(b)) return a === b;
+	return Math.abs(a - b) <= GRAPH_TOL * Math.max(1, Math.abs(b));
+}
+
 /** The first path where two stripped structures differ, or null. */
 function firstDifference(a, b, path = '') {
+	if (typeof a === 'number' && typeof b === 'number') {
+		return sameNumber(a, b) ? null : { path: path || '(root)', committed: String(a), baked: String(b) };
+	}
 	if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
 		return JSON.stringify(a) === JSON.stringify(b)
 			? null
@@ -113,7 +137,8 @@ for (const rel of changed) {
 const timingOnly = changed.length - substantive.length;
 if (substantive.length === 0) {
 	console.log(
-		`[gallery] ${timingOnly} record(s) differ in wall times and stamps only; every number matches. ` +
+		`[gallery] ${timingOnly} record(s) differ in wall times, environment stamps or float noise ` +
+			`below the graph class (${GRAPH_TOL} relative); every number that means something matches. ` +
 			'The committed records are current.'
 	);
 	process.exit(0);
