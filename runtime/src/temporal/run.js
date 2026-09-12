@@ -73,8 +73,8 @@
  *     the model pass, all 4,384 codons          17.5 s      (35 forward calls at batch 128)
  *     everything from attention to stage one     0.16 s
  *     the shape gate and the wave decomposition  0.01 s
- *     the null at B = 100 (the fixture's own)    0.024 s
- *     the null at B = 1000 (the reference's)     0.243 s
+ *     the null at B = 100 (the fixture's own)    0.045 s
+ *     the null at B = 1000 (the reference's)     0.390 s
  *
  * The null is not this pillar's expensive section and the plan's estimate of it was two orders out;
  * see `null.js`'s header for the measurement and the corrected cost model. The model pass is the
@@ -580,14 +580,20 @@ export async function runTemporal({
 			}), { completed: nullBlock.completed, requested: nullBlock.requested, grid_step: nullBlock.grid_step })
 		);
 	}
-	if (C > 0 && nullBlock.completed > 0 && nullBlock.q_floor >= TEMPORAL_THRESHOLDS.qStaticCut) {
+	if (C > 0 && nullBlock.completed > 0 && nullBlock.q_min > TEMPORAL_THRESHOLDS.qStaticCut) {
 		warnings.push(
 			temporalWarning('TEMPORAL_Q_PERM_UNREACHABLE', 'info', fillMessage(TEMPORAL_MESSAGES.Q_PERM_UNREACHABLE, {
 				C,
 				B: nullBlock.completed,
-				floor: Number(nullBlock.q_floor).toPrecision(3),
+				floor: Number(nullBlock.q_min).toPrecision(3),
 				needed: Math.ceil(10 * C)
-			}), { candidates: C, draws: nullBlock.completed, q_floor: nullBlock.q_floor, upstream: 'TEMPORAL Q11' })
+			}), {
+				candidates: C,
+				draws: nullBlock.completed,
+				q_min: nullBlock.q_min,
+				q_rank1_bound: nullBlock.q_rank1_bound,
+				upstream: 'TEMPORAL Q11'
+			})
 		);
 	}
 

@@ -19,11 +19,11 @@
  * 2. WHAT THE REFERENCE CANNOT SAY. Eight fields exist because `hyphaeon temporal`'s own output is
  *    silent about something a reader would misread. `permutations.completed` (a stopped null is a
  *    valid null at a coarser grid, and its p-values must never be printed without the count);
- *    `permutations.q_floor` (BH over C candidates cannot return less than `C/(B+1)`, so on the
- *    acceptance run every confirmed sweep reports the same `q_perm = 0.4298` and the call is made on
- *    p); `escape_hatch_used` (temporal.py:692-693 fires a fallback selection and records it in NO
- *    output file, so a run that confirmed nothing and one that confirmed thirty look identical in
- *    the CSV); `scored` (which codons the model actually saw, so an absent LRT reads as absent and
+ *    `permutations.q_min` beside `q_rank1_bound` (BH's rank one alone cannot put a candidate below
+ *    `C/(B+1)` — 2.44 on the acceptance run — so the smallest q any of its 246 candidates reaches is
+ *    0.4298, shared by all eighteen confirmed sweeps, and the call is made on p);
+ *    `escape_hatch_used` (temporal.py:692-693 fires a fallback selection and records it in NO output
+ *    file, so a run that confirmed nothing and one that confirmed thirty look identical in the CSV); `scored` (which codons the model actually saw, so an absent LRT reads as absent and
  *    not as zero); `waves.sign`, `waves.sigma`, `waves.gaps` and `waves.near_degenerate` (a singular
  *    vector's sign is a convention this record states and the reference does not have, D28, and two
  *    near-equal singular values make the pair rotatable so that neither wave alone is a property of
@@ -179,7 +179,9 @@ export function temporalRecord(a) {
 					cancelled: a.nullBlock.cancelled,
 					skipped: a.nullBlock.skipped,
 					grid_step: a.nullBlock.grid_step,
-					q_floor: a.nullBlock.q_floor,
+					/** The smallest q this run produced, and what BH's rank one alone would allow. */
+					q_min: a.nullBlock.q_min,
+					q_rank1_bound: a.nullBlock.q_rank1_bound,
 					rounds: a.nullBlock.rounds,
 					work: a.nullBlock.work,
 					budget: a.nullBlock.budget,

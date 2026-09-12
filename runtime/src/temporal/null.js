@@ -199,6 +199,14 @@ const CHUNK_EWMA_ALPHA = 0.4;
 const yieldToLoop = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
+ * A sub-millisecond monotonic clock. `Date.now()` has 1 ms granularity, and a draw on the acceptance
+ * shape is 0.38 ms — so timing the calibration draw with it reads ZERO, `chunkFor(0)` takes the
+ * maximum, and the chunk size stops being calibrated at all. `performance.now()` exists in Node 16+
+ * and in every browser this ships to; the fallback is only for an exotic host.
+ */
+const now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+
+/**
  * The four-line abort helper, written out rather than imported from `predict.js`. That module
  * reaches `feeds.js` and `manifest.js`, and this one deliberately imports nothing but the library
  * and its own sibling vocabulary, so a surface can take the kernel driver without the ONNX surface.
@@ -401,12 +409,12 @@ export async function runTemporalNull({
 				// place a caller may stop, which is what makes the result independent of the cancel.
 				const size = msPerDraw === null ? 1 : chunkFor(msPerDraw, chunkTargetMs);
 				const to = Math.min(completed + size, roundEnd);
-				const t0 = Date.now();
+				const t0 = now();
 				temporalNullDraws({
 					candAttrs, C, N, T, WT, vObs, sweepMode, gradT, normDenseT,
 					seed, fromDraw: completed, toDraw: to, exceed
 				});
-				const per = (Date.now() - t0) / Math.max(1, to - completed);
+				const per = (now() - t0) / Math.max(1, to - completed);
 				// Chunk 0 is the cold calibration draw and chunk 1 is the first warm measurement;
 				// both REPLACE the estimate rather than blending into it (see CHUNK_EWMA_ALPHA).
 				msPerDraw = chunks <= 1 ? per : CHUNK_EWMA_ALPHA * per + (1 - CHUNK_EWMA_ALPHA) * msPerDraw;
@@ -442,6 +450,13 @@ export function chunkFor(msPerDraw, targetMs = TEMPORAL_PERM_CHUNK_TARGET_MS) {
 	return Math.max(1, Math.min(TEMPORAL_PERM_CHUNK_MAX, Math.round(targetMs / msPerDraw)));
 }
 
+/** The smallest finite entry, or null. */
+function minOf(values) {
+	let m = Infinity;
+	for (let i = 0; i < values.length; i++) if (values[i] < m) m = values[i];
+	return Number.isFinite(m) ? m : null;
+}
+
 /** How many candidates sit at or below `alpha` at the current draw count — the live sweep count. */
 function countAtOrBelow(exceed, completed, alpha) {
 	let n = 0;
@@ -454,10 +469,7 @@ function countAtOrBelow(exceed, completed, alpha) {
  *
  * `p` and `q` are always the estimator at the ACHIEVED count, never at the requested one — that is
  * what makes a stopped run a valid null rather than a wrong one — and `grid_step` is printed beside
- * them so a reader can see the resolution they were bought at. `q_floor` is `C/(B+1)` clipped at 1,
- * which is the smallest value Benjamini-Hochberg over C candidates can return: on the acceptance run
- * it is 1.0, which is why every confirmed sweep there reports the same `q_perm` and why the sweep
- * call is made on p (upstream observation TEMPORAL Q11).
+ * them so a reader can see the resolution they were bought at.
  */
 function nullPayload({ exceed, requested, completed, plan, seed, vObs, msPerDraw, chunks, cancelled = false, skipped = false, partial = false }) {
 	const C = exceed.length;
@@ -477,7 +489,16 @@ function nullPayload({ exceed, requested, completed, plan, seed, vObs, msPerDraw
 		skipped,
 		partial,
 		grid_step: gridStep,
-		q_floor: completed > 0 && C > 0 ? Math.min(1, C / (completed + 1)) : null,
+		/** The SMALLEST q-value this run actually produced — the number a page must judge by. */
+		q_min: completed > 0 && C > 0 ? minOf(q) : null,
+		/**
+		 * What Benjamini-Hochberg returns at rank one BEFORE its step-up minimum: `C·p_min` =
+		 * `C/(B+1)`, clipped at 1. On the acceptance run that is 246/101 = 2.44, so no candidate's
+		 * own rank can put it below 0.10 and only the step-up could — which on that run bottoms out
+		 * at 0.4298 for all eighteen confirmed sweeps. It is the cheapest way to say "this draw count
+		 * cannot make `q_perm` a decision threshold" without reading the data (TEMPORAL Q11).
+		 */
+		q_rank1_bound: completed > 0 && C > 0 ? Math.min(1, C / (completed + 1)) : null,
 		rounds: plan.rounds,
 		work: plan.work,
 		budget: plan.budget,

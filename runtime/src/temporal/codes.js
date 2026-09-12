@@ -260,9 +260,10 @@ export const TEMPORAL_MESSAGES = Object.freeze({
 		'report is {gridStep} — and everything upstream of the shuffle is complete.',
 	Q_PERM_UNREACHABLE:
 		'With {C} candidate codons and {B} shuffles, the smallest permutation q-value Benjamini-Hochberg ' +
-		'can return is {floor}, so `q_perm` carries no information at this draw count and the sweep call ' +
-		'is made on p (temporal.py:687-689). Reaching q <= 0.10 would need about {needed} shuffles. ' +
-		'Upstream observation TEMPORAL Q11, reported rather than fixed.',
+		'returned anywhere in this run is {floor} — above the 0.10 a reader would test at — so `q_perm` ' +
+		'carries no decision here and the sweep call is made on p (temporal.py:687-689). The arithmetic ' +
+		'is that BH at rank one cannot go below C/(B+1), and reaching q <= 0.10 would need about ' +
+		'{needed} shuffles. Upstream observation TEMPORAL Q11, reported rather than fixed.',
 	SOLITARY_REGIME:
 		'The wave-alignment gate was not applied: {reason}. A confirmed sweep here needed only the ' +
 		'permutation test (temporal.py:684-686).',
