@@ -87,10 +87,24 @@ on:
 
 env:
   # The engine commit these tests run against. Bump together with the library the app consumes.
-  # phase-5b carries the date layer and the model-free dating estimators. The runtime's date and
-  # dating modules import those by name, so an older ref does not degrade gracefully: it fails at
-  # module link and takes the whole workspace with it. The pin and the code move together.
-  ENGINE_REF: phase-5b
+  # The runtime's date and dating modules import the engine's estimators BY NAME, so an older ref
+  # does not degrade gracefully: it fails at module link and takes the whole workspace with it. The
+  # pin and the code move together.
+  #
+  # phase-5b carried the date layer and the model-free estimators. Phase 4 of PLAN-TEMPORAL adds the
+  # two the model feeds — computeNeuralCovarianceKernel, estimateRemlPagelLambda, runPglsDating,
+  # optimizeLatentConvexHullRoot, pairwiseAcgtHammingMatrix and a covariance arm on
+  # runRestrictedSplineClockDating — plus models/{general,viral}_taxa.onnx, the manifest's
+  # taxa_onnx_sha256 / taxa_row_layers / embed_dim, and fixtures/dating/{model_outputs,
+  # run_mrca_dating_model,run_restricted_spline_clock_dating_gls}.json. None of those is in
+  # phase-5b, so the pin moves with this change.
+  #
+  # THIS IS A BRANCH, NOT A TAG, AND IT IS NOT PUSHED YET. CI cannot check it out until it is, and
+  # the phase's integrator should replace it with the tag cut from it. It is named here rather than
+  # left at phase-5b because the file's own rule is that the pin names the engine the code needs,
+  # and a pin that resolves to a green checkout of the wrong engine would be worse than one that
+  # fails at the checkout step and says why.
+  ENGINE_REF: feat/dating-model
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on
