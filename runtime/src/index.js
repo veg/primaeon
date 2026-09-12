@@ -57,3 +57,15 @@ export * from './report.js';
 export * from './results.js';
 export * from './treeSanitation.js';
 export * from './fastaValidation.js';
+
+/**
+ * PHASE 2 OF PLAN-TEMPORAL.md ADDS THE DATE LAYER. `runtime/src/dates/` is what `@veg/hyphaeon-js`
+ * must not do: sniffing a delimiter, reading a table, guessing which column is which, walking an
+ * Auspice build, matching metadata names to taxa, and deciding what to tell the reader. Every
+ * string-to-time conversion inside it goes through the library's `parseDate` / `extractDate` /
+ * `parseHeaderDate` / `parseFlexibleDate`; there is no second date parser in this package.
+ * It is additive: `pipeline.js` is not edited, `prepareRun` keeps its signature and its exact
+ * `preprocessing` block, and `alignDatesToRun(ingest, prep)` is the read-only seam between them.
+ * `./dates` is also a subpath export, so the `/time` route imports it without the ONNX surface.
+ */
+export * from './dates/index.js';

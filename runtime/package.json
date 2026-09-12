@@ -9,6 +9,7 @@
     ".": "./src/index.js",
     "./web": "./src/session-web.js",
     "./node": "./src/session-node.js",
+    "./dates": "./src/dates/index.js",
     "./prescreen": "./src/prescreen/hitLikelihood.js",
     "./prescreen/scope": "./src/prescreen/scope.js",
     "./package.json": "./package.json",
