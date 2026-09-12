@@ -14,20 +14,24 @@
 	`e2e/smoke.spec.ts` fixes that to Methods, Evaluate, MCP. It is reached by one sentence on the
 	landing page and one on /analyze.
 
-	IT RUNS ONE THING, AND IT LOADS NO MODEL TO DO IT (phase 3). The gate in section 1 unlocks the
-	ancestor-date estimate in section 3: TN93 divergence to a chosen root, a straight line through
-	it, and a per-sequence table in section 4. That is the model-free half of `hyphaeon dating`; the
-	two model-based estimators need a taxon-by-taxon attention matrix the current ONNX export does
-	not emit, and section 3 says so in place rather than promising them (web/DESIGN.md §5 forbids
-	"coming soon"). The temporal-selection pillar is still not ported and section 5 says so.
+	THE GATE IN SECTION 1 UNLOCKS TWO PILLARS, and they ask different questions of the same dates.
+	Section 3 estimates the ancestor date — TN93 divergence to a chosen root, a straight line through
+	it, a per-sequence table in section 4 — and its default estimate loads nothing at all. Section 5
+	(phase 5) is temporal selection: `hyphaeon temporal`, which scores every codon once through the
+	model, anchors its per-sequence attention to a root, smooths it along the sampling dates, and
+	tests the codons that move against a null that shuffles those dates. It is the second thing on
+	this route that loads a graph, it says so before it loads one, and it says plainly which of its
+	numbers cannot be reproduced digit for digit at the command line and why.
 
-	THE DATE REVIEW IS SYNCHRONOUS; THE ESTIMATE IS NOT. The ingest is string work over text already
+	THE DATE REVIEW IS SYNCHRONOUS; THE TWO RUNS ARE NOT. The ingest is string work over text already
 	in memory — at 143 sequences it is well under a millisecond, and the reader sees the table
-	re-sort under the control they just changed, which is the whole point. The estimate is N pairwise
-	TN93 comparisons over the full alignment width and runs in its own cancellable worker
-	(`lib/workers/dating.worker.ts`), whose entire import graph is `@veg/hyphaeon-runtime/dating`.
-	Nothing on this route loads ORT, a graph or any WebAssembly, and `e2e/time.spec.ts` asserts it by
-	watching the network.
+	re-sort under the control they just changed, which is the whole point. The ancestor-date estimate
+	is N pairwise TN93 comparisons over the full alignment width and runs in its own cancellable
+	worker (`lib/workers/dating.worker.ts`), whose entire import graph is
+	`@veg/hyphaeon-runtime/dating`, so REVIEWING AND DATING COST NO MODEL BYTE and `e2e/time.spec.ts`
+	proves it by watching the network. The two runs that do load a graph — the model-based dating
+	estimate and temporal selection — are separate workers precisely so that proof stays a proof
+	rather than becoming a promise, and each names its graph before it fetches one.
 
 	LOOK. web/DESIGN.md: `--container` (an eight-column table needs the report's measure), three
 	sections numbered by the `.numbered` CSS counter in app.css, a `<figure>` with a numbered caption
@@ -48,8 +52,10 @@
 	import { DATING_CSV_NAME, DATING_DOWNLOAD_NOTE, DATING_JSON_NAME, datingCsv, datingJson } from '$lib/time/datingDownloads';
 	import DatingSection from '$lib/time/DatingSection.svelte';
 	import TaxonDatingTable from '$lib/time/TaxonDatingTable.svelte';
-	import { datingClient, datingModelClient, workersAvailable } from '$lib/workers/clients';
-	import type { DatingModelRequest, DatingRequest, DatingResponse } from '$lib/workers/protocol';
+	import { datingClient, datingModelClient, temporalClient, workersAvailable } from '$lib/workers/clients';
+	import type { DatingModelRequest, DatingRequest, DatingResponse, TemporalRequest, TemporalResponse } from '$lib/workers/protocol';
+	import TemporalSection from '$lib/time/TemporalSection.svelte';
+	import { codonCeiling, TEMPORAL_MAX_SPECIES, temporalGate, type TemporalRecord } from '$lib/time/temporal';
 	import { DATING_NEURAL_MAX_TAXA } from '@veg/hyphaeon-runtime/dating';
 	import {
 		diagnosis,
@@ -147,6 +153,30 @@
 	let modelGraph = $state<{ variant: string; file: string; sha256: string } | null>(null);
 	let modelProbeNote = $state<string | null>(null);
 
+	// ---- temporal selection (phase 5) ------------------------------------------------------------
+	/**
+	 * The second pillar this page can run, and the second thing on the route that loads a graph.
+	 *
+	 * THE RECORD IS HELD IN MEMORY AND IS NOT PERSISTED WITH THE REVIEW, deliberately. A finished
+	 * record carries two `[L, T]` float64 curve blocks — 17.5 MB on a 4,384-codon alignment at the
+	 * default grid — and the date review's IndexedDB row is meant to be the small, cheap thing that
+	 * survives a reload. Section 5 says so where it says what it cost; re-running is seconds plus the
+	 * null, and the graph is already in the browser's cache by then.
+	 */
+	let temporalRecord = $state<TemporalRecord | null>(null);
+	let temporalRefusal = $state<{ code: string; message: string } | null>(null);
+	let temporalFailure = $state<string | null>(null);
+	let temporalState = $state<'idle' | 'running'>('idle');
+	let temporalProgress = $state({ phase: '', done: 0, total: 0, message: '' });
+	let temporalReference = $state<{ command: string; reproduces: boolean; caveats: string[] } | null>(null);
+	let temporalNotes = $state<string[]>([]);
+	let temporalAbort: AbortController | null = null;
+	/** `null` walks the runtime's rounds (200 -> 500 -> 1,000) under its own work budget. */
+	let temporalDraws = $state<number | null>(null);
+	let temporalTimePoints = $state(250);
+	let temporalRoot = $state<string | null>(null);
+	let temporalScoreInvariable = $state(true);
+
 	// ---- derived: the whole review, re-derived on every edit --------------------------------------
 	const names = $derived(alignmentText ? alignmentHeaders(alignmentText) : null);
 	const taxa = $derived(alignmentText ? taxaForDates(alignmentText) : []);
@@ -213,6 +243,9 @@
 		if (!preview.available || !preview.fit?.ok) return null;
 		return crossCheckSentence(t, preview.fit.tMrca, width, ingest?.time_units ?? 'years');
 	});
+
+	const temporalReady = $derived(temporalGate(ingest?.coverage.dated ?? 0, ingest?.span ?? null, gate.ready, gate.reasons));
+	const temporalCodons = $derived(alignmentText ? codonCeiling(alignmentText) : null);
 
 	const tableInfo = $derived(
 		(ingest?.table ?? null) as {
@@ -613,6 +646,122 @@
 		datingAbort?.abort();
 	}
 
+	// ---- the temporal-selection run (phase 5) ----------------------------------------------------
+
+	/**
+	 * One `hyphaeon temporal` run in `lib/workers/temporal.worker.ts`.
+	 *
+	 * THE THREE PAYLOADS ARRIVE AS `section` EVENTS, and the middle one is thin on purpose: a null
+	 * chunk carries `p_perm`, `q_perm` and the permutation block and NOT the record, because the
+	 * record's curve blocks are megabytes and `postMessage` clones what it is given. Merging them is
+	 * a shallow copy here — the typed arrays are shared, not copied — so the table and Figure 7
+	 * sharpen as the draws come in without the page rebuilding anything.
+	 *
+	 * A CANCEL DURING THE NULL IS NOT AN ERROR. `runTemporalNull` catches its own abort, records the
+	 * achieved draw count, and the run finishes the classification and the wave modes and returns a
+	 * complete record; the promise resolves and this function adopts it. Only a cancel during the
+	 * model pass rejects, and that leaves the section as it was.
+	 */
+	async function runTemporalSelection() {
+		if (!ingest || !temporalReady.ok || !workersAvailable()) return;
+		temporalFailure = null;
+		temporalRefusal = null;
+		temporalRecord = null;
+		temporalReference = null;
+		temporalNotes = [];
+		temporalProgress = { phase: 'temporal-prepare', done: 0, total: 0, message: 'Preparing the model…' };
+		temporalState = 'running';
+		temporalAbort = new AbortController();
+		const request: TemporalRequest = {
+			alignmentText,
+			treeText: treeText ?? '',
+			alignmentName,
+			treeName,
+			dates: datedRows(),
+			datesByRule: ingest.by_rule ?? null,
+			datesSource: ingest.source ?? null,
+			timeUnits: ingest.time_units,
+			options: {
+				numTimePoints: temporalTimePoints,
+				permutations: temporalDraws,
+				bandwidth: null,
+				rootTaxon: temporalRoot,
+				scoreInvariableSites: temporalScoreInvariable,
+				seed: 42,
+				maxSpecies: TEMPORAL_MAX_SPECIES
+			},
+			manifestUrl: absolute('/models/manifest.json'),
+			modelsBase: absolute('/models/'),
+			ortBase: absolute('/ort/'),
+			tn93Base: absolute('/tn93/'),
+			numThreads: Math.max(1, Math.min(16, navigator?.hardwareConcurrency ?? 1))
+		};
+		try {
+			const response = await temporalClient().call<TemporalResponse>(request, {
+				signal: temporalAbort.signal,
+				// The null is the one long wait and the record is what a cancel keeps, so the worker is
+				// given the same long grace the analyze worker gets for its DMS: terminating it mid-run
+				// would throw away both the answer and the verified session.
+				terminateAfterMs: 60_000,
+				onProgress: (phase, done, total, message) => {
+					temporalProgress = { phase, done, total, message };
+				},
+				onSection: (_name, payload) => {
+					const p = payload as { stage: string; record?: TemporalRecord; p_perm?: Float32Array; q_perm?: Float32Array; permutations?: unknown };
+					if (p.stage === 'null' && temporalRecord && p.p_perm && p.q_perm) {
+						// Shallow: every other column is the same typed array the scored payload brought.
+						temporalRecord = {
+							...temporalRecord,
+							sites: { ...temporalRecord.sites, p_perm: p.p_perm, q_perm: p.q_perm },
+							permutations: {
+								...(p.permutations as TemporalRecord['permutations'])!,
+								tested: ((p.permutations as { completed?: number })?.completed ?? 0) > 0
+							}
+						};
+						return;
+					}
+					if (p.record) temporalRecord = p.record;
+				}
+			});
+			if (response.refusal) {
+				temporalRefusal = { code: response.refusal.code, message: response.refusal.message };
+				temporalRecord = null;
+			} else if (response.record) {
+				temporalRecord = response.record as unknown as TemporalRecord;
+				temporalReference = response.reference;
+				temporalNotes = response.downloadNotes;
+			}
+		} catch (err) {
+			const e = err instanceof Error ? err : new Error(String(err));
+			// A cancel before the first payload leaves the section offered, with nothing claimed.
+			if (e.name !== 'AbortError') temporalFailure = e.message;
+			else if (!temporalRecord) temporalProgress = { phase: '', done: 0, total: 0, message: '' };
+		} finally {
+			temporalState = 'idle';
+			temporalAbort = null;
+		}
+	}
+
+	function cancelTemporal() {
+		temporalAbort?.abort();
+	}
+
+	/**
+	 * The four files, written by the runtime's own byte-equal writers — DYNAMICALLY IMPORTED at the
+	 * click. `@veg/hyphaeon-runtime/temporal` reaches `predict.js` and the whole library; importing it
+	 * at the top of this module would put the pillar in the route's initial bundle so that a reader
+	 * who never presses the button still downloads it. (The reproduction line takes the other route
+	 * and is computed in the worker, because the page prints it without being asked; see protocol.ts.)
+	 */
+	async function downloadTemporal(which: 'sites' | 'curves' | 'waves' | 'summary') {
+		if (!temporalRecord) return;
+		const { temporalDownloads } = await import('@veg/hyphaeon-runtime/temporal');
+		const files = temporalDownloads(temporalRecord, { prefix: 'temporal' }) as Array<{ name: string; mime: string; text: string }>;
+		const index = which === 'sites' ? 0 : which === 'curves' ? 1 : which === 'waves' ? 2 : 3;
+		const file = files[index];
+		if (file) saveText(file.name, file.text, file.mime);
+	}
+
 	function setRoot(choice: DatingRootChoice, taxon: string | null) {
 		datingRoot = choice;
 		rootTaxon = taxon;
@@ -881,6 +1030,43 @@
 				No estimate has been made yet. Section 3 starts one; this table is its per-sequence output —
 				the label you supplied, the date the clock predicts, the gap between them, and whether the
 				sequence was flagged or held out of the fit.
+			</p>
+		{/if}
+	</section>
+
+	<section class="section" id="temporal" aria-labelledby="temporal-title">
+		<header class="section__head">
+			<h2 id="temporal-title">Temporal selection</h2>
+			<p class="eyebrow"><code>hyphaeon temporal</code>, ported</p>
+		</header>
+		{#if ingest}
+			<TemporalSection
+				gate={temporalReady}
+				record={temporalRecord}
+				refusal={temporalRefusal}
+				failure={temporalFailure}
+				runState={temporalState}
+				progress={temporalProgress}
+				codons={temporalCodons}
+				dated={ingest.coverage.dated}
+				units={ingest.time_units}
+				{taxa}
+				reference={temporalReference}
+				downloadNotes={temporalNotes}
+				workersAvailable={workersAvailable()}
+				bind:draws={temporalDraws}
+				bind:timePoints={temporalTimePoints}
+				bind:rootTaxon={temporalRoot}
+				bind:scoreInvariable={temporalScoreInvariable}
+				onRun={() => void runTemporalSelection()}
+				onCancel={cancelTemporal}
+				onDownload={(which) => void downloadTemporal(which)}
+			/>
+		{:else}
+			<p class="note">
+				Nothing is loaded yet. This section scores every codon once through the model, follows each
+				one's selection signal along the sampling dates, and tests the codons that move against a null
+				that shuffles those dates.
 			</p>
 		{/if}
 	</section>
