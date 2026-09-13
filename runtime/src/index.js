@@ -69,3 +69,17 @@ export * from './fastaValidation.js';
  * `./dates` is also a subpath export, so the `/time` route imports it without the ONNX surface.
  */
 export * from './dates/index.js';
+
+/**
+ * PHASE 3 OF PLAN-TEMPORAL.md ADDS THE DATING PILLAR, MODEL-FREE. `runtime/src/dating/` orchestrates
+ * `hyphaeon dating --no-tree --method ols` over the library's ported estimators (`runOlsDating`,
+ * `runRestrictedSplineClockDating`, `computeTreeFreeDivergences`, `clockFittedAndPredicted`) and
+ * owns what the library must not: the `'*' → '-'` convention this pillar's reference-of-record used,
+ * the `L mod 3` trim, the coverage/holdout rule, the outlier flag, clock-model selection and its
+ * sentence, ensemble admission, the reference-shaped JSON and CSV, and every refusal a reader sees.
+ * It loads no model and imports nothing that could: `./dating` is also a subpath export, so the
+ * `/time` route reaches it without the ONNX surface, and `dating-port.test.js` asserts the boundary.
+ * `clockRegression.js` is NOT touched by any of it — it is the independent check this port is
+ * compared against, and the same suite runs the two side by side.
+ */
+export * from './dating/index.js';

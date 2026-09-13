@@ -24,7 +24,12 @@ const OPTIONS: TimeSetOptions = {
 	delimiter: null,
 	dropUndated: true,
 	rootMode: 'midpoint',
-	outgroup: null
+	outgroup: null,
+	datingRoot: 'consensus',
+	rootTaxon: null,
+	clockModel: 'auto',
+	ciMethod: 'fieller',
+	excludedTaxa: []
 };
 
 const ingest = ingestOf(SMALL);

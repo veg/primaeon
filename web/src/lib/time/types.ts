@@ -28,7 +28,7 @@
 
 import type { InputDigest } from '$lib/api';
 
-export const TIME_SET_SCHEMA_VERSION = 1;
+export const TIME_SET_SCHEMA_VERSION = 2;
 
 /** The library's four axes. `years` is the only calendar one. */
 export type TimeUnits = 'years' | 'generations' | 'days' | 'arbitrary';
@@ -80,6 +80,13 @@ export interface DateSummary {
 	matchTiers: Record<string, number>;
 }
 
+/**
+ * Which sequence divergence is measured to. `dating.py:624-699` tests four cases in this order and
+ * the first is a literal key test against the alignment, so a sequence actually NAMED `earliest`
+ * beats the magic string; `'taxon'` here is that case and carries the name in `rootTaxon`.
+ */
+export type DatingRootChoice = 'consensus' | 'unweighted' | 'earliest' | 'taxon';
+
 /** Everything the reader set, so a review is reproducible from the record alone. */
 export interface TimeSetOptions {
 	units: TimeUnits;
@@ -91,8 +98,91 @@ export interface TimeSetOptions {
 	dateColumn: string | null;
 	delimiter: string | null;
 	dropUndated: boolean;
+	/**
+	 * THE CLOCK PREVIEW'S TREE ROOT, not the dating run's. It selects where `rootToTip.js` re-roots
+	 * the reader's tree before walking it; the dating pillar is tree-free and has no such thing.
+	 * The two were nearly given one name and must not be: they answer different questions on
+	 * different inputs, and a reader who changed one and saw the other move would be right to
+	 * distrust both. The dating fields below are prefixed `dating*` for the same reason.
+	 */
 	rootMode: 'midpoint' | 'outgroup';
 	outgroup: string | null;
+
+	// ---- phase 3: the dating run -----------------------------------------------------------------
+	/** Which of `compute_tree_free_divergences`' four cases the run takes. */
+	datingRoot: DatingRootChoice;
+	/** The sequence name for `datingRoot === 'taxon'`; null otherwise. */
+	rootTaxon: string | null;
+	/** `--clock-model`. `auto` is the reference's default and the only one that runs the F test. */
+	clockModel: 'auto' | 'linear' | 'spline';
+	/**
+	 * `--ci-method`, restricted to what this build ports. The reference's `poisson`,
+	 * `residual-boot` and `jackknife` each need a bit-compatible mirror of numpy's PCG64, so
+	 * `runDating` REFUSES them by name rather than silently returning Fieller as the reference's
+	 * own `else` branch does — and this type refuses to offer them.
+	 */
+	ciMethod: 'fieller' | 'delta';
+	/** Sequences the reader dropped from the fit. Never silent: named in the record and both files. */
+	excludedTaxa: string[];
+}
+
+/**
+ * What a dating run left behind, stored beside the review. `record` is the reference's own
+ * `hyphaeon dating -o out.json` document (its 22 keys, its order) plus the one added `primaeon`
+ * block; `rows` is `taxa_summary` in ALIGNMENT order, each row carrying our extra
+ * `prediction_method` column.
+ *
+ * THERE IS NO BOOTSTRAP FIELD AND THERE IS NO SEED. This pillar draws no random numbers at all:
+ * the reference's spline bootstrap raises on every replicate upstream (`dating.py:1917` passes
+ * numpy's `rcond=` to `scipy.linalg.lstsq`), and the three interval methods that would need a
+ * generator are not ported. Adding a `bootstrap` option would advertise something the build does
+ * not do.
+ */
+export interface DatingResult {
+	ok: boolean;
+	refusal: string | null;
+	warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
+	record: Record<string, unknown>;
+	rows: TaxonDatingRow[];
+	/** `'ols' | 'spline'` — which model the reference's own selection rule chose. */
+	activeName: string;
+	/** The reference's own sentence, byte for byte (`selected_clock`). */
+	selectedClock: string;
+	ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+	rootDescription: string;
+	rootCase: number;
+	elapsedMs: number;
+	ranAtIso: string;
+	options: DatingRunOptions;
+}
+
+/** The dating knobs, echoed into the result so a stored run says what produced it. */
+export interface DatingRunOptions {
+	root: DatingRootChoice;
+	rootTaxon: string | null;
+	clockModel: 'auto' | 'linear' | 'spline';
+	ciMethod: 'fieller' | 'delta';
+	excludedTaxa: string[];
+	units: TimeUnits;
+}
+
+/**
+ * One row of `taxa_summary`. The first ten keys and their order are the reference's
+ * (`dating.py:3052-3062`), because they are the CSV download's contract; `prediction_method` is
+ * ours and is appended last.
+ */
+export interface TaxonDatingRow {
+	taxon: string;
+	sampling_date: number;
+	root_divergence: number;
+	fitted_divergence: number;
+	predicted_date: number;
+	divergence_residual: number;
+	temporal_residual: number;
+	z_score: number;
+	is_outlier: boolean;
+	is_holdout: boolean;
+	prediction_method: string;
 }
 
 export interface TimeSetInputs {
@@ -123,10 +213,12 @@ export interface TimeSetRecord {
 	/** The structured warnings `ingestDates` produced, in its own report order. */
 	warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
 	ready: boolean;
+	/** Phase 3. Null until the reader asks for an estimate; `fromStored` leaves a v1 record alone. */
+	dating: DatingResult | null;
 }
 
 /** A listing row: the record without its entries, which are the bulk of it. */
-export type TimeSetListing = Omit<TimeSetRecord, 'dates' | 'inputs'> & {
+export type TimeSetListing = Omit<TimeSetRecord, 'dates' | 'inputs' | 'dating'> & {
 	dated: number;
 	total: number;
 	alignmentName: string | null;

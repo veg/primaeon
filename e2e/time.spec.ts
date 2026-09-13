@@ -12,6 +12,13 @@
  *   2. THE CONTROL, `H5N1_HA_geo.fasta` + `H5N1_HA_metadata.csv`. The table's names and the
  *      alignment's names are identical, so the page must discover the two columns, report 98 of 98,
  *      and agree with the headers. MEASURED: they do.
+ *   1b. THE ESTIMATE, on that same load (phase 3). The gate goes green, one button starts the
+ *      model-free ancestor-date run in its own worker, and the section reproduces the numbers the
+ *      phase was measured against — 1893.9 [1850.9, 1916.8], rate 1.169 × 10⁻³, R² 0.231, n = 141,
+ *      the spline preferred at p = 0.0234 and quoted anyway with no interval, zero sequences
+ *      flagged and Z59ZR.ZHU held out with a predicted date of 1965.6. It is asserted INSIDE flow 1
+ *      on purpose: the "no heavy assets" check at the end of that test then covers the run as well,
+ *      which is the only way to prove that dating an alignment here costs no model byte.
  *   3. THE TRAP, and the reason this page exists. The same alignment with the table rewritten
  *      accession-style. The reference would match zero rows and say nothing; the page must show
  *      both name sets side by side and say plainly that the dates came from the headers instead.
@@ -63,8 +70,13 @@ test.describe('the /time route', () => {
 		await expect(page.getByRole('heading', { level: 1, name: 'Dates' })).toBeVisible();
 		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'empty');
 		await expect(page.getByText(/drop dated sequences here/i)).toBeVisible();
+		// Five numbered sections now; the two new ones say what they are with nothing loaded.
+		await expect(page.locator('section.section')).toHaveCount(5);
+		await expect(page.locator('#dating')).toContainText('Nothing is loaded yet, so there is nothing to date.');
 		const body = await page.locator('body').innerText();
 		expect(body).not.toMatch(/to be written|TODO|coming soon|lorem ipsum/i);
+		// No control on this page is labelled exactly "Run" (web/DESIGN.md §6).
+		await expect(page.getByRole('button', { name: 'Run', exact: true })).toHaveCount(0);
 	});
 });
 
@@ -134,7 +146,66 @@ test.describe('flow 1 — korber_env_gp160.fasta, the flagship', () => {
 		expect(dataLines.filter((l) => l.split(',')[1] === '').length).toBe(1);
 		expect(text).not.toMatch(/NaN/);
 
-		// Nothing heavy, on the whole flow.
+		// ---- phase 3: the ancestor date, on this same load ---------------------------------------
+
+		const dating = page.locator('#dating');
+		await expect(dating.getByRole('heading', { level: 2, name: 'Ancestor date' })).toBeVisible();
+		// The root is a choice and the page says so before it offers the action.
+		await expect(dating).toContainText('The root is a choice, not a datum');
+		await dating.locator('select').selectOption('taxon:CONSENSUS');
+		await dating.getByRole('button', { name: /^Estimate the ancestor date$/ }).click();
+
+		// The estimate, with the numbers reproduced from the reference run.
+		const verdict = dating.locator('.verdict');
+		await expect(verdict).toContainText('1893.9', { timeout: 120_000 });
+		await expect(verdict).toContainText('141 sequences');
+		await expect(verdict).toContainText('1850.9');
+		await expect(verdict).toContainText('1916.8');
+		await expect(verdict).toContainText('1.169 × 10⁻³');
+		await expect(verdict).toContainText('0.231');
+		await expect(verdict).toContainText('CONSENSUS');
+
+		// The three counts, and the holdout that IS the result on this dataset.
+		await expect(dating).toContainText('143 sequences in the file, 142 dated, 141 in the fit.');
+		await expect(dating).toContainText('Z59ZR.ZHU');
+		await expect(dating).toContainText('1965.6');
+
+		// The curvature test prefers the spline; the page quotes the straight line and says why.
+		await expect(dating).toContainText('p = 0.0234');
+		await expect(dating).toContainText('ΔAIC = +3.27');
+		await expect(dating).toContainText('1938.8');
+		await expect(dating).toContainText('Restricted spline clock');
+		await expect(dating).toContainText('not computed');
+		// The estimators that are not built are rows saying so, never a promise.
+		await expect(dating).toContainText('Attention PGLS');
+		await expect(dating).toContainText('Latent root search');
+		await expect(dating.locator('svg[aria-label="TN93 divergence from the root against sampling date"]')).toBeVisible();
+
+		// Section 4: every sequence, zero flagged, the 1959 isolate held out.
+		const taxa = page.locator('#taxa');
+		await expect(taxa.getByRole('heading', { level: 2, name: 'Per-sequence dates' })).toBeVisible();
+		await expect(taxa.locator('table tbody tr').first()).toContainText('Z59ZR.ZHU');
+		await expect(taxa.locator('table tbody tr').first()).toContainText('held out');
+		expect(await taxa.locator('table tbody td', { hasText: /^flagged$/ }).count()).toBe(0);
+		// `.table .count` is a page singleton (web/DESIGN.md §6); the new table uses `.table__foot`.
+		await expect(page.locator('.table .count')).toHaveCount(1);
+
+		// The reference-shaped CSV: the reference's ten columns plus ours, in alignment order.
+		const datingCsv = page.waitForEvent('download');
+		await taxa.getByRole('button', { name: 'Dating (CSV)' }).click();
+		const csvFile = await datingCsv;
+		const csv = readFileSync(await csvFile.path(), 'utf8').trimEnd().split('\n');
+		expect(csv[0]).toBe(
+			'taxon,sampling_date,root_divergence,fitted_divergence,predicted_date,divergence_residual,temporal_residual,z_score,is_outlier,is_holdout,prediction_method'
+		);
+		expect(csv.length).toBe(143);
+		expect(csv[1]).toContain('A92UG.037');
+
+		// The predicted-date column under a curved clock is not presented as dates.
+		await expect(taxa.locator('.note--warn')).toContainText('The predicted dates are not dates here.');
+		await expect(taxa.locator('.note--warn')).toContainText('running out of curve');
+
+		// Nothing heavy, on the whole flow — the estimate included, which is the claim.
 		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
 		const heavy = requests.matching(HEAVY_ASSET);
 		expect(heavy, `heavy assets during the korber flow: ${heavy.join(', ')}`).toEqual([]);
@@ -171,11 +242,17 @@ test.describe('flow 2 — a metadata table that agrees with the headers', () => 
 		await expect(coverage).toContainText('carries no clock signal in this direction');
 		await expect(coverage.locator('svg[aria-label="Root-to-tip divergence against sampling date"]')).toBeVisible();
 		await expect(coverage).toContainText('the rate is per tree unit');
-		// The words reserved for the analysis appear nowhere on the page.
+		// Sections 3 and 4 are present and state what they are before anything has been run.
+		await expect(page.locator('#dating')).toContainText('hyphaeon dating --method ols --no-tree');
+		await expect(page.locator('#taxa')).toContainText('No estimate has been made yet.');
+
+		// The words reserved for the analysis appear nowhere on the page — the two new sections
+		// included, which is why this assertion is not narrowed to #coverage.
 		const body = await page.locator('body').innerText();
 		for (const word of [/TMRCA/i, /calibrated/i, /confidence interval/i, /molecular clock estimate/i]) {
 			expect(body, `the page said ${word}`).not.toMatch(word);
 		}
+		expect(body).not.toMatch(/to be written|TODO|coming soon/i);
 	});
 });
 

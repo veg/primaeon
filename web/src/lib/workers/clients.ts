@@ -14,6 +14,8 @@ import { WorkerClient } from './client';
 import type {
 	AnalyzeWorkerRequest,
 	AnalyzeWorkerResponse,
+	DatingRequest,
+	DatingResponse,
 	InferRequest,
 	InferResponse,
 	PrepRequest,
@@ -23,6 +25,7 @@ import type {
 let prep: WorkerClient<PrepRequest, PrepResponse> | null = null;
 let infer: WorkerClient<InferRequest, InferResponse> | null = null;
 let analyze: WorkerClient<AnalyzeWorkerRequest, AnalyzeWorkerResponse> | null = null;
+let dating: WorkerClient<DatingRequest, DatingResponse> | null = null;
 
 export function prepClient(): WorkerClient<PrepRequest, PrepResponse> {
 	prep ??= new WorkerClient(() => new Worker(new URL('./prep.worker.ts', import.meta.url), { type: 'module' }));
@@ -38,6 +41,16 @@ export function inferClient(): WorkerClient<InferRequest, InferResponse> {
 export function analyzeClient(): WorkerClient<AnalyzeWorkerRequest, AnalyzeWorkerResponse> {
 	analyze ??= new WorkerClient(() => new Worker(new URL('./analyze.worker.ts', import.meta.url), { type: 'module' }));
 	return analyze;
+}
+
+/**
+ * The `/time` route's ancestor-date worker. Kept apart from the analyze worker on purpose: it
+ * imports `@veg/hyphaeon-runtime/dating` and nothing else, so no route that dates an alignment can
+ * reach ORT or a graph even by accident (dating.worker.ts's header).
+ */
+export function datingClient(): WorkerClient<DatingRequest, DatingResponse> {
+	dating ??= new WorkerClient(() => new Worker(new URL('./dating.worker.ts', import.meta.url), { type: 'module' }));
+	return dating;
 }
 
 /** True where Web Workers exist (a browser, not the prerenderer). */
