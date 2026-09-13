@@ -16,11 +16,27 @@
  * errors of a Monte-Carlo p at α = 0.05 is 0.0654, and the acceptance run has ELEVEN of its 246
  * candidates within one draw (1/101) of the cut — which is why the band is marked on rows rather
  * than left for a reader to discover that 0.0495 and 0.0594 are the same answer.
+ *
+ * TWO GROUPS OF ASSERTIONS BELOW ARE NOT ABOUT WORDS AT ALL.
+ *
+ *   THE RUNNING NULL. A record whose `stage` is not `complete` but whose `permutations.tested` is
+ *   true is the state the section is in for most of a run, and it is the one state in which every
+ *   count downstream of the shuffles is a zero that has not been computed yet. The suite drives that
+ *   record directly and asserts that nothing on the page calls a codon from it — because the e2e
+ *   waits for `data-state=landed` and cannot see this window at all.
+ *
+ *   THE TWO COST CONSTANTS. `temporal.ts` copies `TEMPORAL_PERM_RATE` and
+ *   `TEMPORAL_PERM_STAT_UNITS` from the runtime rather than importing the module, so that reading a
+ *   sentence about the model does not download the model layer. This file imports the runtime's own
+ *   and asserts the copies equal them: a re-measurement on the runtime side fails here instead of
+ *   silently splitting the page's arithmetic from the runtime's.
  */
 
 import { describe, expect, it } from 'vitest';
+import { TEMPORAL_PERM_RATE, TEMPORAL_PERM_STAT_UNITS } from '@veg/hyphaeon-runtime/temporal';
 import {
 	borderlineBand,
+	callsAreFinal,
 	classificationFigure,
 	codonCeiling,
 	costMeasured,
@@ -29,15 +45,24 @@ import {
 	honestyNotes,
 	isBorderline,
 	ledeSentence,
+	modelSeconds,
 	nullCeiling,
+	nullInFlight,
+	nullState,
 	peakDateText,
+	PERM_RATE,
+	PERM_STAT_UNITS,
 	pText,
+	recordAfterAbort,
 	remainingSeconds,
 	siteRows,
 	sortRows,
+	TEMPORAL_MODEL_RATE,
 	temporalGate,
 	trajectoryFigure,
+	uncalledBecause,
 	velocityFigure,
+	waveColumnsPending,
 	waveFigure,
 	widthText,
 	type TemporalRecord
@@ -243,6 +268,40 @@ function demo(): TemporalRecord {
 	]);
 }
 
+/**
+ * The record the page holds WHILE the null runs, built the way `routes/time/+page.svelte` builds it
+ * from the per-chunk payload: the scored record with `p_perm`, `q_perm` and `permutations` replaced
+ * and nothing else, so the classification columns, the sweep flags, the three counts and the wave
+ * modes are still what the scored payload carried. `p` is filled at `(1 + exceedances)/(k + 1)` with
+ * every codon exceeded on nearly every draw so far, which is what a real one looks like early: near
+ * 1 by construction, and therefore "nothing is confirmed" by construction.
+ */
+function running(done = 30, requested = 100): TemporalRecord {
+	const r = demo();
+	const L = r.codons_total;
+	return {
+		...r,
+		stage: 'null',
+		complete: false,
+		confirmed_sweeps: 0,
+		concordant_sweeps: 0,
+		rescued_sweeps: 0,
+		waves: null,
+		fpca_wave_variance_pct: [],
+		sites: {
+			...r.sites,
+			classification: null,
+			cross_classification: null,
+			is_confirmed_sweep: new Uint8Array(L),
+			is_concordant_sweep: new Uint8Array(L),
+			is_rescued_sweep: new Uint8Array(L),
+			p_perm: new Float32Array(L).fill((1 + done * 0.95) / (done + 1)),
+			q_perm: new Float32Array(L).fill(1)
+		},
+		permutations: { ...r.permutations!, requested, completed: done, tested: true }
+	} as TemporalRecord;
+}
+
 // =================================================================================================
 
 describe('the gate', () => {
@@ -281,16 +340,53 @@ describe('the cost, before the run', () => {
 		expect(codonCeiling('')).toBeNull();
 	});
 
+	it("copies the runtime's two cost constants rather than drifting from them", () => {
+		// The page cannot import `@veg/hyphaeon-runtime/temporal` — that would put predict.js and
+		// onnxruntime in the route's initial bundle — so it copies the two literals and this asserts
+		// the copies. A re-measurement in `runtime/src/temporal/null.js` fails HERE.
+		expect(PERM_RATE, "update temporal.ts's PERM_RATE to the runtime's re-measured TEMPORAL_PERM_RATE").toBe(TEMPORAL_PERM_RATE);
+		expect(PERM_STAT_UNITS, "update temporal.ts's PERM_STAT_UNITS to the runtime's re-measured TEMPORAL_PERM_STAT_UNITS").toBe(
+			TEMPORAL_PERM_STAT_UNITS
+		);
+		const c = nullCeiling({ B: 200, C: 169, T: 250, N: 97 });
+		expect(c.work).toBe(200 * 169 * 250 * (97 + TEMPORAL_PERM_STAT_UNITS));
+		expect(c.seconds).toBe(c.work / TEMPORAL_PERM_RATE);
+	});
+
 	it('bounds the null by the two ceilings and says which they are', () => {
 		// Every codon a candidate, every dated sequence carrying the derived residue.
 		const c = nullCeiling({ B: 200, C: 169, T: 250, N: 97 });
-		expect(c.work).toBe(200 * 169 * 250 * (97 + 21));
+		expect(c.work).toBe(200 * 169 * 250 * (97 + TEMPORAL_PERM_STAT_UNITS));
 		const [modelPass, nullSentence] = costSentences({ codons: 566, dated: 97, timePoints: 250, draws: 200, scoreInvariable: true });
 		expect(modelPass).toMatch(/all 566 codons/);
-		expect(modelPass).toMatch(/temporal\.py:512/);
+		// VERIFIED against the reference: 512 is a blank line; 510 allocates `lrts` over L and 514 is
+		// the `range(0, L, bs)` loop that scores every codon, against the static scan's `var_indices`.
+		expect(modelPass).toMatch(/temporal\.py:510, 514/);
 		expect(nullSentence).toMatch(/At most 200 × 566 × 97 × 250/);
 		expect(nullSentence).toMatch(/Both counts are ceilings/);
 		expect(nullSentence).toMatch(/development machine/);
+	});
+
+	it('prices the model pass, which is the long half of the wait', () => {
+		// 4,384 codons over 100 sequences at TEMPORAL_MODEL_RATE codon-sequences a second. The rate is
+		// measured in `temporal.ts`'s header; this asserts the sentence quotes THAT arithmetic and not
+		// a second copy of it.
+		const seconds = modelSeconds(4384, 100)!;
+		expect(seconds).toBe((4384 * 100) / TEMPORAL_MODEL_RATE);
+		const [modelPass] = costSentences({ codons: 4384, sequences: 100, dated: 95, timePoints: 60, draws: 100, scoreInvariable: true });
+		expect(modelPass).toMatch(/the long part of the wait/);
+		expect(modelPass).toContain(duration(seconds));
+		expect(modelPass).toMatch(/against the 100 sequences this file carries/);
+		expect(modelPass).toMatch(/anchor and not as a promise/);
+	});
+
+	it('prices no model pass it cannot count, and says which count is missing', () => {
+		const [noSequences] = costSentences({ codons: 4384, sequences: null, dated: 95, timePoints: 60, draws: 100, scoreInvariable: true });
+		expect(noSequences).toMatch(/not priced here: the codon and sequence counts could not both be read/);
+		const [variableOnly] = costSentences({ codons: 4384, sequences: 100, dated: 95, timePoints: 60, draws: 100, scoreInvariable: false });
+		expect(variableOnly).toMatch(/not priced here: how many codons vary/);
+		expect(modelSeconds(null, 100)).toBeNull();
+		expect(modelSeconds(4384, 0)).toBeNull();
 	});
 
 	it('says what skipping the invariable codons costs the downloads', () => {
@@ -426,7 +522,21 @@ describe('the lede', () => {
 		expect(text).toMatch(/^2 of 8 codons are confirmed sweeps/);
 		expect(text).toMatch(/the earliest peaking at 2009-03-/);
 		expect(text).toMatch(/the strongest A6V at p = 0.0099/);
-		expect(text).toMatch(/1 of them are also called by the static scan/);
+		expect(text).toMatch(/1 of them is also called by the static scan/);
+		expect(text).toMatch(/1 is found only in time/);
+	});
+
+	it('pluralises every verb it puts beside a count, in both directions', () => {
+		const one = makeRecord([
+			{ classification: 'CONFIRMED_SWEEP', cross: 'CONCORDANT_SWEEP', peak: 2009.5, pPerm: 0.01, qStatic: 0.01 },
+			{ classification: 'CONFIRMED_SWEEP', cross: 'RESCUED_SWEEP', peak: 2009.6, pPerm: 0.02 }
+		]);
+		const text = ledeSentence(one, 'years');
+		expect(text).toMatch(/^2 of 2 codons are confirmed sweeps/);
+		expect(text).toMatch(/1 of them is also called by the static scan/);
+		expect(text).toMatch(/1 is found only in time/);
+		const solo = makeRecord([{ classification: 'CONFIRMED_SWEEP', cross: 'CONCORDANT_SWEEP', peak: 2009.5, pPerm: 0.01, qStatic: 0.01 }]);
+		expect(ledeSentence(solo, 'years')).toMatch(/^1 of 1 codons is a confirmed sweep/);
 	});
 
 	it('says the cross-classification is arithmetic when the static scan calls nothing', () => {
@@ -434,7 +544,7 @@ describe('the lede', () => {
 			{ classification: 'CONFIRMED_SWEEP', cross: 'RESCUED_SWEEP', peak: 2009.5, pPerm: 0.01 },
 			{ classification: 'TEMPORAL_NOISE', cross: 'NEGATIVE_CONSENSUS', peak: 2009.6, pPerm: 0.3 }
 		]);
-		expect(ledeSentence(record, 'years')).toMatch(/All 1 are found only in time: the static scan calls nothing/);
+		expect(ledeSentence(record, 'years')).toMatch(/It is found only in time: the static scan calls nothing/);
 	});
 
 	it('claims nothing when the null has not run', () => {
@@ -448,6 +558,234 @@ describe('the lede', () => {
 		record.confirmed_sweeps = 0;
 		record.sites.is_confirmed_sweep = new Uint8Array(record.codons_total);
 		expect(ledeSentence(record, 'years')).toMatch(/No codon of the 4 candidates is confirmed/);
+	});
+});
+
+describe('the running null — the state in which no count downstream of the shuffles exists yet', () => {
+	it("is read off the record's stage, not off the draw count", () => {
+		expect(nullInFlight(running())).toBe(true);
+		expect(callsAreFinal(running())).toBe(false);
+		expect(nullInFlight(demo())).toBe(false);
+		expect(callsAreFinal(demo())).toBe(true);
+		// A STOPPED null is complete with fewer draws than were asked for, and its labels ARE final.
+		const stopped = demo();
+		stopped.permutations!.cancelled = true;
+		stopped.permutations!.completed = 37;
+		expect(nullInFlight(stopped)).toBe(false);
+		expect(callsAreFinal(stopped)).toBe(true);
+		// No shuffle at all is not "in flight" either: it is the record's other honest state.
+		const untested = demo();
+		untested.permutations!.tested = false;
+		expect(nullInFlight(untested)).toBe(false);
+		expect(callsAreFinal(untested)).toBe(false);
+	});
+
+	it('states the draw count and claims no confirmed count', () => {
+		const text = ledeSentence(running(30), 'years');
+		expect(text).toMatch(/the null is 30 of 100 shuffles through/);
+		expect(text).toMatch(/nothing here is confirmed or ruled out yet/);
+		// The two sentences this window used to print, both of them completed findings.
+		expect(text).not.toMatch(/No codon of the/);
+		expect(text).not.toMatch(/confirmed sweeps?, the earliest/);
+		// And it says why the p-values on screen are what they are, rather than leaving them to read
+		// as an answer: at 30 draws they start near 1 for every codon.
+		expect(text).toMatch(/\(1 \+ exceedances\) \/ \(30 \+ 1\)/);
+	});
+
+	it('keeps every call column reading "not tested" while the shuffles are still being drawn', () => {
+		const rows = siteRows(running(), 'candidates');
+		expect(rows).toHaveLength(4);
+		for (const row of rows) {
+			expect(row.call).toBe('not-tested');
+			expect(row.callWord).toBe('not tested');
+			expect(row.crossWord).toBe('not tested');
+			expect(row.borderline).toBe(false);
+		}
+	});
+
+	it('does not plot the cross-classification off p-values that are still falling', () => {
+		expect(classificationFigure(running())).toBeNull();
+		expect(classificationFigure(demo())).not.toBeNull();
+	});
+
+	it('does not call the trajectory figure\'s purple lines a result', () => {
+		expect(trajectoryFigure(running()).called_is_final).toBe(false);
+		expect(trajectoryFigure(running()).called).toHaveLength(0);
+		expect(trajectoryFigure(demo()).called_is_final).toBe(true);
+	});
+
+	it('distinguishes "nothing was confirmed" from "nothing has been tested" in Figure 5', () => {
+		expect(velocityFigure(running()).source).toBe('untested');
+		const none = demo();
+		none.sites.is_confirmed_sweep = new Uint8Array(none.codons_total);
+		expect(velocityFigure(none).source).toBe('candidates');
+		expect(velocityFigure(demo()).source).toBe('sweeps');
+	});
+
+	it('holds back the two notes that count codons against a threshold', () => {
+		const ids = honestyNotes(running()).map((n) => n.id);
+		expect(ids).toContain('rng');
+		expect(ids).not.toContain('borderline');
+		expect(ids).not.toContain('qperm');
+		// They come back the moment the run is complete.
+		expect(honestyNotes(demo()).map((n) => n.id)).toEqual(expect.arrayContaining(['borderline', 'qperm']));
+	});
+
+	it('does not call the elapsed time "in all" while the null is still running', () => {
+		// And it names the STAGE, not the model pass: `record.runtime_sec` is measured from the first
+		// line of `runTemporal`, so the stage-one figure covers the smoothing and the static scan too
+		// (measured on the acceptance shape: 18.435 s of runtime_sec against an 18.378 s model pass).
+		expect(costMeasured(running())).toMatch(/2\.5 s to the end of stage one/);
+		expect(costMeasured(running())).toMatch(/with the null still running/);
+		expect(costMeasured(running())).not.toMatch(/to the end of the model pass/);
+		expect(costMeasured(demo())).toMatch(/2\.5 s in all/);
+	});
+});
+
+// =================================================================================================
+// The null has four states, not three
+// =================================================================================================
+
+/** A run whose null was declined over the work budget: `skipped`, no draw, record complete. */
+function skipped(): TemporalRecord {
+	const r = demo();
+	const L = r.codons_total;
+	return {
+		...r,
+		confirmed_sweeps: 0,
+		concordant_sweeps: 0,
+		rescued_sweeps: 0,
+		sites: {
+			...r.sites,
+			classification: null,
+			cross_classification: null,
+			is_confirmed_sweep: new Uint8Array(L)
+		},
+		permutations: {
+			...r.permutations!,
+			requested: 1000,
+			completed: 0,
+			skipped: true,
+			tested: false,
+			reason: 'over the work budget'
+		}
+	} as TemporalRecord;
+}
+
+/** The record the page is left holding when a cancel is not answered and the worker is terminated. */
+function abandoned(done = 30): TemporalRecord {
+	return { ...running(done), stage: 'stopped' } as TemporalRecord;
+}
+
+describe('the four states of the null, and the sentences keyed on them', () => {
+	it('separates never started, running, finished and stopped', () => {
+		expect(nullState(demo())).toBe('finished');
+		expect(nullState(running())).toBe('running');
+		expect(nullState(skipped())).toBe('stopped');
+		expect(nullState(abandoned())).toBe('stopped');
+		const never = { ...demo(), permutations: null } as TemporalRecord;
+		expect(nullState(never)).toBe('not-started');
+	});
+
+	it('keeps a stopped run out of the in-flight state for good', () => {
+		// The bug this pins: `nullInFlight` read only `stage !== complete`, so a terminated worker
+		// left the page saying "the null is 30 of 100 shuffles through" with nothing coming.
+		expect(nullInFlight(abandoned())).toBe(false);
+		expect(callsAreFinal(abandoned())).toBe(false);
+		expect(ledeSentence(abandoned(), 'years')).toMatch(/this run was stopped while the null was being drawn/);
+		expect(ledeSentence(abandoned(), 'years')).not.toMatch(/shuffles through/);
+		expect(costMeasured(abandoned())).toMatch(/after which this run was stopped/);
+	});
+
+	it('does not say shuffles were being drawn when the terminate landed before the first one', () => {
+		// `recordAfterAbort` marks ANY non-complete record stopped, and the record it is handed can
+		// be the interim `scored` payload — published before the null starts, with no permutation
+		// block at all. Between that payload and the first chunk sit the fPCA pass, the budget check
+		// and the calibration draw, so the window is real, and the old single sentence told that
+		// reader the null "was being drawn" when it had not started.
+		const beforeAnyDraw = recordAfterAbort({ ...demo(), stage: 'null', permutations: null } as TemporalRecord)!;
+		expect(beforeAnyDraw.stage).toBe('stopped');
+		expect(nullState(beforeAnyDraw)).toBe('stopped');
+		expect(uncalledBecause(beforeAnyDraw)).toMatch(/stopped before the null drew a single shuffle/);
+		expect(uncalledBecause(beforeAnyDraw)).not.toMatch(/while the null was being drawn/);
+		const lede = ledeSentence(beforeAnyDraw, 'years');
+		expect(lede).toMatch(/stopped before the null drew a single shuffle/);
+		// And it must not offer p-values it does not have.
+		expect(lede).not.toMatch(/shuffles that were drawn/);
+		// The mid-null stop keeps its own, different sentence.
+		expect(uncalledBecause(abandoned())).toMatch(/while the null was being drawn/);
+	});
+
+	it('never tells a reader whose null was skipped that it "has not finished"', () => {
+		expect(uncalledBecause(skipped())).toMatch(/declined before it started/);
+		expect(uncalledBecause(skipped())).not.toMatch(/not finished/);
+		expect(uncalledBecause(running())).toMatch(/has not finished/);
+		expect(uncalledBecause(abandoned())).toMatch(/stopped while the null was being drawn/);
+		expect(uncalledBecause(demo())).toBeNull();
+	});
+
+	it('hands both figures the reason rather than letting a caption guess it', () => {
+		expect(trajectoryFigure(skipped()).uncalled_reason).toBe(uncalledBecause(skipped()));
+		expect(trajectoryFigure(demo()).uncalled_reason).toBeNull();
+		expect(velocityFigure(skipped()).source).toBe('untested');
+		expect(velocityFigure(skipped()).uncalled_reason).toMatch(/declined before it started/);
+		expect(velocityFigure(demo()).uncalled_reason).toBeNull();
+	});
+
+	it('lands a terminated worker in `stopped`, which is the transition the route makes', () => {
+		// The defect: `/time`'s catch handled only "no record yet" and left a run whose worker was
+		// TERMINATED after the client's grace (`lib/workers/client.ts`) holding a `stage: 'null'`
+		// record, so the page printed "the null is 30 of 100 shuffles through" for good. The route
+		// calls this function; the assertions below are what it buys.
+		const abandonedByRoute = recordAfterAbort(running(30))!;
+		expect(abandonedByRoute.stage).toBe('stopped');
+		expect(nullState(abandonedByRoute)).toBe('stopped');
+		expect(nullInFlight(abandonedByRoute)).toBe(false);
+		expect(ledeSentence(abandonedByRoute, 'years')).toMatch(/this run was stopped while the null was being drawn/);
+		expect(ledeSentence(abandonedByRoute, 'years')).not.toMatch(/shuffles through/);
+		// The p-values that WERE drawn are still shown, and said to be at the achieved count.
+		expect(ledeSentence(abandonedByRoute, 'years')).toMatch(/the estimator at the 30 shuffles/);
+		// A record that already finished is returned as it is: a late abort cannot demote a result.
+		const done = demo();
+		expect(recordAfterAbort(done)).toBe(done);
+		expect(recordAfterAbort(null)).toBeNull();
+	});
+
+	it('sends the reader DOWN the page for the trajectories, which is where they are', () => {
+		// `TemporalSection.svelte` renders the lede first; Figures 4-7 and the table are all below it.
+		const lede = ledeSentence(running(), 'years');
+		expect(lede).toMatch(/in the two figures\s+below are already final/);
+		expect(lede).not.toMatch(/above are already final/);
+	});
+});
+
+describe('the interim record draws no zero as if it were a value', () => {
+	it('marks the wave loadings and R2 pending until the decomposition has run', () => {
+		// `runtime/src/temporal/record.js:70,72` fills both with zero arrays until then.
+		expect(waveColumnsPending(running())).toBe(true);
+		expect(waveColumnsPending(abandoned())).toBe(true);
+		expect(waveColumnsPending(demo())).toBe(false);
+	});
+});
+
+describe('the wave-shares note says the right thing for each of the two row sets', () => {
+	it('conditions on the null only when the rows ARE the confirmed sweeps', () => {
+		const note = honestyNotes(demo()).find((n) => n.id === 'wave-shares')!;
+		expect(note.rest).toMatch(/that set is thresholded on the\s+permutation p/);
+		expect(note.rest).toMatch(/confirmed-sweep set/);
+	});
+
+	it('does not claim the peak-intensity fallback is thresholded on the permutation p', () => {
+		// `temporalWaveDecomposition` takes that set from the peak intensities of the WHOLE alignment
+		// when fewer than four codons are confirmed — before the null exists, and unmoved by it.
+		const r = demo();
+		const fallback = { ...r, waves: { ...r.waves!, source: 'peak-intensity-fallback' } } as TemporalRecord;
+		const note = honestyNotes(fallback).find((n) => n.id === 'wave-shares')!;
+		expect(note.rest).not.toMatch(/that set is thresholded/);
+		expect(note.rest).toMatch(/neither thresholded on the permutation p/);
+		expect(note.rest).toMatch(/BEFORE the null is drawn/);
+		expect(note.rest).toMatch(/largest peak intensity/);
+		expect(note.rest).toMatch(/WHICH BRANCH is taken/);
 	});
 });
 
@@ -485,6 +823,16 @@ describe('the sentences a reader comparing with a command-line run must see', ()
 		expect(note.lead).toMatch(/A wave and its negative are the same mode/);
 		expect(note.rest).toMatch(/canonical/);
 		expect(note.rest).toMatch(/no classification reads a sign/);
+	});
+
+	it('says the variance shares are conditioned on the confirmed-sweep set, not just the sign', () => {
+		const note = honestyNotes(demo()).find((n) => n.id === 'wave-shares')!;
+		expect(note.lead).toMatch(/conditioned on which codons were confirmed/);
+		expect(note.rest).toMatch(/decomposes a DIFFERENT MATRIX/);
+		// The measurement behind the claim, quoted rather than asserted in the abstract.
+		expect(note.rest).toMatch(/32 codons/);
+		expect(note.rest).toMatch(/39\.67/);
+		expect(note.rest).toMatch(/Compare the shapes and the ordering, not the digits/);
 	});
 
 	it('warns, rather than quietly benefiting, when our date layer read what the reference cannot', () => {

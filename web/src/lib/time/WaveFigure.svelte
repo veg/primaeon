@@ -6,7 +6,16 @@
 	axis would need four hues and a legend; four panels need neither, and each panel can carry its
 	own share of the variance as a label. NO PURPLE APPEARS IN THIS FIGURE: nothing in it is a call.
 
-	THE TWO CAVEATS THE CAPTION CARRIES ARE NOT DECORATION.
+	THE THREE CAVEATS THE CAPTION CARRIES ARE NOT DECORATION.
+
+	  THE SHARES ARE CONDITIONED ON A ROW SET, AND THERE ARE TWO OF THEM. `temporalWaveDecomposition`
+	  (`js/src/temporal.js`) decomposes the confirmed sweeps when at least four codons were confirmed
+	  and otherwise the `max(4, candidates)` codons of largest peak intensity. Only the FIRST of those
+	  is thresholded on the permutation p; the fallback set is read off the trajectories before the
+	  null exists, so it is neither conditioned on the null nor moved by drawing more shuffles, and a
+	  caption that says otherwise is simply wrong on half the runs. The caption switches on
+	  `model.source` and says the right thing in each case; `honestyNotes()` prints the same split as
+	  prose. (Which BRANCH is taken is still the null's doing, and the fallback sentence says so.)
 
 	  THE SIGN IS A CONVENTION (D28). A wave and its negative describe the same mode. `hyphaeon
 	  temporal` has no convention and writes its solver's raw signs; this page's canonical rule makes
@@ -87,8 +96,25 @@
 		{model.source === 'confirmed-sweeps' ? 'confirmed sweeps' : 'strongest candidate codons (fewer than four were confirmed, so the reference falls back to these)'},
 		so they are shapes in time that many codons share — not codons. The percentages are shares of the
 		variance of that matrix and are <strong>not p-values</strong>; they need not sum to 100, because the
-		denominator is the whole spectrum ({num(total, 1)} % here). All four panels share one amplitude
-		scale and one time axis, in {units === 'years' ? 'calendar years' : unitLabel}.
+		denominator is the whole spectrum ({num(total, 1)} % here).
+		{#if model.source === 'confirmed-sweeps'}
+			<strong>They are conditioned on which codons were confirmed.</strong> That set is thresholded on the
+			permutation p, which comes from a different generator than the reference's, so a command-line run
+			that confirms a different set decomposes a different matrix: on the acceptance alignment 32 codons
+			against its 18 moved the leading share from 39.67 % to 33.84 %, with identical arithmetic on both
+			sides. Compare the shapes and their order, not the digits.
+		{:else}
+			<strong>They are conditioned on a set the null did not choose.</strong> These rows are the strongest
+			codons by peak intensity, read off the trajectories before any shuffle was drawn, so unlike the
+			confirmed-sweep set they are neither thresholded on the permutation p nor moved by drawing more
+			of them. What the null decides here is only WHICH BRANCH is taken: a command-line run that
+			confirmed four or more codons decomposes its own sweep set instead, which is a different matrix,
+			and its shares are then not comparable with these at all. Compare the shapes and their order, not
+			the digits.
+		{/if}
+		All four panels share one amplitude scale and one time axis, in {units === 'years'
+			? 'calendar years'
+			: unitLabel}.
 		<strong>A wave and its negative describe the same mode.</strong> The sign here is fixed by a convention this
 		page states and the Python reference does not have ({model.sign}: the element of largest magnitude
 		is made positive, applied before the loadings are derived). A curve in a command-line run may

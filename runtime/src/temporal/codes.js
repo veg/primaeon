@@ -101,15 +101,15 @@ export const TEMPORAL_REFUSALS = Object.freeze({
 export const TEMPORAL_THRESHOLDS = Object.freeze({
 	/** temporal.py:474. Five dated sequences is the reference's own floor. */
 	minDatedTaxa: 5,
-	/** temporal.py:404, `num_time_points`. */
+	/** temporal.py:405, `num_time_points`. */
 	timePointsDefault: 250,
-	/** temporal.py:406, `perm_alpha`. */
+	/** temporal.py:407, `perm_alpha`. */
 	permAlpha: 0.05,
-	/** temporal.py:407, `min_r2_fpca`. */
+	/** temporal.py:408, `min_r2_fpca`. */
 	minR2Fpca: 0.35,
-	/** temporal.py:408, `tau_peak`. NOTE Q1: the reference overrides this exact VALUE (see below). */
+	/** temporal.py:409, `tau_peak`. NOTE Q1: the reference overrides this exact VALUE (see below). */
 	tauPeak: 1e-4,
-	/** temporal.py:409, `tau_auc`: `None` means "derive from the timespan" (temporal.py:608). */
+	/** temporal.py:410, `tau_auc`: `None` means "derive from the timespan" (temporal.py:608-609). */
 	tauAuc: null,
 	/** PLAN.md §3.5 / REPORT_DEFAULTS.seed. The reference's own is numpy's `RandomState(42)`. */
 	seed: 42,
@@ -126,7 +126,7 @@ export const TEMPORAL_THRESHOLDS = Object.freeze({
 	permutationsDefault: 200,
 	/** `TEMPORAL_PERM_B_MIN`: the count below which the answer is not worth showing. See above. */
 	permutationsMin: 200,
-	/** temporal.py:718, `K`. */
+	/** temporal.py:719, `K`. */
 	waveCount: 4,
 	/** temporal.py:531, and the cut both classification columns read. */
 	qStaticCut: 0.10,
@@ -198,7 +198,7 @@ export const TEMPORAL_MESSAGES = Object.freeze({
 		'collapse keeps only one date each. In a surveillance set the same haplotype sampled on ' +
 		'different days is exactly what a sweep looks like, so this silently deletes time points. ' +
 		'Re-run with duplicates kept if that is what happened here. (The reference collapses them too: ' +
-		'temporal.py:441, `prune_dups = not (keep_duplicates or non_calendar)`.)',
+		'temporal.py:439, `prune_dups = not (keep_duplicates or non_calendar)`.)',
 	DATES_BEYOND_REFERENCE:
 		'{count} of the {dated} dates on this run were read by a rule `hyphaeon temporal` does not ' +
 		'have ({rules}). This page\'s date layer is the union of all three upstream parsers; the ' +
@@ -227,7 +227,7 @@ export const TEMPORAL_MESSAGES = Object.freeze({
 		'Every trajectory on this page is measured against that root.',
 	ROOT_UNKNOWN_RESIDUES:
 		'{count} position(s) of the root sequence {name} are a gap or an ambiguity, and the reference ' +
-		'turns each of those into ALANINE rather than a sentinel (temporal.py:355). At those positions ' +
+		'turns each of those into ALANINE rather than a sentinel (temporal.py:365). At those positions ' +
 		'every other residue reads as a difference from the root, so codons that do not vary at all ' +
 		'acquire trajectories, peaks and wave loadings, and their mutation labels are wrong. ' +
 		'Replicated deliberately; upstream bug TEMPORAL Q2.',
@@ -239,7 +239,7 @@ export const TEMPORAL_MESSAGES = Object.freeze({
 	TAU_PEAK_OVERRIDDEN:
 		'The peak-energy floor was supplied as {supplied}, which is the reference\'s own documented ' +
 		'default, and the reference therefore silently replaces it with {resolved} — its override tests ' +
-		'the VALUE rather than whether a caller supplied one (temporal.py:604, 610). Replicated ' +
+		'the VALUE rather than whether a caller supplied one (temporal.py:605, 610). Replicated ' +
 		'deliberately; upstream bug TEMPORAL Q1.',
 	STATIC_NONE_SIGNIFICANT:
 		'The ordinary static scan calls NO codon at q <= {cut} on this alignment, so every confirmed ' +
@@ -274,7 +274,7 @@ export const TEMPORAL_MESSAGES = Object.freeze({
 	FLAT_CANDIDATES:
 		'{count} candidate codon(s) have a perfectly flat velocity, which the standardisation turns ' +
 		'into a row of zeros and the gate then scores R2 = 1 — a pass on no signal at all ' +
-		'(temporal.py:669, the `+1e-8`). Upstream bug TEMPORAL Q7.',
+		'(temporal.py:670, the `+1e-8`). Upstream bug TEMPORAL Q7.',
 	ESCAPE_HATCH:
 		'No codon cleared the confirmation thresholds, so the reference\'s fallback selection fired: ' +
 		'the {count} codon(s) called below are candidates with p_perm <= 0.10 OR a static LRT >= 3.84, ' +

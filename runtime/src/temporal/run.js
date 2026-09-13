@@ -11,10 +11,10 @@
  * `js/src/temporal.js` is those numeric steps and this is everything else. The chain, and the
  * reference line each step mirrors:
  *
- *   S0  regime          temporal.py:430-441  `resolveTemporalRegime`    — units -> sweep mode, duplicate policy
+ *   S0  regime          temporal.py:430-440  `resolveTemporalRegime`    — units -> sweep mode, duplicate policy
  *   S2  alignment       temporal.py:453-461  the caller's `prepareRun`  — parse, collapse, cap, tree or TN93, MDS
  *   S3  dates           temporal.py:463-484  the caller's, from `runtime/src/dates/`, filtered to float32
- *   S4  bandwidth       temporal.py:486-495  `resolveTemporalBandwidth` — 5 % of the span, clamped
+ *   S4  bandwidth       temporal.py:486-492  `resolveTemporalBandwidth` — 5 % of the span, clamped
  *   S5  root            temporal.py:497-503  `inferRootSequence`        — a named taxon, else the earliest consensus
  *   S6  inference       temporal.py:505-523  `inferSites`               — ONE pass; nothing re-enters the graph
  *   S7  static          temporal.py:525-532  `pvalsFromLrtSelfLiang` + BH over the VARIABLE subset
@@ -40,11 +40,11 @@
  * reference will see the print order differ.
  *
  * THE ONE REAL DIVERGENCE THE APPLICATION HAS TO DECIDE: `scoreInvariableSites`. The reference sends
- * EVERY codon through the model, invariable ones included (temporal.py:512) — 4,384 forward rows
+ * EVERY codon through the model, invariable ones included (temporal.py:513-520) — 4,384 forward rows
  * against our meme pass's 273 on the acceptance alignment, a 16x inference cost for columns at
  * codons the pillar itself labels INVARIABLE. What actually depends on those rows is `lrt` and
  * `p_static` AT those codons and nothing else: `q_static`'s Benjamini-Hochberg runs over the
- * variable subset alone (temporal.py:529), `stage1_mask` is `~inv & ...`, and under a consensus root
+ * variable subset alone (temporal.py:527-530), `stage1_mask` is `~inv & ...`, and under a consensus root
  * `delta_root` is identically zero at an invariable codon, so its curve, velocity, peak, width, area
  * and wave loadings are exactly zero whatever the attention was. So the default is `true` on the
  * node, parity, MCP and server surfaces — the fixture reproduces bit for bit — and a browser that
@@ -55,7 +55,7 @@
  *
  * THE ONE CONFIGURATION IN WHICH THAT IS NOT SAFE, and the reason this file forces the flag back on:
  * with an EXPLICIT root taxon carrying gaps, `root_indices` becomes 0 = ALANINE at every gapped
- * position (temporal.py:355, upstream bug TEMPORAL Q2), so `delta_root` is 1 for every sequence
+ * position (temporal.py:365, upstream bug TEMPORAL Q2), so `delta_root` is 1 for every sequence
  * carrying anything else — including at invariable codons, which then acquire nonzero curves, peaks,
  * areas and loadings. That is the only configuration in which the model's outputs at invariable
  * codons matter at all, so `rootTaxon` pins `scoreInvariableSites` to `true` and says why.
@@ -236,7 +236,12 @@ function beyondReference(byRule) {
  * @param {'canonical'|'lapack'} [args.options.waveSign] default 'canonical' (D28)
  * @param {number} [args.options.workBudget] the null's cap; `Infinity` lifts it
  * @param {number} [args.options.batchSize] sites per forward call
- * @param {{alignment?: string|null, tree?: string|null, dates?: string|null}} [args.inputs] names for the record
+ * @param {{alignment?: string|null, tree?: string|null, dates?: string|null}} [args.inputs]
+ *   LOAD-BEARING, not decoration: `inputs.alignment` and `inputs.tree` are the ONLY source of the
+ *   `alignment` and `tree` fields of `_summary.json` (record.js, results.js), the two fields whose
+ *   whole job is to say what was analysed, and `inputs.dates` is the only source of `-d` on the
+ *   reproduction line (it reaches it through `record.dates.file`). The key names are checked below
+ *   and a misspelling is a THROW rather than a nameless summary — see `assertInputNames`.
  * @param {object} [args.provenance] overrides merged into the record's `primaeon` block
  * @param {(payload: object) => void} [args.onProgress] interim section payloads, one per stage and
  *   one per null chunk, exactly as `runDms` publishes per slab
@@ -259,12 +264,13 @@ export async function runTemporal({
 	if (!loaded || !loaded.a || !Number.isInteger(loaded.L)) {
 		throw new Error('runTemporal: pass the library LoadedAlignment as `loaded`');
 	}
+	assertInputNames(inputs);
 	const started = Date.now();
 	const { L, N: nTaxa, taxa } = loaded;
 	/** @type {Array<object>} */
 	const warnings = [];
 
-	// --- S0: the regime switches (temporal.py:430-441) -------------------------------------------
+	// --- S0: the regime switches (temporal.py:430-440) -------------------------------------------
 	const regime = resolveTemporalRegime({
 		timeUnits: options.timeUnits ?? 'years',
 		sweepMode: options.sweepMode ?? 'auto',
@@ -282,7 +288,7 @@ export async function runTemporal({
 	// layer can only say what it cost, and for surveillance data it is a real hazard: identical
 	// haplotypes sampled on DIFFERENT DAYS collapse to one sequence carrying one date, which
 	// silently deletes time points. `prune_dups` is the reference's own default on the calendar path
-	// (temporal.py:441).
+	// (temporal.py:439).
 	const collapsed = loaded.notices?.duplicatesCollapsed ?? 0;
 	if (collapsed > 0 && regime.pruneDuplicates) {
 		warnings.push(
@@ -354,7 +360,7 @@ export async function runTemporal({
 		);
 	}
 
-	// --- S4: the bandwidth (temporal.py:486-495) --------------------------------------------------
+	// --- S4: the bandwidth (temporal.py:486-492) --------------------------------------------------
 	const T = Math.max(2, Math.floor(options.numTimePoints ?? TEMPORAL_THRESHOLDS.timePointsDefault));
 	const bandwidth = resolveTemporalBandwidth(timespan, {
 		timeUnits: regime.timeUnits,
@@ -400,7 +406,7 @@ export async function runTemporal({
 				temporalWarning('TEMPORAL_ROOT_UNKNOWN_RESIDUES', 'warn', fillMessage(TEMPORAL_MESSAGES.ROOT_UNKNOWN_RESIDUES, { count: rootUnknown, name: rootTaxon }), {
 					count: rootUnknown,
 					root_taxon: rootTaxon,
-					upstream: 'TEMPORAL Q2 (temporal.py:355)'
+					upstream: 'TEMPORAL Q2 (temporal.py:365)'
 				})
 			);
 		}
@@ -509,7 +515,7 @@ export async function runTemporal({
 			temporalWarning('TEMPORAL_TAU_PEAK_OVERRIDDEN', 'warn', fillMessage(TEMPORAL_MESSAGES.TAU_PEAK_OVERRIDDEN, { supplied: options.tauPeak, resolved: floors.tauPeak }), {
 				supplied: options.tauPeak,
 				resolved: floors.tauPeak,
-				upstream: 'TEMPORAL Q1 (temporal.py:604, 610)'
+				upstream: 'TEMPORAL Q1 (temporal.py:605, 610)'
 			})
 		);
 	}
@@ -561,7 +567,7 @@ export async function runTemporal({
 				temporalWarning('TEMPORAL_FLAT_CANDIDATES', 'warn', fillMessage(TEMPORAL_MESSAGES.FLAT_CANDIDATES, { count: gate.flatRows.length }), {
 					count: gate.flatRows.length,
 					sites: Array.from(gate.flatRows, (i) => candIndices[i] + 1).slice(0, 12),
-					upstream: 'TEMPORAL Q7 (temporal.py:669)'
+					upstream: 'TEMPORAL Q7 (temporal.py:670)'
 				})
 			);
 		}
@@ -711,12 +717,64 @@ export async function runTemporal({
 }
 
 /**
+ * The only keys `inputs` may carry. Anything else is a caller's typo, and it is fatal.
+ *
+ * ALL THREE REACH THE RECORD, which is the point of the list: a key this assertion ACCEPTS and the
+ * record then drops is the same silent loss it exists to prevent, only harder to notice — that was
+ * `dates`, accepted here, read nowhere, and reachable on the reproduction line only by passing the
+ * name a second time to `temporalReferenceCommand`. `alignment` and `tree` are `_summary.json`'s own
+ * two name keys; `dates` is not a summary key upstream, so it lands on `record.dates.file` and
+ * becomes `-d` on the reproduction line.
+ */
+const TEMPORAL_INPUT_NAME_KEYS = Object.freeze(['alignment', 'tree', 'dates']);
+
+/**
+ * Refuse a misspelled `inputs` key rather than ship a summary that cannot say what it analysed.
+ *
+ * `_summary.json`'s `alignment` and `tree` come from here and from nowhere else, and an unrecognised
+ * key (`alignment_name`, say) used to fall through `??` to `null`, writing `"alignment": ""` and
+ * `"tree": null` into a file every number of which is correct. A reference summary that is silently
+ * nameless is worse than a refused one, and the caller always knows the names, so this throws.
+ *
+ * An absent or explicitly null name is NOT an error: a pasted alignment in the browser genuinely has
+ * no file name, and `""` there means "this run had none", not "we lost it".
+ */
+function assertInputNames(inputs) {
+	if (inputs === null || inputs === undefined) return;
+	if (typeof inputs !== 'object' || Array.isArray(inputs)) {
+		throw new Error('runTemporal: `inputs` must be an object of names; see TEMPORAL_INPUT_NAME_KEYS');
+	}
+	for (const key of Object.keys(inputs)) {
+		if (!TEMPORAL_INPUT_NAME_KEYS.includes(key)) {
+			throw new Error(
+				`runTemporal: unknown \`inputs\` key '${key}'. \`_summary.json\`'s own "alignment" and "tree" are ` +
+					`written from \`inputs.alignment\` and \`inputs.tree\`, so an unrecognised key would ship a summary ` +
+					`with no names in it. Accepted keys: ${TEMPORAL_INPUT_NAME_KEYS.join(', ')}.`
+			);
+		}
+	}
+}
+
+/**
  * The candidate-length p and q vectors, spread back over all L codons.
  *
- * Non-candidates keep the reference's own 1.0 (temporal.py:645-646, `np.ones(L, dtype=float32)`).
- * A candidate whose null did not run keeps NaN — NOT 1.0, which is a real value meaning "tested and
- * never exceeded" — so a surface can render "not tested" rather than "not a sweep". That distinction
- * is the whole reason a cancelled run is worth keeping.
+ * Non-candidates keep the reference's own 1.0 (temporal.py:620-621, `p_perm = np.ones(L, float32)`
+ * and the same for `q_perm`; only `p_perm[cand_indices]` is ever assigned, at :664-665).
+ *
+ * UPSTREAM BUG, REPLICATED AND FLAGGED (house rule: replicate, flag, fix upstream — do not fix in a
+ * port). 1.0 at a non-candidate is a p-VALUE printed for a codon on which NO permutation was run: on
+ * the acceptance run that is 4,138 of 4,384 codons carrying "p = 1.0, q = 1.0" in
+ * `_sites_summary.csv` with nothing behind them. The reference answered exactly this objection for
+ * the static column — `p_static` is NaN where the model was not asked — and did not answer it here.
+ * Both implementations write the identical strings, which is what makes the port faithful and what
+ * makes the file wrong in the same way; `temporalDownloadNotes` (results.js) says so to anyone who
+ * takes the CSV away, and `record.sites.stage1` is the mask that separates the two meanings in the
+ * record itself.
+ *
+ * A CANDIDATE whose null did not run keeps NaN — NOT 1.0 — so a surface can render "not tested"
+ * rather than "not a sweep". That distinction is the whole reason a cancelled run is worth keeping,
+ * and it is ours: it is the only place this function departs from the reference's fill, and it
+ * departs only where the reference has no behaviour to depart from (its `B` always completes).
  */
 function spreadPerm(nullBlock, candIndices, L) {
 	const p = new Float32Array(L).fill(1);

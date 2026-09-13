@@ -55,7 +55,7 @@
 	import { datingClient, datingModelClient, temporalClient, workersAvailable } from '$lib/workers/clients';
 	import type { DatingModelRequest, DatingRequest, DatingResponse, TemporalRequest, TemporalResponse } from '$lib/workers/protocol';
 	import TemporalSection from '$lib/time/TemporalSection.svelte';
-	import { codonCeiling, TEMPORAL_MAX_SPECIES, temporalGate, type TemporalRecord } from '$lib/time/temporal';
+	import { codonCeiling, recordAfterAbort, TEMPORAL_MAX_SPECIES, temporalGate, type TemporalRecord } from '$lib/time/temporal';
 	import { DATING_NEURAL_MAX_TAXA } from '@veg/hyphaeon-runtime/dating';
 	import {
 		diagnosis,
@@ -710,8 +710,15 @@
 					const p = payload as { stage: string; record?: TemporalRecord; p_perm?: Float32Array; q_perm?: Float32Array; permutations?: unknown };
 					if (p.stage === 'null' && temporalRecord && p.p_perm && p.q_perm) {
 						// Shallow: every other column is the same typed array the scored payload brought.
+						// THE STAGE IS CARRIED, and the section reads it: this payload replaces the two
+						// p-value columns and NOTHING downstream of them, so `classification`,
+						// `is_confirmed_sweep` and the three sweep counts are still the scored payload's
+						// zeros. A record that said `complete` here would have the page call codons off
+						// zeros one chunk into the null (`nullInFlight`, lib/time/temporal.ts).
 						temporalRecord = {
 							...temporalRecord,
+							stage: 'null',
+							complete: false,
 							sites: { ...temporalRecord.sites, p_perm: p.p_perm, q_perm: p.q_perm },
 							permutations: {
 								...(p.permutations as TemporalRecord['permutations'])!,
@@ -736,6 +743,21 @@
 			// A cancel before the first payload leaves the section offered, with nothing claimed.
 			if (e.name !== 'AbortError') temporalFailure = e.message;
 			else if (!temporalRecord) temporalProgress = { phase: '', done: 0, total: 0, message: '' };
+			// AND A CANCEL THE WORKER DID NOT ANSWER IS NOT A RUNNING NULL. The cooperative cancel
+			// normally resolves — `runTemporalNull` catches its own abort and returns a COMPLETE record
+			// at the achieved draw count — so reaching here with a record means the grace expired and
+			// the worker was terminated mid-null. The record the page is holding then says `stage:
+			// 'null'`, and every sentence keyed on that says "still running" about a worker that no
+			// longer exists. `stopped` is the page's own stage (see `TemporalRecord['stage']`): it is
+			// deliberately NOT `complete`, because no call, sweep count or wave mode was ever computed
+			// on this record and promoting it would have the section read those off the scored
+			// payload's zeros.
+			// The transition itself is `recordAfterAbort` in lib/time/temporal.ts, where a test drives
+			// it: this route has no component harness, and a page-only fix is a fix nothing checks.
+			else if (temporalRecord && temporalRecord.stage !== 'complete') {
+				temporalRecord = recordAfterAbort(temporalRecord);
+				temporalProgress = { phase: '', done: 0, total: 0, message: '' };
+			}
 		} finally {
 			temporalState = 'idle';
 			temporalAbort = null;

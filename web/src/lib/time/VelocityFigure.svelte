@@ -100,7 +100,11 @@
 	<figcaption>
 		<b>Sweep velocities, by peak date.</b>
 		One row per {model.source === 'sweeps' ? 'confirmed sweep' : 'candidate codon'}, ordered by
-		{model.source === 'sweeps' ? 'peak date, not by strength' : 'peak intensity, because no codon was confirmed'}.
+		{model.source === 'sweeps'
+			? 'peak date, not by strength'
+			: model.source === 'candidates'
+				? 'peak intensity, because no codon was confirmed'
+				: `peak intensity: nothing has been called, because ${model.uncalled_reason}`}.
 		The ridge is the <strong>positive part</strong> of the time derivative of that codon's trajectory, so a
 		trajectory that falls contributes exactly zero and a codon can have a large trajectory and no
 		velocity at all. The dot is the peak and the rule beneath it the full width at half that height.

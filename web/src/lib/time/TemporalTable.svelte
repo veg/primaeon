@@ -26,11 +26,14 @@
 	import { num, sci } from './dating';
 	import {
 		energyText,
+		nullInFlight,
+		nullState,
 		pText,
 		peakDateText,
 		siteRows,
 		sortRows,
 		TEMPORAL_PAGE_SIZE,
+		waveColumnsPending,
 		widthText,
 		type TemporalRecord,
 		type TemporalSiteRow,
@@ -59,6 +62,21 @@
 	const totalPages = $derived(Math.max(1, Math.ceil(rows.length / TEMPORAL_PAGE_SIZE)));
 	const pageRows = $derived(rows.slice((Math.min(page, totalPages) - 1) * TEMPORAL_PAGE_SIZE, Math.min(page, totalPages) * TEMPORAL_PAGE_SIZE));
 	const tested = $derived(record.permutations?.tested ?? false);
+	/** Declined over the work budget, which is a DIFFERENT stopped state from an abandoned run:
+	 * the run finished, the null simply never started, so nothing here may say it "ended before
+	 * the null did". `dl.stats` in TemporalSection already splits the two; this table now does too. */
+	const declined = $derived(record.permutations?.skipped === true);
+	/** Mid-null every call column reads "not tested" (see `nullInFlight`), so the caption must too. */
+	const inFlight = $derived(nullInFlight(record));
+	/**
+	 * THE WAVE LOADINGS AND R² ARE ZERO ARRAYS UNTIL THE DECOMPOSITION RUNS, and it runs once, at the
+	 * end (`runtime/src/temporal/record.js:70,72`). Rendering them mid-null drew a hard 0.00e+0 in
+	 * every Wave column and a hard 0.0000 R² — a value a reader cannot tell from a measured one, in
+	 * the five columns most likely to be read as a result. They read "not yet" instead.
+	 */
+	const wavesPending = $derived(waveColumnsPending(record));
+	/** Four states, not three: a stopped or skipped null is not a running one (`nullState`). */
+	const nulls = $derived(nullState(record));
 	const sweeps = $derived(record.confirmed_sweeps);
 
 	/** Selecting a codon from a figure pulls it into view rather than leaving it three pages away. */
@@ -127,9 +145,28 @@
 				reference takes the argmax of a row of zeros, and this table renders that as an em dash;
 				and <code>mean_intensity</code> — behind "Show every column" — is the mean of the
 				<em>velocity</em>, not of the intensity, despite its name (temporal.py:786).
-				{#if !tested}
+				{#if inFlight}
+					The call columns read “not tested” and the two permutation columns are live: the shuffles are
+					still being drawn, the p column is the estimator at the draws done so far, and no codon here
+					is confirmed or ruled out yet.
+				{:else if declined}
+					The call columns read “not tested” because the date-shuffling null was declined before it
+					started, as over the work budget, and the calls are computed from it. {tested
+						? 'The two permutation columns are the estimator at the shuffles that were drawn.'
+						: 'No shuffle was drawn, so the two permutation columns carry nothing either.'}
+				{:else if nulls === 'stopped'}
+					The call columns read “not tested” because this run ended before the null did, and the calls
+					are computed only at the end. {tested
+						? 'The two permutation columns are the estimator at the shuffles that were drawn.'
+						: 'No shuffle was drawn, so the two permutation columns carry nothing either.'}
+				{:else if !tested}
 					The permutation columns read “not tested”: no shuffle was drawn, so no codon here is
 					confirmed or ruled out.
+				{/if}
+				{#if wavesPending}
+					The four <em>Wave</em> columns and <em>R²</em> read “not yet” rather than a number: the
+					decomposition and the wave-alignment fit run once, after the null, and until they do the
+					runtime fills those cells with zeros that are not measurements.
 				{/if}
 			</caption>
 			<thead>
@@ -180,7 +217,7 @@
 						<td class="num" class:faint={!Number.isFinite(r.pPerm) || !r.isCandidate}>
 							{#if !r.isCandidate}—{:else if !Number.isFinite(r.pPerm)}not tested{:else}{pText(r.pPerm)}{#if r.borderline}<span class="qual">borderline</span>{/if}{/if}
 						</td>
-						<td class="num">{sci(r.waves[0], 3)}</td>
+						<td class="num" class:faint={wavesPending}>{wavesPending ? 'not yet' : sci(r.waves[0], 3)}</td>
 						{#if everyColumn}
 							<td>{r.domain}</td>
 							<td class="num">{energyText(r.auc)}</td>
@@ -189,10 +226,12 @@
 							<td class="num" class:faint={r.fwhm === 0}>{r.fwhm === 0 ? '—' : num(r.tHalfEnd, 3)}</td>
 							<td class="num" class:faint={!r.scored}>{r.scored ? pText(r.pStatic) : '—'}</td>
 							<td class="num" class:faint={!r.isCandidate || !Number.isFinite(r.qPerm)}>{r.isCandidate ? pText(r.qPerm) : '—'}</td>
-							<td class="num" class:faint={!r.isCandidate}>{r.isCandidate ? num(r.r2, 4) : '—'}</td>
-							<td class="num">{sci(r.waves[1], 3)}</td>
-							<td class="num">{sci(r.waves[2], 3)}</td>
-							<td class="num">{sci(r.waves[3], 3)}</td>
+							<td class="num" class:faint={!r.isCandidate || wavesPending}>
+								{#if !r.isCandidate}—{:else if wavesPending}not yet{:else}{num(r.r2, 4)}{/if}
+							</td>
+							<td class="num" class:faint={wavesPending}>{wavesPending ? 'not yet' : sci(r.waves[1], 3)}</td>
+							<td class="num" class:faint={wavesPending}>{wavesPending ? 'not yet' : sci(r.waves[2], 3)}</td>
+							<td class="num" class:faint={wavesPending}>{wavesPending ? 'not yet' : sci(r.waves[3], 3)}</td>
 						{/if}
 					</tr>
 				{/each}
@@ -209,8 +248,18 @@
 			of {rows.length.toLocaleString('en-US')}
 			{which === 'all' ? 'codons' : which === 'sweeps' ? 'confirmed sweeps' : 'candidates'} —
 			{record.stage1_candidates.toLocaleString('en-US')} of {record.codons_total.toLocaleString('en-US')} codons passed the
-			sweep-energy floor and {sweeps.toLocaleString('en-US')} of those {sweeps === 1 ? 'is a' : 'are'} confirmed
-			{sweeps === 1 ? 'sweep' : 'sweeps'}.
+			<!--
+				The sweep count is printed in ONE of the four null states. A stopped run carries
+				`tested: true` with `confirmed_sweeps` still zero, so keying this on `tested` said "0 of
+				those are confirmed sweeps" about a run that never made a call.
+			-->
+			sweep-energy floor{#if inFlight}, and none of them has been called either way yet.{:else if declined},
+				and none of them was called: the null was declined before it started, as over the work
+				budget.{:else if nulls === 'stopped'},
+				and none of them was called: this run ended before the null did.{:else if !tested},
+				and none of them has been tested against the shuffled dates.{:else}
+				and {sweeps.toLocaleString('en-US')} of those {sweeps === 1 ? 'is a' : 'are'} confirmed
+				{sweeps === 1 ? 'sweep' : 'sweeps'}.{/if}
 			<button type="button" class="link" onclick={onDownload}>Sites (CSV)</button>
 		</span>
 		<div class="pager__buttons">

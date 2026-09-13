@@ -21,25 +21,53 @@
  *      either side of it. `borderlineBand` is that number and `isBorderline` is that test; the
  *      table marks those rows rather than letting a reader read 0.0495 and 0.0594 as different
  *      kinds of answer.
- *   2. A WAVE'S SIGN IS A CONVENTION. Right singular vectors are defined up to sign and the
- *      reference has no rule, so it writes its solver's raw signs (D28). This page's canonical rule
- *      — largest-magnitude entry positive, applied before the loadings are derived — means a curve
- *      here may be a command-line run's curve upside down, with its `Wave_k_loading` column negated
- *      and nothing else different. `honestyNotes` prints that beside the figure and beside the
- *      download.
+ *   2. A WAVE'S SIGN IS A CONVENTION, AND ITS VARIANCE SHARE IS CONDITIONED ON THE NULL. Right
+ *      singular vectors are defined up to sign and the reference has no rule, so it writes its
+ *      solver's raw signs (D28). This page's canonical rule — largest-magnitude entry positive,
+ *      applied before the loadings are derived — means a curve here may be a command-line run's
+ *      curve upside down, with its `Wave_k_loading` column negated and nothing else different. The
+ *      SHARES are a separate and larger divergence, and saying only "no variance share reads a
+ *      sign" invites a reader to take them as comparable: the decomposition is taken over the
+ *      CONFIRMED-SWEEP SET, and that set is thresholded on the permutation p, so a different null
+ *      decomposes a different matrix. THAT IS TRUE OF ONE OF THE TWO ROW SETS ONLY — the library
+ *      falls back to the `max(4, candidates)` codons of largest peak intensity when fewer than four
+ *      were confirmed (`js/src/temporal.js`, `temporalWaveDecomposition`), and that set is read off
+ *      the trajectories before the null exists, so it is neither conditioned on the permutation p
+ *      nor moved by drawing more shuffles. `record.waves.source` says which happened and
+ *      `honestyNotes` prints one sentence per case; the measurement below is the sweep-set one.
+ *      MEASURED on the acceptance run (H1N1, `-B 100 --time-points
+ *      60`, this runtime against `fixtures/temporal/acceptance/h1n1_cpu_summary.json`): we confirm
+ *      32 codons and the reference 18, and the four shares are 33.84 / 28.26 / 17.81 / 11.11 %
+ *      against its 39.67 / 32.37 / 13.92 / 9.31 — 5.8 points on the leading mode, with no
+ *      arithmetic difference anywhere between the two decompositions. `honestyNotes` prints both
+ *      halves beside the figure and beside the download.
  *   3. OUR DATE LAYER IS WIDER THAN THE REFERENCE'S PARSER. `runtime/src/dates/` is the union of
  *      all three upstream parsers (D31), so a run here can be over a different set of sequences
  *      than `hyphaeon temporal` would use — on the Korber alignment the reference dates none of 143
  *      headers and we date 142. The record carries `dates.beyond_reference`; `honestyNotes` says so
  *      and `temporalReferenceCommand` (runtime) marks the printed command as not reproducing.
  *
+ * A RUNNING NULL IS A FOURTH STATE, AND IT IS NOT A RESULT. The interim payload the worker publishes
+ * per chunk carries `p_perm`, `q_perm` and `permutations` and NOTHING downstream of them: the
+ * classification columns, `is_confirmed_sweep` and the three sweep counts are still the scored
+ * payload's zeros until the run finishes (`runtime/src/temporal/run.js` builds the complete record
+ * once, at the end). `permutations.tested` flips true after the FIRST chunk, so keying a sentence on
+ * it alone makes the page state a completed negative finding while the null is a few draws in — and
+ * it is a finding that is guaranteed at the start of every run, because p at draw k is
+ * `(1 + exceedances)/(k + 1)` and therefore near 1 by construction. `nullInFlight` is that
+ * distinction, read off the record's own `stage`, and every function that would otherwise call a
+ * codon, count a sweep or plot a classification goes through it.
+ *
  * THE COST SENTENCE IS AN UPPER BOUND, AND SAYS SO. Before stage one has run, the candidate count
  * is unknowable, and so is `nnz` — the number of (codon, sequence) pairs that actually carry a
  * non-root residue, which is what the null's kernel multiplies (`runtime/src/temporal/null.js`
  * measured rho = 0.043 on the acceptance alignment, so the real cost is usually a twentieth of the
- * bound). `nullCeiling` therefore substitutes the two ceilings a reader can check — every variable
- * codon is a candidate, every dated sequence carries the derived residue — and the page replaces it
- * with the run's own measured figures the moment the first payload lands.
+ * bound). `nullCeiling` therefore substitutes the two ceilings a reader can check — every codon the
+ * file holds is a candidate (`codonCeiling`, the TOTAL count, not the variable one: it is what a
+ * reader can count off the file before a run, and it is the more conservative of the two), every
+ * dated sequence carries the derived residue — and the page replaces it with the run's own measured
+ * figures the moment the first payload lands. The two constants that bound is computed with are the
+ * runtime's, copied and pinned equal to it by a test (`PERM_RATE`, `PERM_STAT_UNITS`).
  */
 
 import { readsAs } from './dateReview';
@@ -156,7 +184,17 @@ export interface TemporalWarning {
 /** The fields of `runtime/src/temporal/record.js` this page reads. */
 export interface TemporalRecord {
 	ok: true;
-	stage: 'scored' | 'null' | 'complete';
+	/**
+	 * `scored`, `null` and `complete` are the runtime's own (`runtime/src/temporal/run.js`).
+	 * `stopped` is THIS PAGE'S and the runtime never writes it: when a cancel is not honoured within
+	 * the worker client's grace the worker is terminated, the promise rejects with an AbortError and
+	 * the last record the page holds is a `null`-stage one whose null is now never going to finish.
+	 * `routes/time/+page.svelte` stamps `stopped` on it so the section stops saying "still running"
+	 * about a worker that no longer exists. It is deliberately NOT `complete`: no call, sweep count
+	 * or wave mode was ever computed on that record, and promoting it would have the page read those
+	 * off the scored payload's zeros.
+	 */
+	stage: 'scored' | 'null' | 'complete' | 'stopped';
 	complete: boolean;
 	alignment: string | null;
 	tree: string | null;
@@ -222,6 +260,115 @@ export interface TemporalRefusal {
 /** The state this section is in, and the one the components switch on. */
 export type TemporalState = 'blocked' | 'offered' | 'running' | 'landed' | 'refused';
 
+/**
+ * Whether this record's shuffles are still being drawn: some draws are in, and the labels that
+ * depend on them are not.
+ *
+ * THE ONE THING THIS SECTION MUST NOT DO IS CALL A CODON EARLY. The per-chunk payload replaces
+ * `p_perm`, `q_perm` and `permutations` and nothing else, so `classification`, `is_confirmed_sweep`
+ * and the three sweep counts are still the scored payload's zeros while `permutations.tested` is
+ * already true. Reading `tested` alone therefore prints a completed negative finding a second into
+ * a run — and one that is guaranteed, because p at draw k is `(1 + exceedances)/(k + 1)` and so
+ * begins near 1 for every codon. The record's own `stage` is the discriminator, not the draw count:
+ * a STOPPED null lands at `stage: 'complete'` with `completed < requested` and its labels ARE final.
+ */
+export function nullInFlight(record: TemporalRecord): boolean {
+	return (record.permutations?.tested ?? false) && record.stage !== 'complete' && record.stage !== 'stopped';
+}
+
+/** Whether the call columns, the sweep counts and the wave modes on this record are final. */
+export function callsAreFinal(record: TemporalRecord): boolean {
+	return (record.permutations?.tested ?? false) && record.stage === 'complete';
+}
+
+/**
+ * THE NULL HAS FOUR STATES, NOT THREE, and every caption that mentions it switches on this rather
+ * than on `tested` or on `nullInFlight` alone:
+ *
+ *   `not-started`  no shuffle has been drawn and the run may still reach one.
+ *   `running`      draws are arriving; nothing downstream of them exists yet (`nullInFlight`).
+ *   `finished`     the record is complete and its calls, sweep counts and wave modes are final.
+ *                  A run the reader STOPPED is here too when it kept at least one draw: the runtime
+ *                  catches its own abort, finishes the classification at the achieved draw count and
+ *                  returns a complete record, so those labels are results and not a half-answer.
+ *   `stopped`      the null ended and produced nothing usable — declined over the work budget
+ *                  (`skipped`), stopped before a single draw, or the run abandoned mid-null (the
+ *                  page's own `stage: 'stopped'`, below). Saying "has not finished" here is false:
+ *                  nothing is coming.
+ *
+ * The last of those is the one that used to be missing, and it read as `running` forever.
+ */
+export type NullState = 'not-started' | 'running' | 'finished' | 'stopped';
+
+/**
+ * THE TRANSITION A STOPPED RUN MUST MAKE, as a function so it can be driven by a test rather than
+ * only by a browser.
+ *
+ * `routes/time/+page.svelte` calls this from the one place a run can end without a record of its
+ * own: the AbortError the worker client raises when a cancel went unanswered for its grace
+ * (`lib/workers/client.ts` terminates the worker and rejects every pending call). The cooperative
+ * cancel does NOT come here — `runTemporalNull` catches its own abort and the run resolves with a
+ * complete record at the achieved draw count — so a record reaching this function is one whose
+ * `stage` is still `'null'`, and every sentence keyed on that stage says "the null is N of M
+ * shuffles through" about a worker that no longer exists. That is the defect: without this the page
+ * stayed in the in-flight sentence permanently, with nothing on screen saying the run had ended.
+ *
+ * It is deliberately NOT promoted to `'complete'`: no call, sweep count or wave mode was ever
+ * computed on this record, and `'complete'` would have the section read all three off the scored
+ * payload's zeros. A record that IS already complete is returned unchanged, so a late abort after a
+ * finished run cannot demote a result.
+ */
+export function recordAfterAbort(record: TemporalRecord | null): TemporalRecord | null {
+	if (!record) return null;
+	if (record.stage === 'complete') return record;
+	return { ...record, stage: 'stopped' };
+}
+
+export function nullState(record: TemporalRecord): NullState {
+	const perm = record.permutations;
+	if (record.stage === 'stopped') return 'stopped';
+	if (!perm) return 'not-started';
+	if (perm.skipped) return 'stopped';
+	if (nullInFlight(record)) return 'running';
+	if (record.stage !== 'complete') return 'not-started';
+	if (perm.tested) return 'finished';
+	return perm.cancelled ? 'stopped' : 'not-started';
+}
+
+/**
+ * Why nothing is called, as a clause a caption drops into "…, because <clause>". Null in the
+ * `finished` state, where the caption has a result to print instead of a reason.
+ */
+export function uncalledBecause(record: TemporalRecord): string | null {
+	const state = nullState(record);
+	if (state === 'finished') return null;
+	if (state === 'running') return 'the date-shuffling null has not finished';
+	if (state === 'not-started') return 'the date-shuffling null has not been drawn';
+	if (record.stage === 'stopped') {
+		// TWO STOPS, NOT ONE. `recordAfterAbort` marks any non-complete record `stopped`, and the
+		// record it is handed is whatever the last interim payload was. That is usually a per-chunk
+		// null payload — shuffles were being drawn — but between the scored payload and the first
+		// chunk (the fPCA pass, the budget check, the calibration draw) there is a window in which
+		// the record carries NO permutation block at all, and telling that reader the null "was
+		// being drawn" names a thing that had not started.
+		return (record.permutations?.completed ?? 0) > 0
+			? 'this run was stopped while the null was being drawn, and the calls are computed only at the end'
+			: 'this run was stopped before the null drew a single shuffle, and the calls are computed only at the end';
+	}
+	if (record.permutations?.skipped) return 'the date-shuffling null was declined before it started, as over the work budget';
+	return 'the date-shuffling null was stopped before a single shuffle was drawn';
+}
+
+/**
+ * Whether the wave loadings and R² on this record are still the interim ZEROS rather than numbers.
+ * `runtime/src/temporal/record.js:70,72` fills both with zero arrays until the decomposition runs,
+ * and the decomposition runs once, at the end — so mid-null a table that renders those cells draws
+ * a hard 0 that a reader cannot tell from a measured 0.
+ */
+export function waveColumnsPending(record: TemporalRecord): boolean {
+	return record.waves == null && record.stage !== 'complete';
+}
+
 // =================================================================================================
 // The gate: can this pillar be offered at all
 // =================================================================================================
@@ -266,6 +413,69 @@ export function temporalGate(
 // The cost, before the run
 // =================================================================================================
 
+/**
+ * `runtime/src/temporal/null.js`'s two cost constants, COPIED rather than imported, and held equal
+ * to the runtime's by a test.
+ *
+ * WHY A COPY. Importing `@veg/hyphaeon-runtime/temporal` into this module would put `predict.js`,
+ * the library and onnxruntime into the route's initial bundle, so that a reader who never presses
+ * the button downloads the model layer to read a sentence about it; that is why the page's own
+ * download handler imports it dynamically at the click (`routes/time/+page.svelte`). Two literals
+ * cost nothing. Two literals that silently drift from the runtime's do, so `temporal.test.ts`
+ * imports `TEMPORAL_PERM_RATE` and `TEMPORAL_PERM_STAT_UNITS` from the runtime and asserts these
+ * equal them: a re-measurement there fails this page's suite instead of splitting the two.
+ */
+export const PERM_RATE = 5.5e8;
+export const PERM_STAT_UNITS = 15;
+
+/**
+ * The model pass, in codon-sequences a second. MEASURED through this repository's own runtime
+ * (`runTemporal` at 4 threads, `general.onnx`, onnxruntime-node, Node 22.22.0 x64 under Rosetta on
+ * an Apple M4 Pro), timing the `temporal-infer` phase alone — the graph call and nothing else — in
+ * an isolated process per row, with the machine's one-minute load average beside each, because that
+ * is the variable that moves this number most:
+ *
+ *   codons   sequences   seconds   codon-sequences/s   load
+ *   4,384           95     21.87              19,044     18
+ *   4,384           95     30.39              13,703     14
+ *   4,384           95     30.18              13,800     11
+ *   4,384           95     32.14              12,957     26
+ *   4,384           95     40.05              10,400    133
+ *     566           97      3.60              15,263      9   (H5N1_HA_geo.fasta)
+ *     566           97      4.52              12,155      9
+ *     566           97      4.16              13,194     56
+ *     566           97      3.93              13,984     52
+ *
+ * Two shapes, nine runs, and the sequence count is the DATED one (H1N1 dates 95 of its 100
+ * sequences), because that is what the pass is over. The product of the two counts is the unit to
+ * quote the rate in: 4,384 x 95 is 7.6 times 566 x 97 in codon-sequences and took 5.5-8.4 times the
+ * seconds across these runs, so the pass is close enough to linear in the product that a single rate
+ * is the right shape of anchor.
+ *
+ * THE MARGIN, AND WHAT MAY BE SAID ABOUT IT. Nothing above reaches 2.0e4: the fastest of these nine
+ * is 19,044, which is 5 % UNDER the constant, and the median is about 13,700. An earlier writing of
+ * this header called 2.0e4 "11 % under the slowest" measured shape, and a third-party run on an idle
+ * machine measured 23,073 / 20,650 / 24,423 on shapes of this kind, where it would be 3 % under the
+ * slowest. Both of those describe an idle machine; this one was never idle (load 9-133 throughout,
+ * other work on the same cores), and on it the printed estimate UNDER-states the wait — by about 5 %
+ * at best and by half at load 133.
+ *
+ * So the constant stays — it is the right order of magnitude on both shapes and in both machine
+ * states, and lowering it to cover a loaded machine would over-state the wait for every reader on an
+ * idle one — but nothing here may call it conservative, a floor, or an upper bound. It is a middling
+ * anchor, and the sentence it feeds says "at the rate this build measured on its own development
+ * machine" for exactly that reason. `TEMPORAL_PERM_RATE` was written up as the other rule — a floor
+ * under two runs 1.7x apart — and it is not one either: a third measurement through the same driver,
+ * on the same machine at a one-minute load average of 10-36, put four of six dense-shape runs below
+ * it (3.59e8 against the constant's 5.5e8). Its own block now carries that table. So BOTH rates on
+ * this page are middling anchors, both say so in the sentences they feed, and neither claims a
+ * bound.
+ *
+ * It is a Node measurement and the page says so: a browser's WASM backend is a different engine at
+ * a different thread count and this is an anchor, not a promise.
+ */
+export const TEMPORAL_MODEL_RATE = 2.0e4;
+
 export interface NullCeiling {
 	/** Multiply-adds, the bound with every variable codon a candidate and every sequence derived. */
 	work: number;
@@ -280,16 +490,47 @@ export interface NullCeiling {
 /**
  * The a-priori upper bound on the null, in the runtime's own units.
  *
- * `runtime/src/temporal/null.js` computes `W = B·C·T·(nnz/C + 21)` from the MEASURED number of
- * nonzero attribution entries. Before stage one there is no candidate set and no `nnz`, so both are
- * replaced by their ceilings: `C = codons_variable` (every variable codon passes the energy floor)
- * and `nnz/C = N` (every dated sequence carries a non-root residue at every one of them). On the
- * acceptance alignment the measured density was 0.043, so the bound over-states by roughly twenty
- * times — which is the right direction for a number a reader is asked to wait on.
+ * `runtime/src/temporal/null.js` computes `W = B·C·T·(nnz/C + TEMPORAL_PERM_STAT_UNITS)` from the
+ * MEASURED number of nonzero attribution entries. Before stage one there is no candidate set and no
+ * `nnz`, so both are replaced by their ceilings: `nnz/C = N` (every dated sequence carries a
+ * non-root residue at every candidate) and `C` = every codon the alignment holds. `C` is quoted as
+ * the TOTAL codon count rather than the variable one — `codonCeiling` is what the caller can read
+ * off the file before a run, it is the more conservative of the two, and the sentence calls it a
+ * ceiling. On the acceptance alignment the measured density was 0.043, so the bound over-states by
+ * roughly twenty times — which is the right direction for a number a reader is asked to wait on.
  */
-export function nullCeiling({ B, C, T, N, rate = 9.0e8 }: { B: number; C: number; T: number; N: number; rate?: number }): NullCeiling {
-	const work = B > 0 && C > 0 && T > 0 ? B * C * T * (N + 21) : 0;
+export function nullCeiling({
+	B,
+	C,
+	T,
+	N,
+	rate = PERM_RATE
+}: {
+	B: number;
+	C: number;
+	T: number;
+	N: number;
+	rate?: number;
+}): NullCeiling {
+	const work = B > 0 && C > 0 && T > 0 ? B * C * T * (N + PERM_STAT_UNITS) : 0;
 	return { work, seconds: rate > 0 ? work / rate : 0, B, C, T, N };
+}
+
+/**
+ * Seconds of model pass, at `TEMPORAL_MODEL_RATE` — the one quantity the offer used to describe
+ * without pricing, and the one that dominates what a reader actually waits for. MEASURED on the
+ * acceptance shape (H1N1, 4,384 codons over 95 dated sequences, `-B 100 --time-points 60`, 4
+ * threads, three isolated runs): `temporal-infer` 21.87 / 30.39 / 30.18 s against a null of
+ * 0.153 / 0.171 / 0.155 s — the achieved `ms_per_draw` times the 100 draws — so the null is
+ * 0.5-0.7 % of the wait. At the command line's own defaults (`-B 1000 --time-points 250`) the same
+ * alignment is 36.07 / 35.49 s of model pass against 4.27 / 1.57 s of null, which is its most
+ * expensive setting and still 4-11 % of the wait. Whichever end it is read at, pricing the null
+ * alone — as this paragraph once did — prices the wrong half. Null when either count is unknown, so
+ * the sentence names no number it cannot read.
+ */
+export function modelSeconds(codons: number | null, sequences: number | null): number | null {
+	if (!codons || !sequences || !(codons > 0) || !(sequences > 0)) return null;
+	return (codons * sequences) / TEMPORAL_MODEL_RATE;
 }
 
 /** "1.3 × 10⁹" for a big count, "9,700" for a small one. */
@@ -332,35 +573,54 @@ export function codonCeiling(alignmentText: string): number | null {
 }
 
 /**
- * The offer's cost paragraph, as sentences. The model pass is named in codons and sequences rather
- * than in seconds, because this build has measured it in Node and not in a browser and a number
- * measured somewhere else, printed without its provenance, is the thing this page exists to stop.
- * The null IS given a time, because it is bounded arithmetic and the bound is stated as one.
+ * The offer's cost paragraph, as sentences. BOTH halves are priced. The model pass is the long one
+ * — measured on the acceptance shape it is 21.87-30.39 s against a null of 0.15-0.17 s, and at the
+ * command line's own defaults 35.49-36.07 s against 1.57-4.27 s (the numbers and their conditions
+ * are in `modelSeconds`) — so quoting only the null, as this paragraph once did, prices the cheap
+ * part and reads as the wait. Its rate is Node's and the sentence says so; the null's bound is
+ * arithmetic and is stated as one.
+ *
+ * @param sequences the sequences the model will see — every sequence in the file, not just the
+ *   dated ones, capped at `TEMPORAL_MAX_SPECIES`; null when the file has not been read
  */
 export function costSentences(args: {
 	codons: number | null;
+	sequences?: number | null;
 	dated: number;
 	timePoints: number;
 	draws: number;
 	scoreInvariable: boolean;
 }): string[] {
-	const { codons, dated, timePoints, draws, scoreInvariable } = args;
+	const { codons, sequences = null, dated, timePoints, draws, scoreInvariable } = args;
 	const where = codons == null ? 'every codon of your alignment' : `all ${codons.toLocaleString('en-US')} codons`;
 	const ceiling = codons == null ? null : nullCeiling({ B: draws, C: codons, T: timePoints, N: dated });
+	const model = modelSeconds(scoreInvariable ? codons : null, sequences);
 	return [
 		`The model scores ${scoreInvariable ? where : 'every variable codon'} once, over ` +
 			`${dated.toLocaleString('en-US')} dated sequence${dated === 1 ? '' : 's'}` +
 			(scoreInvariable
-				? ', the invariable ones included — which is what `hyphaeon temporal` does (temporal.py:512), and what makes the ' +
+				? ', the invariable ones included — which is what `hyphaeon temporal` does (temporal.py:510, 514: the pass is a '+
+					'loop over every one of the L codons, where the static scan below it takes `var_indices` alone), and what makes the ' +
 					'downloads below diffable against it.'
 				: '; the invariable ones are skipped, so their static LRT and p-value come back empty rather than scored.') +
-			' Nothing re-enters the graph after that: the trajectories, the null and the wave modes are all arithmetic over that one pass.',
+			' Nothing re-enters the graph after that: the trajectories, the null and the wave modes are all arithmetic over that one pass.' +
+			(model
+				? ` That pass is the long part of the wait: ${duration(model)} at the rate this build measured on its own ` +
+					`development machine — ${TEMPORAL_MODEL_RATE.toLocaleString('en-US')} codon-sequences a second under Node, ` +
+					`against the ${sequences!.toLocaleString('en-US')} sequence${sequences === 1 ? '' : 's'} this file carries. Your ` +
+					'browser runs a different engine at a different thread count, so read it as an anchor and not as a promise.'
+				: ' It is also the long part of the wait, and it is not priced here: ' +
+					(scoreInvariable
+						? 'the codon and sequence counts could not both be read off this file.'
+						: 'how many codons vary, and are therefore scored, is not known until the alignment has been read.')),
 		`The null is the only part that grows with the number of draws, and it is the product of four numbers: ` +
 			`draws × candidate codons × dated sequences × grid points. At most ${draws.toLocaleString('en-US')} × ` +
 			`${codons == null ? 'C' : codons.toLocaleString('en-US')} × ${dated.toLocaleString('en-US')} × ${timePoints.toLocaleString('en-US')}` +
 			(ceiling
 				? `, so at most ${bigNumber(ceiling.work)} multiply-adds — ${duration(ceiling.seconds)} at the rate this build ` +
-					'measured on its own development machine, which is a floor for a browser rather than a promise.'
+					'measured on its own development machine. That rate is an anchor and not a bound: on a busy machine the same '+
+					'kernel has measured half of it, so read the ceiling above, which over-states by roughly twenty times, as the '+
+					'part of this sentence that is arithmetic.'
 				: '.') +
 			' Both counts are ceilings: most codons do not pass the sweep-energy floor, and most sequences carry the root residue ' +
 			'at most codons, which the kernel skips — on the reference\'s own demo alignment that made the null twenty times ' +
@@ -372,7 +632,22 @@ export function costSentences(args: {
 	];
 }
 
-/** What the run actually cost, once it has one — measured, never modelled. */
+/**
+ * What the run actually cost, once it has one — measured, never modelled. Mid-run it is what the
+ * run has cost SO FAR: the shuffle count is live and the elapsed figure is the scored payload's,
+ * and neither of them is an "in all".
+ *
+ * WHAT THAT ELAPSED FIGURE COVERS. `runtime/src/temporal/record.js` writes `runtime_sec` from
+ * `Date.now() - started`, where `started` is the first line of `runTemporal` (run.js), so the
+ * stage-one record's figure is the whole of stage one — the regime switches, the root, the model
+ * pass, the root-anchoring and smoothing, the sweep-energy screen and the static scan — and not the
+ * model pass alone. MEASURED on the acceptance shape (H1N1, 4,384 codons over 95 dated sequences, 4
+ * threads, three isolated runs): stage one ran 21.954 / 30.477 / 30.265 s against a `temporal-infer`
+ * phase of 21.869 / 30.393 / 30.180 s, so the rest of stage one is 0.084-0.085 s of it. On the same
+ * alignment at 250 grid points instead of 60 it is 0.188-0.230 s, which is the smoothing paying for
+ * the longer grid. The difference is small either way, which is exactly why calling the figure "the
+ * model pass" was wrong and survived unnoticed: the sentence names the STAGE, not the pass.
+ */
 export function costMeasured(record: TemporalRecord): string {
 	const perm = record.permutations;
 	const scored = (record.primaeon.scored_codons as number) ?? record.codons_total;
@@ -391,7 +666,14 @@ export function costMeasured(record: TemporalRecord): string {
 	} else if (perm?.skipped) {
 		parts.push('the null was not run');
 	}
-	parts.push(`${num(record.runtime_sec, 1)} s in all`);
+	const state = nullState(record);
+	const elapsed =
+		state === 'running'
+			? 'to the end of stage one — the model pass, the smoothing and the static scan — with the null still running'
+			: state === 'stopped' && record.stage === 'stopped'
+				? 'to the end of stage one, after which this run was stopped'
+				: 'in all';
+	parts.push(`${num(record.runtime_sec, 1)} s ${elapsed}`);
 	return `${parts.join('; ')}.`;
 }
 
@@ -496,10 +778,15 @@ export function isBorderline(p: number, B: number, alpha = 0.05): boolean {
  * A row is built, never stored: `record.sites` is 27 parallel typed arrays precisely so a quarter
  * of a million row objects never exist (`runtime/src/temporal/record.js`), and this is the one
  * place the page turns some of them into objects.
+ *
+ * A row reads "not tested" while the null is IN FLIGHT as well as before it starts (`nullInFlight`):
+ * mid-run the classification column is still the scored payload's, so calling a row from it would
+ * label every candidate "Tested, not confirmed" a second into the run. The live p and q columns are
+ * shown either way — they are the estimator at the achieved draw count, which is a real number.
  */
 export function siteRows(record: TemporalRecord, which: 'candidates' | 'all' | 'sweeps' = 'candidates'): TemporalSiteRow[] {
 	const c = record.sites;
-	const tested = record.permutations?.tested ?? false;
+	const tested = callsAreFinal(record);
 	const B = record.permutations?.completed ?? 0;
 	const alpha = record.floors.perm_alpha;
 	const indices: number[] =
@@ -659,16 +946,49 @@ export function widthText(value: number, unitLabel: string): string {
 // The lede and the honest notes
 // =================================================================================================
 
-/** The finding, with the numbers inline, and then it stops (web/DESIGN.md §5). */
+/**
+ * The finding, with the numbers inline, and then it stops (web/DESIGN.md §5). FIVE forms, one per
+ * state the section can be in: the null is still being drawn, the null ended without an answer, the
+ * null has not been drawn, nothing was confirmed, and the finding. "Nothing was confirmed" may only
+ * be printed once the run is complete — mid-run it would be both false and guaranteed, since p at
+ * draw k starts near 1 for every codon.
+ *
+ * WHICH WAY "ABOVE" AND "BELOW" POINT. This sentence is the FIRST thing `TemporalSection.svelte`
+ * renders after the controls: the cost line, the stat strip, Figures 4-7 and the table are all
+ * below it. An earlier writing sent a reader upwards for the trajectories, where there is nothing.
+ */
 export function ledeSentence(record: TemporalRecord, units: TimeUnits): string {
 	const tested = record.permutations?.tested ?? false;
+	const state = nullState(record);
 	const C = record.stage1_candidates;
 	const L = record.codons_total;
-	if (!tested) {
+	const candidates = `${C.toLocaleString('en-US')} of ${L.toLocaleString('en-US')} codons passed the sweep-energy floor and are candidates`;
+	if (state === 'running') {
+		const perm = record.permutations!;
+		const done = perm.completed.toLocaleString('en-US');
+		const asked = perm.requested.toLocaleString('en-US');
 		return (
-			`${C.toLocaleString('en-US')} of ${L.toLocaleString('en-US')} codons passed the sweep-energy floor and are ` +
-			`candidates; none has been tested against the shuffled dates, so none is confirmed or ruled out.`
+			`${candidates}; the null is ${done} of ${asked} shuffles through, so nothing here is confirmed or ruled out yet. ` +
+			`The p-values in the table below are the estimator at ${done} draws — (1 + exceedances) / (${done} + 1), which ` +
+			'starts near 1 for every codon and falls as the shuffles accumulate — and the calls, the sweep counts and the ' +
+			'wave modes are computed once, when it finishes. The trajectories, peaks, widths and areas in the two figures ' +
+			'below are already final.'
 		);
+	}
+	if (state === 'stopped') {
+		const done = record.permutations?.completed ?? 0;
+		return (
+			`${candidates}, and ${uncalledBecause(record)}, so none is confirmed or ruled out. ` +
+			(done > 0
+				? `The p-values in the table below are the estimator at the ${done.toLocaleString('en-US')} shuffle` +
+					`${done === 1 ? '' : 's'} that were drawn, and the call columns were never computed. `
+				: '') +
+			'The trajectories, peaks, widths and areas in the two figures below are final; ' +
+			(record.permutations?.skipped ? 'the note below says why the null was declined.' : 'run it again to test them.')
+		);
+	}
+	if (!tested) {
+		return `${candidates}; none has been tested against the shuffled dates, so none is confirmed or ruled out.`;
 	}
 	const n = record.confirmed_sweeps;
 	if (n === 0) {
@@ -680,11 +1000,14 @@ export function ledeSentence(record: TemporalRecord, units: TimeUnits): string {
 	const rows = sortRows(siteRows(record, 'sweeps'), 'default', true);
 	const earliest = rows[0];
 	const strongest = [...rows].sort((a, b) => cmpNumber(a.pPerm, b.pPerm))[0];
+	// Every count on this section pluralises its own verb; a fixed "are" beside an interpolated
+	// number is the one copy defect a reader is guaranteed to meet, because n = 1 is common.
 	const where = record.rescued_sweeps === n
-		? `All ${n} are found only in time: the static scan calls nothing at q ≤ ${record.floors.q_static_cut} on this alignment.`
-		: `${record.concordant_sweeps} of them are also called by the static scan at q ≤ ${record.floors.q_static_cut}; ${record.rescued_sweeps} are found only in time.`;
+		? `${n === 1 ? 'It is' : `All ${n} are`} found only in time: the static scan calls nothing at q ≤ ${record.floors.q_static_cut} on this alignment.`
+		: `${record.concordant_sweeps} of them ${record.concordant_sweeps === 1 ? 'is' : 'are'} also called by the static scan at ` +
+			`q ≤ ${record.floors.q_static_cut}; ${record.rescued_sweeps} ${record.rescued_sweeps === 1 ? 'is' : 'are'} found only in time.`;
 	return (
-		`${n} of ${L.toLocaleString('en-US')} codons are confirmed sweeps, the earliest peaking at ` +
+		`${n} of ${L.toLocaleString('en-US')} codons ${n === 1 ? 'is a confirmed sweep' : 'are confirmed sweeps'}, the earliest peaking at ` +
 		`${peakDateText(earliest, units)} (${earliest.label}) and the strongest ${strongest.label} at p = ${pText(strongest.pPerm)}. ` +
 		where
 	);
@@ -706,6 +1029,11 @@ export function honestyNotes(record: TemporalRecord): HonestyNote[] {
 	const notes: HonestyNote[] = [];
 	const perm = record.permutations;
 	const B = perm?.completed ?? 0;
+	// Two of these notes count codons against a threshold, and mid-run every p is still falling
+	// towards its final value, so both would describe a distribution that no longer exists by the
+	// time the reader finishes the sentence. They wait for the run instead of printing a number that
+	// will be wrong (`nullInFlight`).
+	const inFlight = nullInFlight(record);
 
 	notes.push({
 		id: 'rng',
@@ -719,7 +1047,7 @@ export function honestyNotes(record: TemporalRecord): HonestyNote[] {
 		warn: false
 	});
 
-	if (B > 0) {
+	if (B > 0 && !inFlight) {
 		const band = borderlineBand(B, record.floors.perm_alpha);
 		const borderline = siteRows(record, 'candidates').filter((r) => r.borderline).length;
 		notes.push({
@@ -734,7 +1062,7 @@ export function honestyNotes(record: TemporalRecord): HonestyNote[] {
 		});
 	}
 
-	if (perm && perm.q_min != null && perm.q_min > record.floors.q_static_cut) {
+	if (perm && !inFlight && perm.q_min != null && perm.q_min > record.floors.q_static_cut) {
 		notes.push({
 			id: 'qperm',
 			lead: 'The permutation q-value carries no decision here.',
@@ -756,6 +1084,37 @@ export function honestyNotes(record: TemporalRecord): HonestyNote[] {
 				'the element of largest magnitude is made positive, applied to the singular vector before the loadings are derived, so a ' +
 				'wave and its loading column always flip together). A command-line run may therefore draw any of these curves upside ' +
 				'down with the matching Wave column negated. No singular value, no variance share, no R² and no classification reads a sign.',
+			warn: false
+		});
+		// The sign note is about a sign; the shares need their own sentence, because "no variance
+		// share reads a sign" is easily read as "the shares are comparable", and they are not.
+		//
+		// AND THE REASON THEY ARE NOT DEPENDS ON WHICH ROW SET WAS USED. `temporalWaveDecomposition`
+		// (`js/src/temporal.js`) takes the confirmed sweeps when there are at least four of them, and
+		// otherwise the `max(4, candidates)` codons of the WHOLE alignment with the largest peak
+		// intensity — a set chosen from the trajectories alone, before the null exists and unmoved by
+		// it. Saying "thresholded on the permutation p" of that second set was simply false.
+		const fromSweeps = record.waves.source === 'confirmed-sweeps';
+		const rows = record.waves.source_sites.length;
+		const rowCount = `${rows.toLocaleString('en-US')} codon${rows === 1 ? '' : 's'}`;
+		notes.push({
+			id: 'wave-shares',
+			lead: fromSweeps
+				? 'The percentages beside the waves are conditioned on which codons were confirmed.'
+				: 'The percentages beside the waves are conditioned on a set the null did not choose.',
+			rest: fromSweeps
+				? `The decomposition runs over the ${rowCount} in the confirmed-sweep set, and that set is thresholded on the ` +
+					'permutation p — which comes from a different generator than the reference\'s. A command-line run that confirms a ' +
+					'different set of codons therefore decomposes a DIFFERENT MATRIX, and its shares differ by more than float noise ' +
+					'even though the arithmetic is identical. Measured on the acceptance alignment: this runtime confirmed 32 codons ' +
+					'where the reference confirmed 18, and the four shares came out 33.84 / 28.26 / 17.81 / 11.11 % against its ' +
+					'39.67 / 32.37 / 13.92 / 9.31 — 5.8 points on the leading mode. Compare the shapes and the ordering, not the digits.'
+				: `Fewer than four codons were confirmed, so the decomposition falls back to the ${rowCount} with the largest peak ` +
+					'intensity in the whole alignment — as many as there were candidates, and at least four. That set is read off the ' +
+					'trajectories alone, BEFORE the null is drawn, so unlike the confirmed-sweep set it is neither thresholded on the ' +
+					'permutation p nor changed by drawing more shuffles. What the null still decides is WHICH BRANCH is taken: a ' +
+					'command-line run that confirmed four or more codons decomposes its own sweep set instead, which is a different ' +
+					'matrix, and its shares are then not comparable with these at all. Compare the shapes and the ordering, not the digits.',
 			warn: false
 		});
 	}
@@ -824,6 +1183,15 @@ export interface TrajectoryFigureModel {
 	drawn: number;
 	candidates: number;
 	capped: boolean;
+	/** Whether `called` is a result. False before the null and while it is still being drawn. */
+	called_is_final: boolean;
+	/**
+	 * Why nothing is called, when `called_is_final` is false — the null has not been drawn, is being
+	 * drawn, or ended without an answer. Null when the calls ARE final, where the caption prints the
+	 * count instead. `uncalledBecause`; the caption may not invent its own, which is how it came to
+	 * tell a reader whose null was SKIPPED that it "has not finished".
+	 */
+	uncalled_reason: string | null;
 }
 
 export function trajectoryFigure(record: TemporalRecord, max = TEMPORAL_MAX_TRAJECTORIES): TrajectoryFigureModel {
@@ -855,7 +1223,9 @@ export function trajectoryFigure(record: TemporalRecord, max = TEMPORAL_MAX_TRAJ
 		samples: record.dates.values.filter((v) => Number.isFinite(v)),
 		drawn: background.length + called.length,
 		candidates: cand.length,
-		capped: rest.length > shown.length
+		capped: rest.length > shown.length,
+		called_is_final: callsAreFinal(record),
+		uncalled_reason: uncalledBecause(record)
 	};
 }
 
@@ -876,23 +1246,32 @@ export interface VelocityFigureModel {
 	tMin: number;
 	tMax: number;
 	rows: RidgeRow[];
-	/** Whether the rows are the confirmed sweeps or the fallback (strongest candidates). */
-	source: 'sweeps' | 'candidates';
+	/**
+	 * Whether the rows are the confirmed sweeps, the fallback after a run that confirmed none, or
+	 * the strongest candidates of a run that has no calls — three different sentences, because "no
+	 * codon was confirmed" is a result and the third state is not one.
+	 */
+	source: 'sweeps' | 'candidates' | 'untested';
+	/** Why there are no calls, when `source` is `untested`; null otherwise. `uncalledBecause`. */
+	uncalled_reason: string | null;
 	total: number;
 	capped: boolean;
 }
 
 /**
- * Figure 5's rows: the confirmed sweeps by peak date, or — when nothing was confirmed — the
- * strongest candidates by peak intensity, so the figure exists in every landed state and the figure
- * NUMBERING does not move between two runs of the same page. The caption says which it is drawing.
+ * Figure 5's rows: the confirmed sweeps by peak date, or — when nothing was confirmed, or the run
+ * has no calls at all — the strongest candidates by peak intensity, so the figure exists in every
+ * landed state and the figure NUMBERING does not move between two runs of the same page. The
+ * caption says which of the three it is drawing, and in the third case WHY, from `uncalledBecause`
+ * rather than from a guess: a null that was skipped over budget has not "not finished yet".
  */
 export function velocityFigure(record: TemporalRecord, max = TEMPORAL_MAX_RIDGES): VelocityFigureModel {
 	const { T, time, velocity } = record.curves;
 	const c = record.sites;
 	const cand = Array.from(record.candidates, (site) => site - 1);
-	const sweeps = cand.filter((s) => c.is_confirmed_sweep[s] === 1);
-	const source: 'sweeps' | 'candidates' = sweeps.length > 0 ? 'sweeps' : 'candidates';
+	const final = callsAreFinal(record);
+	const sweeps = final ? cand.filter((s) => c.is_confirmed_sweep[s] === 1) : [];
+	const source: 'sweeps' | 'candidates' | 'untested' = sweeps.length > 0 ? 'sweeps' : final ? 'candidates' : 'untested';
 	const pool =
 		source === 'sweeps'
 			? sweeps.sort((a, b) => c.peak_date[a] - c.peak_date[b] || a - b)
@@ -919,7 +1298,17 @@ export function velocityFigure(record: TemporalRecord, max = TEMPORAL_MAX_RIDGES
 			max: peak > 0 ? peak : 1
 		};
 	});
-	return { T, time: Array.from(time), tMin: record.t_min, tMax: record.t_max, rows, source, total: pool.length, capped: pool.length > rows.length };
+	return {
+		T,
+		time: Array.from(time),
+		tMin: record.t_min,
+		tMax: record.t_max,
+		rows,
+		source,
+		uncalled_reason: source === 'untested' ? uncalledBecause(record) : null,
+		total: pool.length,
+		capped: pool.length > rows.length
+	};
 }
 
 export interface WaveFigureModel {
@@ -990,16 +1379,24 @@ export interface ClassificationFigureModel {
 	gridStep: number;
 }
 
-/** Figure 7. Null-free candidates cannot be placed on the y axis, so it returns null until tested. */
+/**
+ * Figure 7. Null-free candidates cannot be placed on the y axis, so it returns null until tested —
+ * and it stays null while the null is IN FLIGHT, which is a stronger condition than "some draws are
+ * in". Mid-run the y coordinate is a p that is still falling and the fill, the borderline mark and
+ * the gate count all read the scored payload's zeros, so the figure would be a picture of an
+ * unfinished computation with every point in the wrong quadrant. The caller says which of the two
+ * states it is in; both are honest and only one of them is permanent.
+ */
 export function classificationFigure(record: TemporalRecord): ClassificationFigureModel | null {
-	if (!record.permutations?.tested) return null;
+	if (!callsAreFinal(record)) return null;
 	const c = record.sites;
 	const alpha = record.floors.perm_alpha;
 	const qCut = record.floors.q_static_cut;
 	const minR2 = record.floors.min_r2_fpca;
 	const gateApplied = !record.solitary_regime;
 	const points: ClassificationPoint[] = [];
-	const B = record.permutations.completed;
+	const perm = record.permutations!;
+	const B = perm.completed;
 	let gateFailed = 0;
 	for (const site of record.candidates) {
 		const s = site - 1;
@@ -1032,7 +1429,7 @@ export function classificationFigure(record: TemporalRecord): ClassificationFigu
 		qCut,
 		minR2,
 		gateApplied,
-		gridStep: record.permutations.grid_step
+		gridStep: perm.grid_step
 	};
 }
 

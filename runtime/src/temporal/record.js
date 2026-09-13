@@ -61,6 +61,10 @@ export function temporalRecord(a) {
 	const complete = stage === 'complete';
 	const K = TEMPORAL_THRESHOLDS.waveCount;
 
+	// 1.0 is the reference's own fill for a codon the null never tested (temporal.py:620-621) — an
+	// upstream bug replicated and flagged, not endorsed; `run.js`'s `spreadPerm` carries the full
+	// note and `temporalDownloadNotes` says it to anyone who takes the CSV away. `sites.stage1` is
+	// the mask that tells a 1.0 that was measured from a 1.0 that was assumed.
 	const pPerm = a.pPerm ?? new Float32Array(L).fill(1);
 	const qPerm = a.qPerm ?? new Float32Array(L).fill(1);
 	const r2 = a.r2 ?? new Float32Array(L);
@@ -118,6 +122,14 @@ export function temporalRecord(a) {
 		complete,
 
 		// --- the reference's own eighteen, in its order (temporal.py:841-859) ---------------------
+		/**
+		 * The ONLY source of `_summary.json`'s `alignment` and `tree`, which is why `runTemporal`
+		 * refuses an `inputs` key it does not recognise instead of letting `??` turn a typo into a
+		 * summary that cannot say what it analysed. `null` here means the run carried no name.
+		 * `inputs.dates`, the third accepted key, is not a summary key upstream and lands on
+		 * `dates.file` below — every accepted key reaches the record, which is what makes the
+		 * refusal above a guard against typos rather than a list of names two of which are kept.
+		 */
 		alignment: a.inputs?.alignment ?? null,
 		tree: a.inputs?.tree ?? null,
 		taxa_total: nTaxa,
@@ -199,7 +211,7 @@ export function temporalRecord(a) {
 			: null,
 		/** temporal.py:692-693's fallback selection, which the reference records nowhere. */
 		escape_hatch_used: a.confirm?.escapeHatchUsed ?? false,
-		/** temporal.py:684: the shape gate was bypassed, so a sweep needed only the permutation test. */
+		/** temporal.py:685: the shape gate was bypassed, so a sweep needed only the permutation test. */
 		solitary_regime: a.confirm?.solitaryRegime ?? false,
 		/** temporal.py:672 at exactly four candidates: the gate cannot discriminate. */
 		gate_vacuous: a.gate?.vacuous ?? false,
@@ -230,6 +242,15 @@ export function temporalRecord(a) {
 			early_indices: Array.from(a.root.earlyIndices ?? [])
 		},
 		dates: {
+			/**
+			 * The DATE FILE's name, from `runTemporal`'s `inputs.dates` and nowhere else — the third
+			 * of the three names `assertInputNames` accepts, and the source of `-d` on the
+			 * reproduction line (results.js). It is not one of the reference's eighteen summary keys,
+			 * which is why it lives here beside the dates rather than at the top level with
+			 * `alignment` and `tree`. `null` means the dates came from the headers, or from a caller
+			 * that passed no name.
+			 */
+			file: a.inputs?.dates ?? null,
 			dated: N,
 			undated: a.dates.undated,
 			source: a.dates.source,
@@ -247,10 +268,18 @@ export function temporalRecord(a) {
 			surface: a.provenance?.surface ?? 'node',
 			seed: a.options.seed ?? TEMPORAL_THRESHOLDS.seed,
 			wave_sign: a.waves?.waveSign ?? (a.options.waveSign ?? 'canonical'),
-			/** True when the model saw every codon, as `hyphaeon temporal` does (temporal.py:512). */
+			/** True when the model saw every codon, as `hyphaeon temporal` does (temporal.py:513-520). */
 			score_invariable_sites: countOnes(a.scored) === L,
 			scored_codons: countOnes(a.scored),
 			taxon_cap: a.loaded.notices?.pdSubsampled ? 'applied' : null,
+			/**
+			 * D22: `{reason}` when this run took pairwise TN93 distances into the MDS instead of a
+			 * tree (`prepareRun`'s own notice, `js/src/diagnostics.js`), `null` when a tree with
+			 * usable branch lengths was used as given. The reproduction line reads it: tree-free is
+			 * `--no-tree` / `--use-tn93` upstream (cli.py:1829-1830), not a default, so a command
+			 * printed without it asks for patristic distances this run never computed.
+			 */
+			tree_free: a.loaded.notices?.treeFree ?? null,
 			duplicates_collapsed: a.loaded.notices?.duplicatesCollapsed ?? 0,
 			elapsed_sec: a.elapsedSec,
 			...a.provenance

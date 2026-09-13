@@ -112,8 +112,14 @@
 		Gaussian Nadaraya–Watson kernel of bandwidth {bandwidth.toPrecision(3)} {unitLabel}.
 		<strong>The y axis is not a frequency</strong>: it is weighted by attention and normalised over sequences, so
 		it is not a count and does not reach 1.
-		{model.called.length} of {model.candidates.toLocaleString('en-US')} candidate codons are confirmed
-		sweeps and are drawn in purple over the rest.{#if model.capped}
+		{#if model.called_is_final}
+			{model.called.length} of {model.candidates.toLocaleString('en-US')} candidate codons {model.called.length === 1
+				? 'is a confirmed sweep and is'
+				: 'are confirmed sweeps and are'} drawn in purple over the rest.
+		{:else}
+			None of the {model.candidates.toLocaleString('en-US')} candidates is drawn in purple: nothing has been
+			called, because {model.uncalled_reason}. The curves themselves are final.
+		{/if}{#if model.capped}
 			{' '}Only the {model.background.length} strongest of the {model.candidates - model.called.length} uncalled
 			candidates are drawn, by peak intensity; every confirmed sweep is drawn.{/if}
 		The {invariable.toLocaleString('en-US')} invariable and {flat.toLocaleString('en-US')} flat codons of

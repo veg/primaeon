@@ -5,8 +5,13 @@
  * sampling dates, re-smooth every candidate codon's attribution against the permuted time axis,
  * take the same statistic, and count how often the shuffled trajectory beats the real one. The
  * ARITHMETIC of that is the library's (`temporalNullDraws`, `temporalPermStat`,
- * `temporalDrawPermutation`, `temporalPermPValues`) and is pure, allocation-free inside the draw
- * loop, and index-addressed so that draw `b` is the same draw whoever asks for it. What is left is
+ * `temporalDrawPermutation`, `temporalPermPValues`) and is pure and index-addressed, so that draw
+ * `b` is the same draw whoever asks for it. It is NOT allocation-free inside the draw loop, which an
+ * earlier writing of this line claimed: every buffer the kernel writes into is hoisted above the
+ * loop, but three things are still built per draw — the `Int32Array(N)` of row bases, the
+ * `Xoshiro256` its per-draw substream needs, and the gradient coefficient arrays the statistic
+ * rebuilds per call. `@veg/hyphaeon-js`'s `temporalNullDraws` names all three and records the
+ * measurements that say hoisting them loses. What is left is
  * exactly what the library refuses to own and what this file is: a cost model, a work budget, a
  * chunk size calibrated against the clock, a progress cadence, a cancel that keeps what was
  * computed, and the sentences a reader is owed about all four.
@@ -34,40 +39,71 @@
  *
  *     W = B · C · T · (nnz/C + TEMPORAL_PERM_STAT_UNITS)
  *
- * MEASURED ON THIS MACHINE (Node 22.22.0, x64 under Rosetta on an Apple-silicon Mac, which is a
- * FLOOR: a native arm64 browser should be 1.5-2x faster), best of three, through THIS driver — so
- * with the chunking, the per-chunk CSR rebuild and the `setTimeout(0)` yields the reference's single
- * loop does not pay:
+ * MEASURED, TWICE, AND THE TWO DISAGREE BY 1.7x — which is the single most important thing to know
+ * about these constants and is why the shipped rate is not either fit.
  *
- *     shape                                      B      wall     nnz    ms/draw   W (k=21)   rate
- *     acceptance  C=246  N=95  T=60  rho=0.043   100     45 ms    1000    0.450    3.70e7   8.2e8
- *     acceptance  C=246  N=95  T=60  rho=0.043  1000    390 ms    1000    0.390    3.70e8   9.5e8
- *     acceptance  C=246  N=95  T=250 rho=0.043  1000  1 353 ms    1002    1.353    1.55e9   1.1e9
- *     mid         C=400  N=256 T=250 rho=0.30    500  5 034 ms  30 822   10.07     4.90e9   9.7e8
- *     large       C=1500 N=256 T=250 rho=0.30    200  7 719 ms 115 419   38.60     7.35e9   9.5e8
+ * RUN A (this change). Node 22.22.0, x64 under Rosetta on an Apple-silicon Mac (Apple M4 Pro), five
+ * shapes, five isolated processes each, BEST of five, through THIS driver — so with the chunking,
+ * the per-chunk CSR rebuild and the `setTimeout(0)` yields the reference's single loop does not pay.
+ * One-minute load average at each run recorded and 3.7-5.4 throughout, which is a shared machine and
+ * not an idle one. Against `@veg/hyphaeon-js` at `feat/temporal` 37a3d4a plus that branch's
+ * `devScratch` change to `temporalPermStat`, which is IN these numbers (it is worth ~8 % on the
+ * acceptance shape, so a measurement taken before it would read slower still). The raw run is not
+ * committed; the numbers are:
  *
- * Solving for `k` and the rate from the two EXTREME points (acceptance T=60 at B=1000, and large)
- * gives k = 21.1 and 9.49e8 units/s, and that pair then predicts the two shapes it was not fitted to
- * within 2.6 % (mid) and 20 % (acceptance at T=250) — over-stating in both cases, which is the right
- * direction for a budget. So:
+ *     shape                                      B    best     worst    ms/draw  W (k=15)   R best
+ *     acceptance  C=246  N=95  T=60  rho=0.045   100     89 ms     95 ms   0.893   2.85e7   3.2e8 *
+ *     acceptance  C=246  N=95  T=60  rho=0.045  1000    297 ms    311 ms   0.297   2.85e8   9.6e8
+ *     acceptance  C=246  N=95  T=250 rho=0.045  1000    900 ms    980 ms   0.900   1.19e9   1.3e9
+ *     mid         C=400  N=256 T=250 rho=0.303   500  4 709 ms  5 360 ms   9.42    4.62e9   9.8e8
+ *     large       C=1500 N=256 T=250 rho=0.302   200  7 246 ms  8 814 ms  36.2     6.91e9   9.5e8
  *
- *     TEMPORAL_PERM_STAT_UNITS = 21    (the kernel survey's cost model said 7)
- *     TEMPORAL_PERM_RATE       = 9.0e8 (5 % under the fit, so every prediction stays conservative;
- *                                       the kernel survey measured 1.0e9 on a bare kernel with no
- *                                       PRNG in it and 0.65e9 with one, at its own k = 7)
+ *     * NOT a throughput point: see THE FIXED COST below.
  *
- * With those two the model is flat across a 100x spread in per-draw cost and a 7x spread in density,
- * which the survey's k = 7 was not: at k = 7 the same five measurements imply rates from 3.2e8 to
- * 8.3e8, a 2.6x spread that no single constant can serve.
+ * Solving for `k` and the rate from the two EXTREME throughput points (acceptance T=60 at B=1000,
+ * and large) gives k = 14.925 and 9.53e8 units/s. That pair predicts mid — which it was not fitted
+ * to — within 2.9 %, and over-states acceptance at T=250 by 38 %.
+ *
+ * RUN B (the review of this phase, same machine, isolated processes, best of three, same five
+ * shapes). Its measured times were 1.5x ours: mid 8.07 s against our 4.71, large 11.9 s against our
+ * 7.25. At k = 15 those imply 5.73e8 and 5.81e8 units/s, and its own refit landed on k ≈ 15.3,
+ * R ≈ 5.7e8 — the SAME fixed term to 3 %, a rate 1.7x lower.
+ *
+ * WHAT THAT MEANS, AND WHAT THE CONSTANTS ARE. `k` is a property of the code and both measurements
+ * agree on it. The RATE is a property of the machine's state at the moment of measurement, and this
+ * machine varies by 1.7x between one quiet-ish afternoon and another. A constant used to promise a
+ * reader a wall time must therefore be a FLOOR under everything anyone has measured, not the best of
+ * them — a floor that only holds when the box is idle is not a floor. So:
+ *
+ *     TEMPORAL_PERM_STAT_UNITS = 15   (fitted 14.925 here, 15.3 at the review; the kernel survey's
+ *                                      operation count said 7 and is wrong by a factor of two)
+ *     TEMPORAL_PERM_RATE       = 5.5e8 (under BOTH runs: 4 % under run B's 5.73e8, and 1.7-2.4x
+ *                                      under run A, so every prediction over-states)
+ *
+ * PREDICTED AGAINST MEASURED at those two constants — the table the previous version of this header
+ * did not have, and the claim it made ("flat across a 100x spread", "5 % under the fit") that the
+ * review correctly refused: predictions over-state run A by 1.74x (acceptance T=60 B=1000), 2.40x
+ * (acceptance T=250), 1.79x (mid) and 1.73x (large), and run B by 1.04x (mid) and 1.06x (large).
+ * The model is NOT flat: at k = 15 the implied rates across run A's four throughput shapes span
+ * 9.5e8 to 1.3e9, a 1.38x spread, which is the residual the T = 250 sparse shape leaves behind. It
+ * is flatTER than k = 21, where the same four span 1.02e9 to 1.73e9 (1.70x), and that is the whole
+ * claim.
+ *
+ * THE FIXED COST, which no throughput rate can carry. The B = 100 row above is 3x the model's
+ * prediction because a null that short is dominated by JIT, the first CSR build and the first touch
+ * of every scratch page. Fitting `t = c + B·m` to the two acceptance T = 60 rows gives c = 66 ms and
+ * m = 0.231 ms/draw: SIXTY-SIX MILLISECONDS before the first draw is paid for. It does not matter at
+ * B >= 1000 (7 % of 297 ms) and it dominates below B ~ 300. `W` is a throughput model and is used
+ * for a BUDGET, where under-counting a cheap run is harmless; nothing quotes it as a countdown (the
+ * live one uses measured ms/draw).
  *
  * THE MEASUREMENT WINS OVER BOTH PRIOR ESTIMATES AND BOTH ARE RECORDED AS WRONG. The plan's
  * "minutes at realistic sizes" is out by two orders on the demo: the whole null at the REFERENCE'S
- * OWN default of 1,000 draws costs 390 ms on the acceptance shape, against 17.5 s for the single
- * model pass that feeds it. The kernel survey had the right rate and the wrong fixed term — its
- * `7` under-counts the statistic by a factor of three, which matters precisely in the sparse regime
- * it was measuring, so its per-shape predictions ran optimistic by 1.6x on the demo while landing on
- * the dense cases. The null is not this pillar's expensive section; the model is, and the report's
- * digital DMS still dwarfs both.
+ * OWN default of 1,000 draws costs 297 ms on the acceptance shape, against 17.5 s for the single
+ * model pass that feeds it. The kernel survey had the wrong fixed term — its `7` under-counts the
+ * statistic by a factor of two, which matters precisely in the sparse regime it was measuring. The
+ * null is not this pillar's expensive section; the model is, and the report's digital DMS still
+ * dwarfs both.
  *
  * Two cautions against over-reading that, both of which are why the budget machinery below stays.
  * rho is dataset-dependent and rises with divergence: a deep-time or recombinant alignment reaches
@@ -102,15 +138,17 @@
  * ==============================================================================================
  *
  * Not the frame budget: this runs in a worker and never blocks the UI thread. It is cancel latency
- * and progress cadence. MEASURED per-draw times across the shapes above span 0.38 ms (acceptance) to
- * 37.9 ms (large divergent) — a factor of 100 — so a fixed chunk COUNT would be wrong by two orders
+ * and progress cadence. MEASURED per-draw times across the shapes above span 0.30 ms (acceptance) to
+ * 36.2 ms (large divergent) — a factor of 120 — so a fixed chunk COUNT would be wrong by two orders
  * at one end. Draw zero is timed alone, the chunk is set to `TEMPORAL_PERM_CHUNK_TARGET_MS /
  * msPerDraw` clamped to [1, 256], the first WARM chunk replaces that cold estimate outright, and an
  * EWMA maintains it thereafter so a throttled or contended tab does not stall the cancel. 200 ms
  * gives about five progress ticks a second and bounds the work a cancel throws away at one chunk.
  *
  * MEASURED cost of all of it: driving the kernel through this file rather than calling it once
- * costs 2-8 % (381 ms against 381, 1 319 against 1 276, 5 414 against 5 071, 8 353 against 7 570),
+ * cost 2-8 % when it was last measured against the bare kernel (381 ms against 381, 1 319 against
+ * 1 276, 5 414 against 5 071, 8 353 against 7 570), and the review reproduced the same envelope at
+ * -6 % to +1 %. Every time in this file's tables is through the driver, so the overhead is IN them,
  * which is the per-chunk CSR rebuild and the yields. Worth it for a cancel that lands in 200 ms.
  *
  * ONE CAVEAT, RECORDED RATHER THAN SOLVED: `yieldToLoop()` is `setTimeout(0)`, and a dedicated
@@ -134,9 +172,26 @@
  * Besag-Clifford curtailment (retire a candidate once its exceedance count reaches h, then report
  * `h/b_c`) is the kernel survey's second gear and is NOT implemented. It is off by default there
  * too, it changes the estimator so a record carrying it must say so, and the budget check it exists
- * to rescue essentially never fires at the report's own caps — refusing needs
- * `C·T·(rho·N + 7) > budget/B_MIN`, which at 256 taxa, T = 250 and rho = 0.3 means more codons than
- * any gene. Recorded here so it is not re-discovered rather than implemented on spec.
+ * to rescue essentially never fires at the report's own caps.
+ *
+ * HOW RARELY, IN CANDIDATE CODONS — the quantity C is, and the correction to a sentence that used to
+ * say "codons" and to quote the survey's `+7` where the shipped constant is
+ * `TEMPORAL_PERM_STAT_UNITS = 15`. Refusing is `B · C · T · (nnz/C + 15) > budget`, so
+ * `C_crit = budget / (B · T · (rho·N + 15))`. COMPUTED from the shipped constants through
+ * `temporalNullBudget` itself (bisection on C; the closed form agrees), at the report's own
+ * 256-taxon cap, T = 250 and a dense rho = 0.3:
+ *
+ *     B = 200  (the default schedule's floor, `permutationsMin`)   first refused at C = 10,894
+ *     B = 500                                                      first refused at C =  4,358
+ *     B = 1000 (the reference's own default, named explicitly)     first refused at C =  2,179
+ *
+ * CANDIDATES, NOT CODONS: stage one passed 246 of 4,384 codons on the acceptance run, so at that
+ * rate 2,179 candidates is an alignment of roughly 39,000 codons — and at the acceptance run's own
+ * measured density (N = 95, rho = 0.0428) the B = 1000 threshold is 10,490 candidates instead.
+ * Rare, then, rather than impossible, and rarest on the path a reader actually takes: the browser
+ * walks the rounds and so tests at B = 200, while the surfaces that name B = 1000 (the parity runner
+ * and the server) lift the cap to `Infinity` anyway. Recorded here so it is not re-discovered rather
+ * than implemented on spec.
  */
 
 import {
@@ -148,18 +203,57 @@ import {
 import { TEMPORAL_MESSAGES, TEMPORAL_THRESHOLDS, fillMessage } from './codes.js';
 
 /**
- * Units of work per second, MEASURED through this driver on this machine. See the header's table.
- * It is a floor (x64 Node under Rosetta); a surface that cares should re-measure and record its own.
+ * Units of work per second: a middling anchor on an UNLOADED machine, and NOT a floor. An earlier
+ * writing of this block called it "a FLOOR under every measurement taken of this driver on this
+ * machine"; run C below is that claim's counter-example, and the rule is now the one
+ * `web/.../temporal.ts`'s `TEMPORAL_MODEL_RATE` already carries — nothing here may call this
+ * conservative, a floor or an upper bound.
+ *
+ * Run A of the header's table (best of five, five isolated processes per shape, Node 22.22.0 x64
+ * under Rosetta on an Apple M4 Pro, one-minute load average 3.7-5.4) implies 9.5e8-1.3e9; run B,
+ * the review's, implies 5.73e8 and 5.81e8 on the same machine and shapes. 5.5e8 sits under both.
+ *
+ * RUN C (the final check of this phase, same machine and driver, one isolated process per row,
+ * three rows per shape, one-minute load average 10-36 throughout — other agents building and
+ * testing on the same cores, which is the ordinary state of this box and not an aberration):
+ *
+ *     shape                                       B     ms per run            implied units/s
+ *     acceptance  C=246 N=95  T=60  rho=0.0488   1000    321 /  303 /   325   9.02 / 9.58 / 8.93 e8
+ *     acceptance  C=246 N=95  T=250 rho=0.0488   1000   1007 /  964 /   926   1.20 / 1.25 / 1.30 e9
+ *     mid         C=400 N=256 T=250 rho=0.313     500   4863 / 5836 / 13254   9.79 / 8.16 / 3.59 e8
+ *     large       C=1500 N=256 T=250 rho=0.312    200  16352 /18860 / 14100   4.35 / 3.78 / 5.05 e8
+ *     acceptance  C=246 N=95  T=60  rho=0.0488    100     97 /  101 /    99   2.99 / 2.89 / 2.93 e8 *
+ *
+ *     * the fixed-cost row again, not a throughput point: see THE FIXED COST in the header.
+ *
+ * FOUR of the six dense-shape runs are BELOW 5.5e8 — 3.59e8 at worst, which makes a prediction at
+ * this constant 1.5x optimistic. The sparse shapes stay at 8.9e8-1.3e9 in the same session, so what
+ * moves is the machine and the density, not the model: `k` is stable and the rate is not.
+ *
+ * THE CONSTANT STAYS AT 5.5e8 ANYWAY, deliberately. It converts a WORK budget into a sentence and
+ * bounds nothing itself; lowering it to cover a contended machine would over-state the wait for
+ * every reader on an idle one, which is the same trade `TEMPORAL_MODEL_RATE` settled the same way.
+ * What changed is what may be SAID about it: the surfaces quoting it call it "the rate this build
+ * measured on its own development machine" and claim no bound.
+ *
+ * THE BROWSER FIGURE THIS BLOCK USED TO CARRY WAS ARITHMETICALLY WRONG and is corrected here rather
+ * than repeated: the review clocked 1.12 ms/draw at C = 247, N = 95, T = 250 in Chromium, and at
+ * this model that draw is 247·250·(nnz/C + 15) ≈ 1.18e6 units, so 1.12 ms is about **1.0e9** units/s
+ * — not the "about 5e9" the old line claimed, and not faster than run C's own 1.2-1.3e9 at the same
+ * shape under Node. There is no measurement here saying a browser is quicker than Node at this
+ * kernel, so this block no longer says one.
  */
-export const TEMPORAL_PERM_RATE = 9.0e8;
+export const TEMPORAL_PERM_RATE = 5.5e8;
 
 /**
  * The fixed per-grid-point cost of the statistic, in units of one fused multiply-add, FITTED to the
- * two extreme measurements in the header (21.0, rounded from 20.97). The kernel survey's model said
- * 7 from an operation count; the measurement says three times that, and at the acceptance run's
- * rho = 0.043 — where `nnz/C` is only 4.07 — that term is five sixths of the whole cost.
+ * two extreme throughput measurements in the header: 14.925 on run A, 15.3 on the review's run B.
+ * `k` is a property of the code rather than of the machine, which is why two runs 1.7x apart in rate
+ * agree on it to 3 %. The kernel survey's model said 7 from an operation count; the measurement says
+ * twice that, and at the acceptance run's rho = 0.045 — where `nnz/C` is only 4.28 — that term is
+ * more than three quarters of the whole cost.
  */
-export const TEMPORAL_PERM_STAT_UNITS = 21;
+export const TEMPORAL_PERM_STAT_UNITS = 15;
 
 /**
  * Cumulative draw counts the section refines through. The first is D26's guaranteed answer, the last
@@ -168,11 +262,25 @@ export const TEMPORAL_PERM_STAT_UNITS = 21;
 export const TEMPORAL_PERM_ROUNDS = Object.freeze([200, 500, 1000]);
 
 /**
- * The work a whole null may cost before this surface declines to run it: 5.0e10 units, about 55 s at
- * `TEMPORAL_PERM_RATE`. Justified against the latency this report has already accepted for a
- * background section — the digital DMS's own prebake tail is 70 s on HIV1_RT — and against the fact
- * that, unlike a fixed B, an overrun here is recoverable because the section is progressive and
- * cancellable. `Infinity` lifts it (the server and the parity runner do).
+ * The work a whole null may cost before this surface declines to run it: 5.0e10 units.
+ *
+ * IN SECONDS, at the rate above: **91 s**, and that is the number to quote a reader — but as an
+ * anchor, not as a bound, because `TEMPORAL_PERM_RATE` is not a floor (see its own block). On the
+ * machine's faster state (run A, 9.5e8) the same cap is 53 s; on run B's 5.7e8 it is 88 s; at run
+ * C's worst dense measurement on a loaded box (3.59e8) it is 139 s. The previous "about 55 s" here
+ * was the faster state quoted as if it were the promise, and the "because it is a floor" that
+ * replaced it was the same error one level up.
+ *
+ * The CAP is unchanged at 5.0e10 and is deliberately in WORK, not in seconds: a work cap refuses the
+ * same runs on every machine, which is what makes a record comparable across surfaces, and the rate
+ * only ever converts it for a sentence. Justified against the latency this report has already
+ * accepted for a background section — the digital DMS's own prebake tail is 70 s on HIV1_RT — and
+ * against the fact that, unlike a fixed B, an overrun here is recoverable because the section is
+ * progressive and cancellable. It essentially never fires: at the report's own 256-taxon cap, with
+ * T = 250 and a dense nonzero fraction rho = 0.3, refusing takes 10,894 CANDIDATE codons on the
+ * default schedule (which tests at B = 200) and 2,179 at an explicit B = 1000 — candidates, not
+ * codons, and stage one passed 246 of 4,384 on the acceptance run. The header's table has the
+ * arithmetic and how it was computed. `Infinity` lifts it (the server and the parity runner do).
  */
 export const TEMPORAL_PERM_BUDGET_DEFAULT = 5.0e10;
 
@@ -243,7 +351,10 @@ export function candidateNnz(candAttrs, C, N) {
 }
 
 /**
- * `W = B · C · T · (nnz/C + 7)` — the header's cost model, in units, at a given draw count.
+ * `W = B · C · T · (nnz/C + TEMPORAL_PERM_STAT_UNITS)` — the header's cost model, in units, at a
+ * given draw count. The fixed term is the CONSTANT, never a literal: it was 7 in the kernel survey's
+ * operation count and is 15 at the measurements in the header, and a JSDoc that spells it out goes stale
+ * the first time it is refitted.
  *
  * @param {{B: number, C: number, T: number, nnz: number}} args
  * @returns {number}

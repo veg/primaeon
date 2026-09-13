@@ -21,10 +21,33 @@
 	  2. the NULL, per chunk, as a native `<progress>` with a real value and a Stop button.
 	  3. the WAVE MODES and both classification columns. Figures 6 and 7 land here.
 
+	WHILE THE SECOND PAYLOAD IS ARRIVING, THIS SECTION CLAIMS NOTHING IT CANNOT YET KNOW. The per-chunk
+	payload replaces the two permutation columns and nothing downstream of them, so every label, sweep
+	count and classification on screen would be the scored payload's zeros — and `permutations.tested`
+	is already true after the first chunk. So the lede takes a fourth form, the sweep count stays an em
+	dash with the draw count beside it, the call columns keep reading "not tested", and Figures 6 and 7
+	say why they are not drawn yet instead of drawing an unfinished computation. `nullInFlight`
+	(temporal.ts) is the one test all of that goes through, and it reads the record's own `stage`, not
+	the draw count: a STOPPED null lands complete, with fewer draws, and its labels are final.
+
 	WHAT SURVIVES A STOP IS THE POINT OF THAT SPLIT. Stopping the null keeps every number upstream of
 	the shuffle and gives back p-values on a coarser grid — `(1 + exceedances) / (draws + 1)` at the
 	achieved count, which is the reference's own estimator, not an approximation of it. Stopping
 	during the model pass keeps nothing, because there is nothing yet; the button says which it is.
+
+	AND A STOP HAS A THIRD OUTCOME, which is why the null has FOUR states here and not three
+	(`nullState`). The cooperative cancel is what gives back the coarser grid; when the worker does
+	not answer it within the client's grace it is TERMINATED, and the page is left holding a record
+	whose null is mid-flight and is now never going to finish. `routes/time/+page.svelte` marks that
+	record `stage: 'stopped'` and this section then says the run ended rather than that it is still
+	running: a skipped, abandoned or never-started null is not a running one, and none of the notes
+	below may tell that reader to wait.
+
+	AND THE DOWNLOAD LINE DOES NOT MAKE ITS OWN CLAIM. "Byte for byte" is a claim about the FORMAT
+	only — measured on H1N1, 1 of 4,384 rows of the sites summary is byte-identical to a command-line
+	run of the same analysis — and the runtime's `temporalDownloadNotes` is where that qualifier
+	lives. This section introduces the files and then prints those notes; it does not restate them,
+	because the restatement was wrong and sat in the same paragraph as the correction.
 
 	THE THREE SENTENCES A READER COMPARING THIS WITH A COMMAND-LINE RUN MUST SEE — the generator
 	behind the permutation p, the convention behind a wave's sign, and the dates our layer can read
@@ -51,10 +74,13 @@
 		duration,
 		honestyNotes,
 		ledeSentence,
+		nullInFlight,
+		nullState,
 		remainingSeconds,
 		trajectoryFigure,
 		velocityFigure,
 		waveFigure,
+		TEMPORAL_MAX_SPECIES,
 		type TemporalGate,
 		type TemporalRecord
 	} from './temporal';
@@ -113,7 +139,11 @@
 		record?.regime.unit_label ?? (units === 'years' ? 'yrs' : units === 'generations' ? 'gen' : units === 'days' ? 'days' : 'units')
 	);
 	const drawsForCost = $derived(draws ?? 1000);
-	const cost = $derived(costSentences({ codons, dated, timePoints, draws: drawsForCost, scoreInvariable }));
+	/** What the MODEL pass sees: every sequence in the file, not just the dated ones, under the cap. */
+	const sequencesForCost = $derived(taxa.length ? Math.min(taxa.length, TEMPORAL_MAX_SPECIES) : null);
+	const cost = $derived(
+		costSentences({ codons, sequences: sequencesForCost, dated, timePoints, draws: drawsForCost, scoreInvariable })
+	);
 	const inNull = $derived(runState === 'running' && progress.phase === 'temporal-null');
 	const pct = $derived(progress.total > 0 ? Math.round((100 * progress.done) / progress.total) : 0);
 	const left = $derived(
@@ -122,7 +152,21 @@
 			: null
 	);
 	const perm = $derived(record?.permutations ?? null);
-	const tested = $derived(perm?.tested ?? false);
+	// `permutations.tested` is deliberately NOT held here any more. It is true one chunk into the
+	// null and stays true on a record whose worker was terminated, so every cell that once read it
+	// claimed a finding that had not been computed; `nulls` below is what this section switches on.
+	/**
+	 * The null has drawn something and the labels downstream of it are NOT yet computed. Everything
+	 * that would otherwise print a call, a sweep count or a classification reads this first: see
+	 * `nullInFlight` in temporal.ts for why `tested` alone states a completed finding one chunk in.
+	 */
+	const inFlight = $derived(record ? nullInFlight(record) : false);
+	/**
+	 * FOUR states, not three (`nullState`). A null that was declined over the work budget, stopped
+	 * before its first draw, or abandoned when its worker was terminated is NOT a running one, and
+	 * the notes that stand in for Figures 6 and 7 may not tell that reader to wait.
+	 */
+	const nulls = $derived(record ? nullState(record) : 'not-started');
 	const flat = $derived(record ? record.codons_variable - record.stage1_candidates : 0);
 	const trajectory = $derived(record ? trajectoryFigure(record) : null);
 	const velocity = $derived(record ? velocityFigure(record) : null);
@@ -255,7 +299,7 @@
 
 	{#if record && trajectory && velocity}
 		<p class="lede verdict">{ledeSentence(record, units)}</p>
-		<p class="note measured"><b>What it cost.</b> {costMeasured(record)}</p>
+		<p class="note measured"><b>{inFlight ? 'What it has cost so far.' : 'What it cost.'}</b> {costMeasured(record)}</p>
 
 		{#if perm?.cancelled}
 			<p class="note note--warn">
@@ -271,6 +315,23 @@
 			</p>
 		{:else if perm?.skipped}
 			<p class="note note--warn"><strong>The null was not run.</strong> {perm.reason}</p>
+		{:else if record.stage === 'stopped'}
+			<p class="note note--warn">
+				<!--
+					Two stops, as in `uncalledBecause`: the terminate usually lands mid-null, but it can
+					also land after the scored payload and before the first shuffle, and that reader must
+					not be told shuffles were being drawn.
+				-->
+				{#if (perm?.completed ?? 0) > 0}
+					<strong>This run was stopped while the null was being drawn.</strong>
+				{:else}
+					<strong>This run was stopped before the null drew a single shuffle.</strong>
+				{/if}
+				It did not come back in time to be asked for what it had, so the worker was ended and the
+				calls, the sweep counts and the wave modes were never computed. Everything upstream of the
+				shuffle — the trajectories, velocities, peaks, widths, areas, the candidate list and the
+				static scan — is on this page and is final. Run it again to test them.
+			</p>
 		{/if}
 		{#if record.escape_hatch_used}
 			<p class="note note--warn">
@@ -285,7 +346,32 @@
 			<div><dt>Span</dt><dd><strong>{num(record.timespan_years, 3)} {unitLabel}</strong> <span class="qual">{num(record.t_min, 4)} to {num(record.t_max, 4)}</span></dd></div>
 			<div><dt>Bandwidth</dt><dd><strong>{record.bandwidth_years.toPrecision(3)} {unitLabel}</strong> <span class="qual">5 % of the span, clamped</span></dd></div>
 			<div><dt>Candidates</dt><dd><strong>{record.stage1_candidates.toLocaleString('en-US')}</strong> <span class="qual">peak ≥ {sci(record.floors.tau_peak, 2)}, area ≥ {sci(record.floors.tau_auc, 2)}</span></dd></div>
-			<div><dt>Confirmed sweeps</dt><dd><strong>{tested ? record.confirmed_sweeps.toLocaleString('en-US') : '—'}</strong> <span class="qual">{tested ? `${record.concordant_sweeps} also called by the static scan` : 'the null has not been drawn'}</span></dd></div>
+			<div>
+				<dt>Confirmed sweeps</dt>
+				<dd>
+					<!--
+						THE COUNT IS A NUMBER IN ONE OF THE FOUR STATES AND AN EM DASH IN THE OTHER THREE, and
+						`nulls` is what it switches on rather than `tested`. A run whose worker was terminated
+						mid-null carries `tested: true` with `confirmed_sweeps` still the scored payload's zero,
+						so keying this cell on `tested` printed a hard 0 and "0 also called by the static scan"
+						for a run that never computed either.
+					-->
+					<strong>{nulls === 'finished' ? record.confirmed_sweeps.toLocaleString('en-US') : '—'}</strong>
+					<span class="qual">
+						{#if nulls === 'running'}
+							the null is {perm!.completed.toLocaleString('en-US')} of {perm!.requested.toLocaleString('en-US')} shuffles through
+						{:else if nulls === 'finished'}
+							{record.concordant_sweeps} also called by the static scan
+						{:else if perm?.skipped}
+							the null was declined before it started, as over the work budget
+						{:else if nulls === 'stopped'}
+							this run ended before the null did, and the calls are computed only at the end
+						{:else}
+							the null has not been drawn
+						{/if}
+					</span>
+				</dd>
+			</div>
 			<div><dt>Static scan</dt><dd><strong>{record.sig_static_q10.toLocaleString('en-US')}</strong> <span class="qual">codons at q ≤ {record.floors.q_static_cut}, over {record.codons_variable.toLocaleString('en-US')} variable ones</span></dd></div>
 		</dl>
 
@@ -304,6 +390,17 @@
 
 		{#if waves}
 			<WaveFigure model={waves} {units} {unitLabel} tMin={record.t_min} tMax={record.t_max} />
+		{:else if nulls === 'running'}
+			<p class="note">
+				The wave modes are not drawn yet: the decomposition runs over the confirmed sweeps — or, if
+				fewer than four codons are confirmed, over the strongest codons by peak intensity — and which
+				of those happens is decided by the shuffles now being drawn. It lands with them.
+			</p>
+		{:else if nulls === 'stopped'}
+			<p class="note">
+				The wave modes were never extracted: the decomposition runs once, at the end of the run, and
+				this run ended before it. Figures 4 and 5 above are final; run it again to get them.
+			</p>
 		{:else}
 			<p class="note">
 				No wave mode could be extracted: the decomposition needs at least one codon past the
@@ -313,10 +410,29 @@
 
 		{#if classification}
 			<ClassificationFigure model={classification} draws={perm?.completed ?? 0} {selected} onSelect={(s) => (selected = s)} />
+		{:else if nulls === 'running'}
+			<p class="note">
+				The cross-classification is not drawn yet: one axis of it is the permutation p, which is still
+				falling towards its final value at every candidate, and the four labels it partitions are
+				computed once the shuffles finish — as are the wave modes the note above is standing in for.
+				The two figures above are complete.
+			</p>
+		{:else if perm?.skipped}
+			<p class="note">
+				The cross-classification was never computed: one axis of it is the permutation p, and this
+				run declined to draw the null at all. The two figures above are final, and the note above
+				says why it was declined.
+			</p>
+		{:else if nulls === 'stopped'}
+			<p class="note">
+				The cross-classification was never computed: one axis of it is the permutation p, and this run
+				ended before the labels it partitions were assigned. The two figures above are final.
+			</p>
 		{:else}
 			<p class="note">
 				The cross-classification cannot be drawn: it plots the date-shuffling null's evidence against
-				the static scan's, and no shuffle was drawn. Everything above it is complete.
+				the static scan's, and no shuffle was drawn. Figures 4 and 5 above are final, and so are the
+				wave modes if this run had enough candidates to extract them.
 			</p>
 		{/if}
 
@@ -352,9 +468,15 @@
 			<button type="button" class="button button--secondary" onclick={() => onDownload('summary')}>Summary (JSON)</button>
 		</div>
 		<p class="hint downloads__note">
-			The four files are <code>hyphaeon temporal -o temporal</code>'s own, byte for byte, so a reader
-			who takes all four can diff them against a command-line run.
-			{#each downloadNotes as note, i (i)}{' '}{note}{/each}
+			These are the four files <code>hyphaeon temporal -o temporal</code> writes, with the same names,
+			the same columns and the same rounding, written by the runtime's own writers.
+			{#if downloadNotes.length}
+				How far that likeness goes — and where it stops — is the runtime's to say, and it says it
+				here:{#each downloadNotes as note, i (i)}{' '}{note}{/each}
+			{:else}
+				They hold what this page holds, which is a run that has not finished; the notes saying how far
+				that likeness goes arrive with the completed record.
+			{/if}
 		</p>
 
 		{#if reference}

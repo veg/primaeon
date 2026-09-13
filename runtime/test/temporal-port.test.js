@@ -103,6 +103,7 @@ import {
 	runTemporalNull,
 	siteRow,
 	temporalCurvesCsvText,
+	temporalDownloadNotes,
 	temporalDownloads,
 	temporalNullBudget,
 	temporalNullWork,
@@ -296,7 +297,7 @@ acceptance('the acceptance run, against `hyphaeon temporal`\'s own output', () =
 	it('takes the calendar regime and clamps the bandwidth at its floor', () => {
 		expect(chain.record.regime.sweep_mode).toBe('episodic');
 		expect(chain.record.regime.non_calendar).toBe(false);
-		// 0.666 x 0.05 = 0.0333, below the reference's 0.05 floor (temporal.py:489).
+		// 0.666 x 0.05 = 0.0333, below the reference's 0.05 floor (temporal.py:488).
 		expect(chain.record.timespan_years * 0.05).toBeLessThan(0.05);
 		expect(chain.record.warnings.map((w) => w.code)).toContain('TEMPORAL_BANDWIDTH_CLAMPED');
 	});
@@ -318,7 +319,11 @@ acceptance('the acceptance run, against `hyphaeon temporal`\'s own output', () =
 			['domain', r.sites.domain]
 		]) {
 			expect(ours, `${name} length`).toHaveLength(HEADLINE.codons_total);
-			expect(ours.join(' '), `${name} column`).toBe(csvColumn(chain.sites, name).join(' '));
+			// NUL is the separator because no CSV cell can contain one, so the joined strings compare
+			// as columns rather than as one run-together line. Written as the ESCAPE `'\0'`, never as
+			// a literal U+0000: a literal makes `file(1)` call this file `data` and GNU grep treat it
+			// as binary, and the two forms are the same string at runtime.
+			expect(ours.join('\0'), `${name} column`).toBe(csvColumn(chain.sites, name).join('\0'));
 		}
 	});
 
@@ -569,7 +574,7 @@ acceptance('the acceptance run, against `hyphaeon temporal`\'s own output', () =
 		expect(absent).toBe(HEADLINE.codons_invariable);
 		expect(worstLrt).toBeLessThan(CLASS.lrtAbs);
 		// q_static is untouched at the same class: BH runs over the variable subset alone
-		// (temporal.py:529), so nothing the 4,111 absent LRTs would have said enters its denominator.
+		// (temporal.py:527-530), so nothing the 4,111 absent LRTs would have said enters its denominator.
 		let worstQ = 0;
 		for (let s = 0; s < full.codons_total; s++) worstQ = Math.max(worstQ, Math.abs(lean.sites.q_static[s] - full.sites.q_static[s]));
 		expect(worstQ).toBeLessThan(CLASS.qStatic);
@@ -728,11 +733,72 @@ acceptance('the four files', () => {
 		expect(command).toContain('-t examples/H1N1_2009_pandemic.nwk');
 		expect(command).toContain('-B 100');
 		expect(command).toContain('--time-points 60');
-		// This run IS reproducible: our ingestion bought nothing extra here.
-		expect(reproduces).toBe(true);
-		// But the draw count and the wave sign are still named.
+		// Every setting this run used is on the line, none of them silently dropped: the resolved
+		// sweep mode always, and nothing else here departs from the reference's own defaults.
+		expect(command).toContain('--sweep-mode episodic');
+		expect(command).not.toContain('-bw ');
+		expect(command).not.toContain('--tau-peak');
+		expect(command).not.toContain('--tau-auc');
+		expect(command).not.toContain('--keep-duplicates');
+		expect(command).not.toContain('-s ');
+		// This run is NOT reproducible, and the flag says so. Its null drew 100 shuffles from
+		// xoshiro256** substreams against the reference's MT19937, which is the measured 32-vs-18
+		// confirmed-sweep disagreement asserted elsewhere in this file — different numbers, not
+		// different last digits.
+		expect(reproduces).toBe(false);
+		expect(caveats.join(' ')).toContain('MT19937');
+		expect(caveats.join(' ')).toContain('statistical class');
+		// The draw count and the wave sign are still named.
 		expect(caveats.join(' ')).toContain('-B 100');
 		expect(caveats.join(' ')).toContain('canonical');
+		// And the sentence that was false is gone: the sign is not the only thing that differs.
+		expect(caveats.join(' ')).not.toContain('No other number differs');
+	});
+
+	it('says on EVERY run that the files will not diff clean, whatever the flag says', () => {
+		// The measured claim: 1 of 4,384 rows byte-identical against `hyphaeon temporal --cpu`. The
+		// caveat is first and is unconditional, because it is what a reader acts on when they run
+		// the command, and the page prints its own warning only when `reproduces` is false.
+		const { caveats } = temporalReferenceCommand(chain.record);
+		expect(caveats[0]).toContain('does not make the four files diff clean');
+		expect(caveats[0]).toContain('graph class');
+		expect(caveats[0]).toContain('1 of 4,384');
+	});
+
+	it('tells a reader taking the files what "byte for byte" covers and what it does not', () => {
+		const notes = temporalDownloadNotes(chain.record).join('\n');
+		expect(notes).toContain('FORMAT');
+		expect(notes).toContain('CONTENT');
+		expect(notes).toContain('1 of 4,384');
+		// The duplicated column and the sign convention still travel with the files.
+		expect(notes).toContain('selection_intensity');
+		expect(notes).toContain('D28');
+		// And so does the 1.0 written at every codon the null never tested (temporal.py:620-621).
+		const untested = chain.record.codons_total - chain.record.stage1_candidates;
+		expect(untested).toBe(4384 - 246);
+		expect(notes).toContain(`1.0 at the ${untested} codon(s)`);
+		expect(notes).toContain('a test that was not run');
+	});
+
+	it('writes 1.0 at every untested codon, as the reference does, and nothing tells them apart in the CSV', () => {
+		// UPSTREAM, REPLICATED AND FLAGGED (temporal.py:620-621): `p_perm`/`q_perm` are pre-filled
+		// with ones and only the candidates are ever assigned, so 4,138 of 4,384 codons carry a
+		// p-value of 1 for a permutation test that was not run on them. Both implementations write
+		// the identical strings — that is what makes the port faithful and the file wrong the same
+		// way — and the only thing that separates the two meanings is the record's own stage-one
+		// mask, which no column of the CSV carries.
+		const written = parseCsvText(temporalSitesCsvText(chain.record));
+		const pPerm = csvColumn(written, 'p_perm');
+		const theirs = csvColumn(chain.sites, 'p_perm');
+		let untestedOnes = 0;
+		for (let s = 0; s < chain.record.codons_total; s++) {
+			if (chain.record.sites.stage1[s]) continue;
+			untestedOnes++;
+			expect(chain.record.sites.p_perm[s], `site ${s + 1}`).toBe(1);
+			expect(pPerm[s], `site ${s + 1} cell`).toBe(theirs[s]);
+		}
+		expect(untestedOnes).toBe(4384 - 246);
+		expect(written.header).not.toContain('stage1');
 	});
 });
 
@@ -856,9 +922,16 @@ describe('the date-shuffling null, as this surface drives it', () => {
 			6
 		);
 		// The fixed term dominates at low density, which is the correction this phase measured: the
-		// kernel survey's cost model used 7 and the measurement says 21.
-		expect(TEMPORAL_PERM_STAT_UNITS).toBe(21);
-		expect(TEMPORAL_PERM_RATE).toBe(9.0e8);
+		// kernel survey's cost model used 7 and two independent fits say 14.9 and 15.3.
+		expect(TEMPORAL_PERM_STAT_UNITS).toBe(15);
+		// The rate is a FLOOR under every measurement of this driver on this machine, not the best
+		// of them — the two runs in null.js's header are 1.7x apart, so a constant set to either
+		// fit is optimistic in the other's state. 5.5e8 is under both.
+		expect(TEMPORAL_PERM_RATE).toBe(5.5e8);
+		expect(TEMPORAL_PERM_RATE).toBeLessThan(5.73e8); // run B's slower implied rate
+		// And the budget's promise, restated at that rate: 5.0e10 units is ~91 s, not the ~55 s the
+		// header used to claim by quoting the machine's fast state as if it were the floor.
+		expect(TEMPORAL_PERM_BUDGET_DEFAULT / TEMPORAL_PERM_RATE).toBeCloseTo(90.9, 1);
 	});
 
 	it('admits the rounds that fit and refuses only what does not', () => {
@@ -1068,6 +1141,79 @@ describe('the branches no example reaches', () => {
 		expect(caveats.join(' ')).toContain('not sent to the model');
 	});
 
+	it('puts every departure from the reference\'s defaults on the command line', async () => {
+		// The four settings that used to be dropped silently, leaving `reproduces` true on a command
+		// that would have run a DIFFERENT analysis. Each has a flag (cli.py:1835, 1840, 1841, 1844,
+		// 1845, 1850), so each is printed rather than caveated away.
+		const { loaded, dates, predict } = stubRun({ L: 12 });
+		loaded.notices.pdSubsampled = true; // as `prepareRun` sets it when the taxon cap bites
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: {
+				numTimePoints: 16, permutations: 20,
+				bandwidth: 0.2, tauPeak: 2e-4, tauAuc: 1e-6, keepDuplicates: true
+			}
+		});
+		const { command } = temporalReferenceCommand(r);
+		expect(command).toContain(`-s ${r.taxa_total}`);
+		expect(command).toContain('-bw 0.2');
+		expect(command).toContain(`--tau-peak ${2e-4}`);
+		expect(command).toContain(`--tau-auc ${1e-6}`);
+		expect(command).toContain('--keep-duplicates');
+		expect(command).toContain('--sweep-mode episodic');
+	});
+
+	it('prints nothing it does not have to: the defaults resolve to a bare command line', async () => {
+		// The auto bandwidth is recomputed from the record's own timespan and grid by the reference's
+		// own rule, so a run that did not override it prints no `-bw` — and a caller who passed the
+		// auto value by hand also prints none, correctly, because either command reproduces.
+		const { loaded, dates, predict } = stubRun({ L: 12 });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 16, permutations: 20 } });
+		const auto = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 16, permutations: 20, bandwidth: r.bandwidth_years }
+		});
+		for (const rec of [r, auto]) {
+			const { command } = temporalReferenceCommand(rec);
+			expect(command).not.toContain('-bw');
+			expect(command).not.toContain('--tau-peak');
+			expect(command).not.toContain('--tau-auc');
+			expect(command).not.toContain('--keep-duplicates');
+			expect(command).not.toContain('-s ');
+		}
+	});
+
+	it('names the resolved sweep mode, never `auto`, and lets a non-calendar run imply the collapse', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 12 });
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 16, permutations: 20, timeUnits: 'generations' }
+		});
+		const { command } = temporalReferenceCommand(r);
+		expect(r.regime.sweep_mode).toBe('fixation');
+		expect(command).toContain('--time-units generations');
+		expect(command).toContain('--sweep-mode fixation');
+		// `--keep-duplicates` is auto-enabled by a non-calendar unit on BOTH sides (cli.py:1845), so
+		// printing it would be noise, not honesty.
+		expect(r.regime.prune_duplicates).toBe(false);
+		expect(command).not.toContain('--keep-duplicates');
+	});
+
+	it('refuses an `inputs` key it does not recognise rather than ship a nameless summary', async () => {
+		// `_summary.json`'s "alignment" and "tree" come from `inputs` and from nowhere else, so a
+		// plausible-but-wrong key used to fall through to `null` and write `"alignment": ""` into a
+		// file every number of which is correct. A summary that cannot say what it analysed is worse
+		// than a refused one, and the caller always knows the names.
+		const { loaded, dates, predict } = stubRun({ L: 8 });
+		await expect(
+			runTemporal({ loaded, dates, predict, inputs: { alignment_name: 'h1n1.fasta', tree_name: 'h1n1.nwk' } })
+		).rejects.toThrow(/unknown `inputs` key 'alignment_name'/);
+		// An absent name is NOT an error: a pasted alignment in the browser genuinely has none.
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 10 }, inputs: {} });
+		expect(r.alignment).toBe(null);
+		expect(JSON.parse(temporalSummaryJsonText(r)).alignment).toBe('');
+	});
+
 	it('records the escape hatch, which the reference writes into no file at all', async () => {
 		// temporal.py:692-693 fires when the confirmed COUNT is zero on a calendar run that is not
 		// solitary, and then calls everything with `p_perm <= 0.10` OR a static `lrt >= 3.84` — two
@@ -1149,7 +1295,7 @@ describe('the branches no example reaches', () => {
 	});
 
 	it('names an explicit root, and flags the Alanine that an unknown residue becomes', async () => {
-		// UPSTREAM BUG TEMPORAL Q2 (temporal.py:355). The root taxon's gaps become index 0, so every
+		// UPSTREAM BUG TEMPORAL Q2 (temporal.py:365). The root taxon's gaps become index 0, so every
 		// other sequence reads as different from the root AT INVARIABLE CODONS TOO, which is the one
 		// configuration in which the model's outputs there are load-bearing. `run.js` therefore pins
 		// `scoreInvariableSites` back on rather than honouring a caller who turned it off.
@@ -1176,7 +1322,7 @@ describe('the branches no example reaches', () => {
 		const { loaded, dates, predict } = stubRun({ L: 8 });
 		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 10, permutations: 10, rootTaxon: 'nope' } });
 		expect(r.root.source).toBe('early-consensus');
-		// temporal.py:366's window: max(3, min(25, int(0.05*N))) — three for anything under 60.
+		// temporal.py:372's window: max(3, min(25, int(0.05*N))) — three for anything under 60.
 		expect(r.root.window).toBe(3);
 		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_ROOT_TAXON_NOT_FOUND');
 	});
@@ -1188,9 +1334,9 @@ describe('the branches no example reaches', () => {
 		expect(r.regime.sweep_mode).toBe('fixation');
 		expect(r.regime.non_calendar).toBe(true);
 		expect(r.regime.unit_label).toBe('gen');
-		// temporal.py:494: no ceiling on the bandwidth off the calendar, and no [0.05, 2.0] clamp.
+		// temporal.py:490-492: no ceiling on the bandwidth off the calendar, and no [0.05, 2.0] clamp.
 		expect(r.bandwidth_years).toBeGreaterThan(2.0);
-		// temporal.py:684: non-calendar is always the solitary regime, so the shape gate is bypassed.
+		// temporal.py:685: non-calendar is always the solitary regime, so the shape gate is bypassed.
 		expect(r.solitary_regime).toBe(true);
 		expect(r.warnings.map((w) => w.code)).toContain('TEMPORAL_UNITS_NOT_CALENDAR');
 		// And the quirk: the key still says "years" (upstream TEMPORAL Q10).
@@ -1215,5 +1361,131 @@ describe('the branches no example reaches', () => {
 		const { reproduces, caveats } = temporalReferenceCommand(r);
 		expect(reproduces).toBe(false);
 		expect(caveats.join(' ')).toContain('will not reproduce this run');
+	});
+});
+
+// =================================================================================================
+// THE REPRODUCTION LINE IN THE STATES A REVIEW FOUND AND NO EXAMPLE REACHES
+//
+// Every test here is a claim `temporalReferenceCommand` made that was FALSE — a `reproduces: true`
+// on a run that drew nothing, a command asking for a tree the run never used, an input name
+// accepted and then dropped, and the literal word `undefined` in a caveat. They are separated from
+// the block above because each one is the regression test for a specific defect, not a branch that
+// happened to be uncovered.
+// =================================================================================================
+describe('the reproduction line, in the states that used to lie', () => {
+	it('does not claim to reproduce a null that was CANCELLED at draw zero', async () => {
+		// `completed === 0, cancelled, NOT skipped` — the gap between the two conditions the branch
+		// used to test. The cancel is landed in the one window where it produces that state: the
+		// null reports `0 of B` before its loop's first abort check, so a `progress` callback that
+		// aborts there stops it between the deterministic half and the first shuffle.
+		const { loaded, dates, predict } = stubRun({ L: 12 });
+		const controller = new AbortController();
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 16, permutations: 400 },
+			signal: controller.signal,
+			progress: (phase, done) => {
+				if (phase === 'temporal-null' && done === 0) controller.abort();
+			}
+		});
+		expect(r.ok).toBe(true);
+		expect(r.permutations.completed).toBe(0);
+		expect(r.permutations.cancelled).toBe(true);
+		expect(r.permutations.skipped).toBe(false);
+		expect(r.permutations.tested).toBe(false);
+		const { command, reproduces, caveats } = temporalReferenceCommand(r);
+		expect(reproduces).toBe(false);
+		// And the command DESCRIBES the run it prints: `-B` used to be omitted entirely at zero
+		// draws, so the line did not even say which null a reader would get.
+		expect(command).toContain(`-B ${TEMPORAL_THRESHOLDS.permutationsReference}`);
+		const said = caveats.join(' ');
+		expect(said).toContain('before its first shuffle finished (0 of 400 requested)');
+		expect(said).toContain("the command's own default");
+		expect(said).toContain('NO permutation numbers');
+	});
+
+	it('does not claim to reproduce an interim record whose null has not started', async () => {
+		// The fourth no-draw state, and the same claim about the same absence: the `stage: 'scored'`
+		// payload has `permutations: null`, so the branch that reads the block used to be skipped
+		// entirely and the interim record printed `reproduces: true`.
+		const { loaded, dates, predict } = stubRun({ L: 10 });
+		/** @type {object|null} */
+		let interim = null;
+		await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 12, permutations: 10 },
+			onProgress: (p) => {
+				if (p.stage === 'scored' && interim === null) interim = p;
+			}
+		});
+		expect(interim).not.toBe(null);
+		expect(interim.permutations).toBe(null);
+		const { command, reproduces, caveats } = temporalReferenceCommand(interim);
+		expect(reproduces).toBe(false);
+		expect(caveats.join(' ')).toContain('no permutation block at all');
+		expect(command).toContain(`-B ${TEMPORAL_THRESHOLDS.permutationsReference}`);
+		expect(command).not.toContain('undefined');
+	});
+
+	it('prints the reference\'s own tree-free flag on a run that took TN93 distances', async () => {
+		// D22: no tree, or a tree with no usable branch lengths, goes pairwise TN93 straight into the
+		// MDS. That is `--no-tree` / `--use-tn93` upstream (cli.py:1829-1830) and NOT the default, so
+		// a command without it asked for patristic distances this run never computed.
+		const { loaded, dates, predict } = stubRun({ L: 10 });
+		loaded.notices.treeFree = { reason: 'no_tree', taxaOrder: 'alignment' };
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 10 } });
+		// The notice is carried through verbatim, camelCase key and all (`record.js`:282), which is
+		// how `pipeline.js` writes it into `notices`.
+		expect(r.primaeon.tree_free).toEqual({ reason: 'no_tree', taxaOrder: 'alignment' });
+		expect(temporalReferenceCommand(r).command).toContain('--use-tn93');
+		// A tree-free run that was HANDED a tree prints both: the reference accepts the file and
+		// ignores it under the flag, which is exactly what happened here.
+		const handed = temporalReferenceCommand(r, { tree: 'h1n1.nwk' }).command;
+		expect(handed).toContain('-t h1n1.nwk');
+		expect(handed).toContain('--use-tn93');
+		// And a run that really used its tree prints no flag at all.
+		const withTree = await runTemporal({
+			loaded: { ...loaded, notices: { duplicatesCollapsed: 0 } },
+			dates, predict, options: { numTimePoints: 12, permutations: 10 }
+		});
+		expect(withTree.primaeon.tree_free).toBe(null);
+		expect(temporalReferenceCommand(withTree).command).not.toContain('--use-tn93');
+	});
+
+	it('carries the third accepted `inputs` key through to the record and onto the line', async () => {
+		// `assertInputNames` accepts `dates`, and an accepted key that reaches nothing is the silent
+		// drop the assertion exists to prevent: `_summary.json` has no dates key upstream, so this
+		// one lands on `dates.file` and is what `-d` prints when the caller named no `-d` itself.
+		const { loaded, dates, predict } = stubRun({ L: 10 });
+		const r = await runTemporal({
+			loaded, dates, predict,
+			options: { numTimePoints: 12, permutations: 10 },
+			inputs: { alignment: 'h1n1.fasta', dates: 'meta.csv' }
+		});
+		expect(r.dates.file).toBe('meta.csv');
+		expect(temporalReferenceCommand(r).command).toContain('-d meta.csv');
+		// An explicit name still wins over the recorded one, and a run with neither prints no `-d`.
+		expect(temporalReferenceCommand(r, { dates: 'other.tsv' }).command).toContain('-d other.tsv');
+		const headers = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 10 } });
+		expect(headers.dates.file).toBe(null);
+		expect(temporalReferenceCommand(headers).command).not.toContain('-d ');
+	});
+
+	it('never prints the word `undefined`, whatever the permutation block is missing', async () => {
+		// `-B ${perm.completed}` on a block with no `completed` printed the literal `-B undefined`,
+		// in the command AND in the caveat quoting it. The record is a real one with the field
+		// removed, because that is the shape a partial or older block actually has.
+		const { loaded, dates, predict } = stubRun({ L: 10 });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 10 } });
+		expect(r.permutations.completed).toBe(10);
+		delete r.permutations.completed;
+		const { command, reproduces, caveats } = temporalReferenceCommand(r);
+		expect(command).not.toContain('undefined');
+		expect(caveats.join(' ')).not.toContain('undefined');
+		expect(command).toContain(`-B ${TEMPORAL_THRESHOLDS.permutationsReference}`);
+		// A block that cannot say how many draws it made is a block with no permutation numbers.
+		expect(reproduces).toBe(false);
+		expect(caveats.join(' ')).toContain('completed no shuffles');
 	});
 });

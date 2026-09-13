@@ -471,7 +471,7 @@ test.describe('flow 4 — temporal selection', () => {
 		// The offer states its cost as arithmetic, with both unknowable counts named as ceilings.
 		await expect(temporal).toContainText('draws × candidate codons × dated sequences × grid points');
 		await expect(temporal).toContainText('Both counts are ceilings');
-		await expect(temporal).toContainText('temporal.py:512');
+		await expect(temporal).toContainText('temporal.py:510, 514');
 		// Two figures on the page so far — coverage and the clock preview — and neither is this
 		// section's: a pending section renders no figcaption (web/DESIGN.md §3).
 		await expect(page.locator('figcaption')).toHaveCount(2);
