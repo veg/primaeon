@@ -208,7 +208,13 @@ figures. The bound is what protects the server; the figure is what it cost on th
 
 23 refusal codes, every one `kind: "input"` on the MCP and `422 {error:{kind:"input", code}}` on the
 server, each with a metadata-specific hint (`mcp/src/time.js` `TIME_REFUSAL_HINTS`, audited by
-`mcp/test/dates.test.js`):
+`mcp/test/dates.test.js`).
+
+> **Superseded by Phase 6b (BEAST XML), 2026-09-13.** `DATES_BEAST_XML_UNSUPPORTED` is RETIRED — the
+> date layer reads BEAST 1.x/2.x XML now — and four narrower refusals took its place
+> (`DATES_XML_UNPARSABLE`, `DATES_XML_UNSAFE`, `DATES_BEAST_NOT_BEAST`, `DATES_BEAST_NO_DATES`), so
+> the count is 26 and the grid below is one line out of date. The server also gained one refusal of
+> its own, `ALIGNMENT_IS_XML`. See CLAUDE.md's release note for that phase.
 
 ```
 DATES_SOURCE_UNREADABLE     DATES_SOURCE_KIND_UNKNOWN   DATES_BEAST_XML_UNSUPPORTED
@@ -413,7 +419,9 @@ prerequisites (`veg/primaeon` exists, Pages deploys, and the engine checkout use
 Not gaps; decisions, each with a reason and each visible in the product rather than silent.
 
 - **BEAST XML** is refused by name (`DATES_BEAST_XML_UNSUPPORTED`) rather than half-read; the
-  reference reads one at `dating.py:433-434`.
+  reference reads one at `dating.py:433-434`. **NO LONGER TRUE — reversed by Phase 6b
+  (2026-09-13):** the owner asked for the feature, `parse_beast_xml` (dataset.py:84-233) was ported
+  into `runtime/src/dates/beast.js`, and all four surfaces read one. The refusal is gone.
 - **`hyphaeon dating`'s power-law clock (D33), `--loocv`, `--bootstrap`** and its `poisson`,
   `residual-boot`, `site-boot` and `jackknife` interval methods are not ported and are refused by
   the schema. `record.primaeon.estimators_not_built` names each and why, and the reproduction line

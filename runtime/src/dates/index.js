@@ -13,6 +13,12 @@
  * `compileDateRegex` validates the pattern field as it is typed, and `archival1959Candidates` names
  * what the 1959 checkbox would claim before it is ticked.
  *
+ * A BEAST XML IS THE ONE SOURCE THAT CARRIES MORE THAN DATES. `parseBeastXml` returns the
+ * alignment and the starting tree as well, exactly as `parse_beast_xml` does, and the CALLER places
+ * them — the reference fills each slot only if it is still empty (dating.py:2467-2471) and a drop
+ * zone has no argument order, so that decision is the surface's. `beastToFasta` turns the XML's
+ * sequences into an alignment every other entry point already speaks.
+ *
  * NOTHING HERE OPENS A FILE. Every entry point takes TEXT the caller already read, so one function
  * serves a browser File, an MCP argument and a server upload, and this directory imports nothing
  * from `node:fs` or `node:path`. That is asserted, not merely intended: `date-ingestion.test.js`
@@ -25,6 +31,28 @@ export {
 	walkAuspiceDates,
 	readJsonDateMap
 } from './auspice.js';
+export {
+	parseBeastXml,
+	beastDateParse,
+	beastDateValue,
+	beastDatesForTaxa,
+	beastToFasta,
+	fastaNameHazard,
+	unsafeFastaNames,
+	BeastFastaError,
+	FASTA_NAME_HAZARDS
+} from './beast.js';
+export {
+	parseXmlDocument,
+	iterElements,
+	findAllDescendants,
+	findChild,
+	createWorkBudget,
+	chargeWork,
+	XmlReadError,
+	XML_LIMITS,
+	XML_REFUSALS
+} from './xml.js';
 export {
 	sniffDelimiter,
 	delimiterFromExtension,

@@ -8,7 +8,7 @@ association, a molecular clock and temporal selection on top. This repository ho
 
 | Workspace | What it is |
 |---|---|
-| `web/` | The site. SvelteKit 2 + Svelte 5, fully prerendered static build. Drop an alignment and one report streams in; every analysis runs in the browser under ONNX Runtime WASM. `/time` is the dated route: read the sampling dates, fit the clock, and run temporal selection. Sequences never leave the browser on this path. |
+| `web/` | The site. SvelteKit 2 + Svelte 5, fully prerendered static build. Drop an alignment and one report streams in; every analysis runs in the browser under ONNX Runtime WASM. `/time` is the dated route: read the sampling dates, fit the clock, and run temporal selection. It takes a BEAST 1.x/2.x XML too, and one such file can be the alignment, the dates and the starting tree at once. Sequences never leave the browser on this path. |
 | `runtime/` | `@veg/hyphaeon-runtime` (private): the ONNX sessions for the browser and Node, manifest loading and sha256 verification, the pipelines and the report orchestrator over the library. Shared by the three surfaces below. |
 | `mcp/` | `@veg/hyphaeon-mcp`: one `hyphaeon_analyze` tool that runs the whole report in-process, the per-pillar tools (including `hyphaeon_dates`, `hyphaeon_dating` and `hyphaeon_temporal`) and MEME concordance, over stdio or streamable HTTP. |
 | `server/` | `@veg/hyphaeon-server`: the REST job API (SSE progress, progressive sections, stop-and-keep cancel) and the MCP mounted at `/mcp` behind an auto-approving OAuth ceremony, for a claude.ai connector. |
@@ -104,7 +104,9 @@ Fifteen tools: `hyphaeon_validate`, `hyphaeon_analyze` (the whole report), the n
 — `hyphaeon_meme`, `hyphaeon_busted`, `hyphaeon_epistasis`, `hyphaeon_dms`, `hyphaeon_phenotype`,
 `hyphaeon_dates`, `hyphaeon_dating`, `hyphaeon_temporal`, `hyphaeon_evaluate` — and `job_status`,
 `get_results`, `cancel_job`, `list_models`. `hyphaeon_dates` loads no model at all: it reads the
-sampling dates out of the sequence names or a metadata document and reports what it understood.
+sampling dates out of the sequence names or a metadata document — FASTA headers, an Auspice JSON, a
+name-to-date map, a CSV/TSV or a BEAST 1.x/2.x XML — and reports what it understood, including the
+rule that read each date.
 `hyphaeon_temporal` is always a job, and its record is paged through `get_results section=`.
 `mcp/README.md` is the reference.
 
@@ -117,8 +119,11 @@ curl -s localhost:7040/api/v1/health
 
 Ten analyses on `POST /api/v1/jobs`: `analyze` (the whole report), `meme`, `busted`, `epistasis`,
 `dms`, `phenotype`, `dates`, `dating`, `temporal` and `evaluate`. The three time analyses take a
-second input, `dates_file` — an Auspice JSON, a name-to-date map or a CSV/TSV, as text in the body,
-never a server path. `POST /api/v1/jobs/:id/cancel` stops a run and KEEPS what it produced (a
+second input, `dates_file` — an Auspice JSON, a name-to-date map, a CSV/TSV or a BEAST 1.x/2.x XML,
+as text in the body, never a server path. A BEAST XML gives up only its DATES here, exactly as
+`hyphaeon dating -d run.xml` does (dating.py:433-442); the alignment and starting tree such a file
+also carries are reported in `date_review.beast` and not used, and an XML sent as the `alignment`
+is refused with `ALIGNMENT_IS_XML` rather than misparsed. `POST /api/v1/jobs/:id/cancel` stops a run and KEEPS what it produced (a
 temporal run classified at the draw count its null actually reached); `DELETE` is what removes it.
 
 `deploy/README.md` is the runbook: what the host needs (Node and the model files, nothing else),

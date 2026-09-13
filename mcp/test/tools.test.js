@@ -57,6 +57,25 @@ describe("tool registry", () => {
     expect(dates.inputSchema.properties.tree).toBeUndefined();
     expect(dates.inputSchema.properties.model_variant).toBeUndefined();
 
+    // THE BEAST CONTRACT, ON THE SCHEMA THE CLIENT ACTUALLY READS. `dates_file` is `-d`, and `-d
+    // run.xml` upstream takes the dates out of a BEAST XML and nothing else (dating.py:433-442);
+    // `--beast`, the door that also fills the alignment and tree slots, is not offered because an
+    // MCP call already names both. The description has to say all of that, and it has to say which
+    // XML is still refused, or a client learns the capability by trial.
+    const datesFile = dates.inputSchema.properties.dates_file.description;
+    expect(datesFile).toMatch(/BEAST/);
+    expect(datesFile).not.toMatch(/DATES_BEAST_XML_UNSUPPORTED/);
+    expect(datesFile).toMatch(/ONLY THE DATES/);
+    expect(datesFile).toMatch(/dating\.py:433-442/);
+    for (const code of ["DATES_XML_UNPARSABLE", "DATES_XML_UNSAFE", "DATES_BEAST_NOT_BEAST", "DATES_BEAST_NO_DATES"]) {
+      expect(datesFile, code).toContain(code);
+    }
+    // The two things that make a BEAST number different from every other number in this build:
+    // the reference's own calendar arithmetic, and `direction=` being read by nothing.
+    expect(datesFile).toMatch(/2\.815/);
+    expect(datesFile).toMatch(/DATES_BEAST_DIRECTION_IGNORED/);
+    expect(dates.inputSchema.properties.date_source_kind.enum).toEqual(["auto", "auspice", "json-map", "table", "beast"]);
+
     const dating = tools.find((t) => t.name === "hyphaeon_dating");
     expect(dating.description).toMatch(/MODEL-FREE BY DEFAULT/);
     expect(dating.description).toMatch(/DATING_GRAPH_UNAVAILABLE/);
@@ -179,7 +198,11 @@ describe("tool registry", () => {
     // without loading a graph — so `use_model: true` is answerable before a run rather than inside one.
     expect(body.native.dating_graph).toEqual({ general: "declared", viral: "declared" });
     expect(body.native.date_layer.engine).toMatch(/no model/);
-    expect(body.native.date_layer.beast_xml).toMatch(/refused/);
+    // BEAST XML is read, and list_models says which dialects and what is taken — "refused" here
+    // would send a client to export a CSV it does not need.
+    expect(body.native.date_layer.beast_xml).toMatch(/^read /);
+    expect(body.native.date_layer.beast_xml).toMatch(/DATES ONLY/);
+    expect(body.native.date_layer.sources.join(" ")).toMatch(/beast/);
     // D22 / Phase 3: no estimator, no second engine.
     expect(body.native.branch_length_estimator).toBeNull();
     expect(body.native.tree_free).toMatch(/tn93/);

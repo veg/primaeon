@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignmentHeaders, classifyDropped, isDateSource } from './sources';
+import { alignmentHeaders, classifyDropped, isDateSource, isMetadataSource } from './sources';
 import { available, example } from './fixtures';
 
 describe('telling the dropped files apart', () => {
@@ -30,9 +30,20 @@ describe('telling the dropped files apart', () => {
 		expect(classifyDropped('plaintext', 'x.json')).toBe('unknown');
 	});
 
-	it('recognises a BEAST XML by name and by content, and never tries to parse it', () => {
+	// The XML reader landed, so the classifier no longer decides by the name FIRST: the bytes decide,
+	// and `.xml` is the last resort. That is not a cosmetic reordering — while the name came first, a
+	// metadata CSV a reader had named `dates.xml` went to the XML reader and was refused unread.
+	// `lib/time/beast.test.ts` carries the rest of the routing, including the two reference documents.
+	it('recognises a BEAST XML by its content, whatever it is named', () => {
 		expect(classifyDropped('<?xml version="1.0"?><beast></beast>', 'run.xml')).toBe('beast');
+		expect(classifyDropped('<beast version="2.6"><data/></beast>', 'dropped')).toBe('beast');
+	});
+
+	it('reads a `.xml`-named table as the table it is, and keeps the name only as a last resort', () => {
+		expect(classifyDropped('taxon,date\na,2021\nb,2022\n', 'dates.xml')).toBe('table');
 		expect(classifyDropped('anything at all', 'run.xml')).toBe('beast');
+		expect(classifyDropped('anything at all', 'run.xml.gz')).toBe('beast');
+		expect(classifyDropped('anything at all', 'notes')).toBe('unknown');
 	});
 
 	// The two reference pillars disagree here — temporal.py:274 hands pandas the sniffer, dating.py:445
@@ -46,10 +57,15 @@ describe('telling the dropped files apart', () => {
 		expect(classifyDropped('taxon,date\na,2021\nb,2022\n', 'meta.txt')).toBe('table');
 	});
 
-	it('names the three things dates can be read out of', () => {
+	it('names the four things dates can be read out of, and the three that are ONLY dates', () => {
 		expect(isDateSource('table')).toBe(true);
 		expect(isDateSource('auspice')).toBe(true);
 		expect(isDateSource('json-map')).toBe(true);
+		// A BEAST XML is a date source AND MORE — it can carry the alignment and a starting tree — so
+		// it is a date source but not a metadata-slot file; `acceptFiles` routes it through
+		// `lib/time/beast.ts` instead.
+		expect(isDateSource('beast')).toBe(true);
+		expect(isMetadataSource('beast')).toBe(false);
 		expect(isDateSource('alignment')).toBe(false);
 		expect(isDateSource('tree')).toBe(false);
 	});

@@ -60,6 +60,7 @@ export {
 	datingDownloads,
 	datingDownloadNotes,
 	datingReferenceCommand,
+	DATE_DOCUMENT_SOURCES,
 	DATING_FLOAT_KEYS,
 	DATING_INT_KEYS
 } from './results.js';

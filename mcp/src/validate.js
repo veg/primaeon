@@ -130,8 +130,52 @@ const LIBRARY_DESCRIPTIONS = {
  */
 const DATE_DESCRIPTIONS = Object.freeze({
   DATES_SOURCE_UNREADABLE: "[refuse] The metadata file did not parse as the kind it was read as",
-  DATES_SOURCE_KIND_UNKNOWN: "[refuse] Not an Auspice JSON, a name-to-date JSON object, or a delimited table",
-  DATES_BEAST_XML_UNSUPPORTED: "[refuse] BEAST XML: the reference reads one (dating.py:433-434), this build does not",
+  DATES_SOURCE_KIND_UNKNOWN: "[refuse] Not an Auspice JSON, a name-to-date JSON object, a BEAST XML, or a delimited table",
+  DATES_XML_UNPARSABLE:
+    "[refuse] The XML is not well-formed and nothing in it could be read; the reference refuses the same file for the " +
+    "same reason (dataset.py:109-110). A `[&rate=…]` tree annotation written with a bare `&` is the usual cause",
+  DATES_XML_UNSAFE:
+    "[refuse] The XML was refused before it was read — an external or parameter entity, or past this reader's size, " +
+    "depth or entity-expansion budget. Nothing in it was fetched or opened",
+  DATES_BEAST_NOT_BEAST:
+    "[refuse] Well-formed XML holding nothing a BEAST file holds: no <alignment>/<data> sequences, no <taxon><date>, " +
+    "no date <trait>, no starting tree. A namespaced document lands here too, because `parse_beast_xml` searches " +
+    "UNQUALIFIED tags (dataset.py:123) — upstream reads such a file as an empty result and dates nothing",
+  DATES_BEAST_NO_DATES:
+    "[refuse, or warn when the headers rescued the run] The XML is a BEAST file and carries sequences or a starting " +
+    "tree, but no sampling date (dataset.py:158-188 finds neither form)",
+  DATES_BEAST_NAMESPACED:
+    "The document declares an XML namespace, so `parse_beast_xml`'s unqualified searches match nothing in it " +
+    "(dataset.py:123). Replicated rather than corrected, and named rather than shown as an empty result",
+  DATES_BEAST_MULTIPLE_ALIGNMENTS:
+    "More than one <alignment>/<data> block was present and exactly ONE was used: dataset.py:152 is " +
+    "`max(candidates, key=len)`, which counts TAXA (not sites) and keeps the FIRST maximal block on a tie, so a " +
+    "partitioned analysis contributes one partition",
+  DATES_BEAST_SEQ_PREFIX:
+    "The `seq_` reconciliation fired (dataset.py:192-202): a sequence was RENAMED by dropping the prefix to meet a " +
+    "dated taxon, and/or a date was copied onto the unprefixed name. The rename has no collision check upstream and " +
+    "the copy leaves the `seq_` key, so the date count can exceed the number of dated sequences",
+  DATES_BEAST_DIRECTION_IGNORED:
+    "A <date> carries `direction=` and/or `units=` and NEITHER is read: `grep -n direction` over hyphaeon/dataset.py " +
+    "returns nothing, so the value is taken as a forward decimal year whatever it says. A backwards-dated file comes " +
+    "out mirrored in time, with no error anywhere upstream",
+  DATES_BEAST_TRAIT_NOT_DATE:
+    "A <trait> whose name is not `date` was read as dates: dataset.py:177-178 is a SUBSTRING test, so `dateBackward` " +
+    "— ages before the present — is read as a set of forward calendar years",
+  DATES_BEAST_DATE_SCALE:
+    "Dates were read by the BEAST reader's OWN arithmetic, which is not a decimal year: `YYYY-MM-DD` is " +
+    "`year + (month-1)/12 + (day-1)/365.25` and `YYYY-MM` is `year + (month-0.5)/12` (dataset.py:71-80). MEASURED " +
+    "against every other source in this build: mean 0.73 days, worst 2.815. `hyphaeon dating --beast` agrees with " +
+    "these numbers; a CSV of the same dates will not",
+  DATES_BEAST_DATE_UNGATED:
+    "A date outside the year range every other source here is gated on was KEPT, or a non-finite one was read: " +
+    "dataset.py:67-69 tries `float(s)` first and keeps whatever it returns, so '1799', '50', '-3', '1e9', 'nan' and " +
+    "'inf' are all accepted. The out-of-range values are the reference's own answer and stand; the non-finite ones " +
+    "cannot be used and their taxa are undated",
+  DATES_BEAST_CARRIES_INPUTS:
+    "[info] The XML carries sequences and/or a starting tree as well as dates. `dates_file` is `-d`, which takes the " +
+    "dates and nothing else (dating.py:433-442), so those are reported in date_review.beast and never substituted " +
+    "for the alignment and tree that were passed",
   DATES_TABLE_NO_DATE_COLUMN: "[refuse] No date column was found in the table; name it with date_col",
   DATES_TABLE_COLUMN_GUESSED: "A name or date column was discovered rather than named; the review says which and why",
   DATES_DELIMITER_GUESSED: "The column separator was read from the file's own content",

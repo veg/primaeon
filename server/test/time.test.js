@@ -183,7 +183,13 @@ describe("the date layer is checked at the door, before a worker is spent", () =
     });
   }
 
-  it.skipIf(!HAVE_EXAMPLES)("refuses a BEAST XML by name rather than reading half of it", async () => {
+  // WHAT THIS USED TO ASSERT. Until Phase 6b this case was "refuses a BEAST XML by name rather
+  // than reading half of it", and the code was DATES_BEAST_XML_UNSUPPORTED. The build reads one
+  // now (runtime/src/dates/beast.js, a port of dataset.py:84-233), so the assertion is replaced
+  // rather than removed: the same document — a <beast> with an empty <taxa> and nothing else — is
+  // still refused at the door, with the narrower code that says WHICH way it failed, and the
+  // describe block below is the other half, the file that is read.
+  it.skipIf(!HAVE_EXAMPLES)("refuses an XML holding nothing a BEAST file holds, now by what it lacks", async () => {
     const res = await post({
       analysis: "dating",
       alignment: ex().alignment,
@@ -191,8 +197,11 @@ describe("the date layer is checked at the door, before a worker is spent", () =
       names: { dates_file: "dates.xml" }
     });
     expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe("DATES_BEAST_XML_UNSUPPORTED");
-    expect(res.body.error.hint).toMatch(/two-column CSV/);
+    expect(res.body.error.kind).toBe("input");
+    expect(res.body.error.code).toBe("DATES_BEAST_NOT_BEAST");
+    expect(res.body.error.hint).toMatch(/two-column CSV|CSV\/TSV/);
+    // The retired code must not reappear anywhere in the answer.
+    expect(JSON.stringify(res.body)).not.toMatch(/DATES_BEAST_XML_UNSUPPORTED/);
   });
 
   it.skipIf(!HAVE_EXAMPLES)("refuses a metadata document that is neither Auspice, a map nor a table", async () => {
@@ -246,6 +255,290 @@ describe("the date layer is checked at the door, before a worker is spent", () =
     // `dates` NEVER refuses for a gate: reporting it is the analysis.
     expect(body.ok).toBe(true);
     expect(body.gate.blocking.map((b) => b.code)).toContain("DATES_BARE_NUMBER_MAJORITY");
+  });
+});
+
+// ── Phase 6b: a BEAST XML is a date source, and this door reads one ──────────────────────────
+//
+// `dates_file` used to refuse `.xml` on the NAME, unread (DATES_BEAST_XML_UNSUPPORTED). The
+// runtime now ports `parse_beast_xml` (dataset.py:84-233), so the contract this surface owes is
+// the one below, and each clause is one that would ship a plausible wrong answer if it were
+// missing:
+//
+//  - THE DOOR AGREES WITH THE READER. A BEAST XML that dates the run is a 202, not a 422, and the
+//    dates it produces are the dates the CSV of the same taxa produces — asserted as an
+//    EQUIVALENCE against the bundled metadata table rather than against numbers typed out here,
+//    because a typed number would pass while both paths were wrong together.
+//  - EVERY REFUSAL IS STILL `kind: "input"` WITH A CODE AND A METADATA HINT. Four replace the one:
+//    DATES_XML_UNPARSABLE, DATES_XML_UNSAFE, DATES_BEAST_NOT_BEAST, DATES_BEAST_NO_DATES. Phase 3
+//    classified exactly one refusal of this shape as a SERVER fault and Phase 4 had to fix it, so
+//    the kind and the hint are asserted, not just the code.
+//  - THE READER HAS NO FILESYSTEM AND NO NETWORK. An external-entity document is refused, and the
+//    answer carries none of what the entity pointed at. That is the same property e2e/server.spec.ts
+//    asserts for subprocesses, applied to the one new parser in the tree.
+//  - `POST /validate` IS A REHEARSAL. It answers what `POST /jobs` will answer, for the same XML.
+describe("a BEAST XML is a date source (Phase 6b)", () => {
+  const metadata = () => {
+    const dir = engineExamplesDir();
+    return dir ? readFileSync(path.join(dir, "H5N1_HA_metadata.csv"), "utf8") : null;
+  };
+  /** `[[taxon, date], ...]` from the bundled H5N1 metadata table — the reference the XMLs are built from. */
+  const pairs = () =>
+    metadata()
+      .trim()
+      .split(/\r?\n/)
+      .slice(1)
+      .map((line) => line.split(","))
+      .map(([taxon, date]) => [taxon, date]);
+
+  /** The BEAST 1.x shape: `<taxa>` of `<taxon id><date value>` (dataset.py:158-174). Dates only. */
+  const beast1 = () =>
+    '<?xml version="1.0" standalone="yes"?>\n<beast version="1.10.4">\n<taxa id="taxa">\n' +
+    pairs()
+      .map(([t, d]) => '<taxon id="' + t + '"><date value="' + d + '" direction="forwards" units="years"/></taxon>')
+      .join("\n") +
+    "\n</taxa>\n</beast>\n";
+
+  /** The BEAST 2.x shape: one `<trait traitname="date" value="a=…,b=…">` (dataset.py:176-188). */
+  const beast2 = () =>
+    '<?xml version="1.0" encoding="UTF-8"?>\n<beast namespace="beast.evolution.alignment" version="2.6">\n' +
+    '<trait id="dateTrait" spec="beast.evolution.tree.TraitSet" traitname="date" value="\n' +
+    pairs()
+      .map(([t, d]) => t + "=" + d)
+      .join(",\n") +
+    '"/>\n</beast>\n';
+
+  it.skipIf(!HAVE_EXAMPLES)("BEAST 1 dates the same taxa, with the same values, as the metadata CSV", async () => {
+    const ex = engineExample("H5N1_HA_geo", { dates: "H5N1_HA_metadata.csv" });
+    const xml = beast1();
+    const viaXml = await run({ analysis: "dates", alignment: ex.alignment, dates_file: xml, names: { alignment: ex.names.alignment, dates_file: "h5n1.xml" } });
+    expect(viaXml.view.status, JSON.stringify(viaXml.view.error)).toBe("completed");
+    const fromXml = (await request(handle.app).get("/api/v1/jobs/" + viaXml.id + "/result")).body;
+
+    const viaCsv = await run({ analysis: "dates", alignment: ex.alignment, dates_file: ex.dates_file, names: ex.names });
+    const fromCsv = (await request(handle.app).get("/api/v1/jobs/" + viaCsv.id + "/result")).body;
+
+    // The XML is read as a BEAST document and says so; the CSV is still read as a table.
+    expect(fromXml.date_review.source).toBe("beast");
+    expect(fromXml.date_review.source_kind).toBe("beast");
+    expect(fromCsv.date_review.source).toBe("table");
+
+    // THE EQUIVALENCE. Same taxa dated, same values, same axis — the whole point of the port.
+    expect(fromXml.date_review.coverage.dated).toBe(fromCsv.date_review.coverage.dated);
+    expect(fromXml.date_review.coverage.taxa_total).toBe(fromCsv.date_review.coverage.taxa_total);
+    expect(fromXml.date_review.coverage.from_beast).toBe(fromXml.date_review.coverage.dated);
+    expect(fromXml.date_review.span).toEqual(fromCsv.date_review.span);
+    const valueOf = (doc) => new Map(doc.date_review.rows.filter((r) => Number.isFinite(r.value)).map((r) => [r.taxon, r.value]));
+    const xs = valueOf(fromXml);
+    const cs = valueOf(fromCsv);
+    expect(xs.size).toBe(cs.size);
+    for (const [taxon, v] of cs) expect(xs.get(taxon)).toBeCloseTo(v, 9);
+
+    // These dates are bare decimal years, so the reference's own parser returns them unchanged and
+    // its calendar formula — which differs from the library's by up to 2.815 days — is not in play.
+    expect(fromXml.date_review.by_rule.beast_float).toBe(fromXml.date_review.coverage.dated);
+  });
+
+  it.skipIf(!HAVE_EXAMPLES)("BEAST 2's date TraitSet reaches the same answer as BEAST 1's <date> elements", async () => {
+    const ex = engineExample("H5N1_HA_geo", { dates: "H5N1_HA_metadata.csv" });
+    const one = await run({ analysis: "dates", alignment: ex.alignment, dates_file: beast1(), names: { dates_file: "b1.xml" } });
+    const two = await run({ analysis: "dates", alignment: ex.alignment, dates_file: beast2(), names: { dates_file: "b2.xml" } });
+    const a = (await request(handle.app).get("/api/v1/jobs/" + one.id + "/result")).body;
+    const b = (await request(handle.app).get("/api/v1/jobs/" + two.id + "/result")).body;
+    expect(b.date_review.coverage.dated).toBe(a.date_review.coverage.dated);
+    expect(b.date_review.span).toEqual(a.date_review.span);
+  });
+
+  it.skipIf(!HAVE_EXAMPLES)("a BEAST XML carries a dating job end to end, and the file lands as submitted", async () => {
+    const ex = engineExample("H5N1_HA_geo");
+    const xml = beast1();
+    const out = await run({ analysis: "dating", alignment: ex.alignment, dates_file: xml, names: { alignment: ex.names.alignment, dates_file: "h5n1_beast.xml" } });
+    expect(out.view.status, JSON.stringify(out.view.error)).toBe("completed");
+    // Written verbatim under the kind-neutral name: the server does not interpret the document
+    // before the date layer sniffs it, and a BEAST XML did not change that (src/jobs.js).
+    expect(out.view.inputs.files.dates_file).toBe("dates.txt");
+    expect(readFileSync(path.join(config.jobsDir, out.id, "dates.txt"), "utf8")).toBe(xml);
+    const doc = (await request(handle.app).get("/api/v1/jobs/" + out.id + "/result")).body;
+    expect(doc.provenance.preprocessing.date_source).toBe("beast");
+    expect(doc.provenance.reference_command.command).toMatch(/ -d h5n1_beast\.xml /);
+  });
+
+  /**
+   * B1 AND B2 ON THIS SURFACE. A BEAST XML passed as `dates_file` IS the document `-d` names, so
+   * the reproduction line must not answer "not every date on this run came from it" — it did, on
+   * every BEAST-sourced run, because the source set it checked against was three hard-coded words
+   * that `'beast'` never joined. And `match_tiers_available` must be the ladder that actually ran,
+   * because a BEAST source runs the eight-tier one.
+   */
+  it.skipIf(!HAVE_EXAMPLES)("says the dates DID come from the file on the `-d` line, and publishes the ladder that ran", async () => {
+    const ex = engineExample("H5N1_HA_geo");
+    const out = await run({
+      analysis: "dating",
+      alignment: ex.alignment,
+      dates_file: beast1(),
+      names: { alignment: ex.names.alignment, dates_file: "h5n1_beast.xml" }
+    });
+    expect(out.view.status, JSON.stringify(out.view.error)).toBe("completed");
+    const doc = (await request(handle.app).get("/api/v1/jobs/" + out.id + "/result")).body;
+    const ref = doc.provenance.reference_command;
+    expect(ref.command).toMatch(/ -d h5n1_beast\.xml /);
+    expect(ref.caveats.join(" ")).not.toMatch(/not every date on this run came from it/);
+    expect(ref.caveats.join(" ")).not.toMatch(/were read from the sequence names by this build/);
+
+    // The same document through `analysis: "dates"` publishes the BEAST ladder.
+    const review = await run({ analysis: "dates", alignment: ex.alignment, dates_file: beast1(), names: { dates_file: "h5n1_beast.xml" } });
+    const body = (await request(handle.app).get("/api/v1/jobs/" + review.id + "/result")).body;
+    expect(body.date_review.source_kind).toBe("beast");
+    expect(body.match_tiers_available).toContain("seq_prefix_stripped");
+    for (const tier of Object.keys(body.date_review.match_tiers)) {
+      expect(body.match_tiers_available, tier).toContain(tier);
+    }
+  });
+
+  /**
+   * The four narrower refusals that replaced DATES_BEAST_XML_UNSUPPORTED, each raised by a document
+   * that reaches it for a different reason.
+   *
+   * `UNDATABLE` is the alignment for the no-dates case ON PURPOSE: with a header-datable alignment
+   * the same XML is a WARNING rather than a refusal, because the headers rescued the run — the
+   * DATES_TABLE_NO_MATCH precedent — and asserting a refusal there would pin the wrong behaviour.
+   *
+   * @type {Array<[string, string, string, string]>} label, dates_file, alignment, expected code
+   */
+  const XML_REFUSALS = [
+    ["not well-formed", '<?xml version="1.0"?><beast><taxa><taxon id="a"></beast>', null, "DATES_XML_UNPARSABLE"],
+    [
+      // A BEAST tree annotation written with a bare `&` is not well-formed XML, and upstream raises
+      // on the WHOLE document rather than on the tree (dataset.py:109-110).
+      "a bare & in a newick annotation",
+      '<?xml version="1.0"?><beast><newick>((a:1[&rate=0.1],b:2):0);</newick></beast>',
+      null,
+      "DATES_XML_UNPARSABLE"
+    ],
+    [
+      // 600 deep, above the reader's own nesting cap; refused before the document is walked.
+      "nested past the reader's cap",
+      '<?xml version="1.0"?><beast>' + "<x>".repeat(600) + "</x>".repeat(600) + "</beast>",
+      null,
+      "DATES_XML_UNSAFE"
+    ],
+    ["well-formed XML that is not BEAST", '<?xml version="1.0"?><root><a/></root>', null, "DATES_BEAST_NOT_BEAST"],
+    [
+      // MEASURED against the reference: ElementTree names a namespaced element `{uri}data`, and
+      // `parse_beast_xml` searches UNQUALIFIED tags, so upstream reads this file as empty and dates
+      // nothing. This build refuses it and the hint says why, rather than showing an empty result.
+      "a namespaced BEAST 2 document the reference reads as empty",
+      '<beast xmlns="http://beast2.org" version="2.6"><data><sequence taxon="a" value="ATG"/></data></beast>',
+      null,
+      "DATES_BEAST_NOT_BEAST"
+    ],
+    [
+      "a BEAST file with sequences but no sampling date",
+      '<?xml version="1.0"?><beast version="1.10.4"><alignment id="aln"><sequence><taxon idref="alpha"/>ATGATGATGATG</sequence></alignment></beast>',
+      UNDATABLE,
+      "DATES_BEAST_NO_DATES"
+    ]
+  ];
+
+  for (const [label, datesFile, alignment, code] of XML_REFUSALS) {
+    it.skipIf(!HAVE_EXAMPLES)(label + " -> 422 " + code, async () => {
+      const res = await post({
+        analysis: "dating",
+        alignment: alignment || engineExample("H5N1_HA_geo").alignment,
+        dates_file: datesFile,
+        names: { dates_file: "x.xml" }
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error.kind).toBe("input");
+      expect(res.body.error.code).toBe(code);
+      expect(res.body.error.hint).toBeTruthy();
+      // Not a server fault, and not the alignment's hint: this is someone's metadata document.
+      expect(res.body.error.hint).not.toMatch(/report it to the operator/);
+      expect(res.body.error.hint).not.toMatch(/in-frame codon alignment \(FASTA/);
+    });
+  }
+
+  it.skipIf(!HAVE_EXAMPLES)("refuses an external entity without reading what it points at", async () => {
+    const xxe =
+      '<?xml version="1.0"?><!DOCTYPE beast [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>' +
+      '<beast><taxa><taxon id="&xxe;"><date value="2005.0"/></taxon></taxa></beast>';
+    const res = await post({ analysis: "dating", alignment: engineExample("H5N1_HA_geo").alignment, dates_file: xxe, names: { dates_file: "xxe.xml" } });
+    expect(res.status).toBe(422);
+    expect(res.body.error.kind).toBe("input");
+    expect(["DATES_XML_UNPARSABLE", "DATES_XML_UNSAFE"]).toContain(res.body.error.code);
+    // Nothing that file holds may appear in the answer, in any field.
+    const answer = JSON.stringify(res.body);
+    expect(answer).not.toMatch(/root:/);
+    expect(answer).not.toMatch(/\/bin\/(ba)?sh/);
+  });
+
+  it.skipIf(!HAVE_EXAMPLES)("POST /validate rehearses both answers for the same XML", async () => {
+    const ex = engineExample("H5N1_HA_geo");
+    const good = await request(handle.app).post("/api/v1/validate").send({ analysis: "dating", alignment: ex.alignment, dates_file: beast1() });
+    expect(good.status).toBe(200);
+    expect(good.body.dates.ok).toBe(true);
+    expect(good.body.dates.date_review.source).toBe("beast");
+    expect(good.body.warnings.some((w) => w.severity === "refuse")).toBe(false);
+
+    const bad = await request(handle.app).post("/api/v1/validate").send({ analysis: "dating", alignment: ex.alignment, dates_file: '<?xml version="1.0"?><root><a/></root>' });
+    expect(bad.status).toBe(200);
+    expect(bad.body.ok).toBe(false);
+    expect(bad.body.dates.code).toBe("DATES_BEAST_NOT_BEAST");
+    // The rehearsal and the job answer the same code, which is the whole point of validating.
+    const job = await post({ analysis: "dating", alignment: ex.alignment, dates_file: '<?xml version="1.0"?><root><a/></root>' });
+    expect(job.status).toBe(422);
+    expect(job.body.error.code).toBe(bad.body.dates.code);
+  });
+
+  /**
+   * THE HOLE THE FEATURE MAKES REACHABLE. A caller who now has a BEAST XML in hand has three
+   * fields to try it in, and `alignment` is the tempting one. MEASURED before this refusal existed:
+   * the library's `parseAlignmentSequences` read a BEAST XML built around H5N1_HA_geo's own
+   * alignment as FOUR sequences named `<?xml`, `<taxon`, `<alignment` and `<sequence><taxon`,
+   * 581 "codons" between them, and `sizeCheck` returned `{ok: true}` — a 202, a spent worker and a
+   * failure inside the pillar on nonsense. `analysis: "dates"` is the case that matters most,
+   * because it is the cheapest analysis and so the one a caller reaches for first.
+   */
+  const beast1ish =
+    '<?xml version="1.0"?>\n<beast version="1.10.4">\n<taxa id="taxa">\n' +
+    '<taxon id="a"><date value="2001.0"/></taxon>\n<taxon id="b"><date value="2002.0"/></taxon>\n' +
+    '<taxon id="c"><date value="2003.0"/></taxon>\n<taxon id="d"><date value="2004.0"/></taxon>\n' +
+    '</taxa>\n<alignment id="alignment" dataType="nucleotide">\n' +
+    '<sequence><taxon idref="a"/>ATGGCCATG</sequence>\n<sequence><taxon idref="b"/>ATGGCAATG</sequence>\n' +
+    '<sequence><taxon idref="c"/>ATGGTAATG</sequence>\n<sequence><taxon idref="d"/>TTGGTAATG</sequence>\n' +
+    "</alignment>\n</beast>\n";
+
+  for (const analysis of ["dates", "dating", "temporal", "analyze", "meme"]) {
+    it("refuses an XML in the `alignment` field (" + analysis + ") rather than sizing its angle brackets", async () => {
+      const res = await post({ analysis, alignment: beast1ish });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error.kind).toBe("input");
+      expect(res.body.error.code).toBe("ALIGNMENT_IS_XML");
+      expect(res.body.error.hint).toMatch(/`dates_file`/);
+      expect(res.body.error.hint).toMatch(/BEAST XML/);
+    });
+  }
+
+  it("POST /validate refuses the same body, so the rehearsal is not kinder than the door", async () => {
+    const res = await request(handle.app).post("/api/v1/validate").send({ analysis: "dating", alignment: beast1ish });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    // First, because it is the refusal that explains the others: the library is handed the empty
+    // string rather than the XML, so it says FORMAT_UNKNOWN and reports a summary of nulls instead
+    // of a nucleotide composition for a document that has none.
+    expect(res.body.warnings[0].code).toBe("ALIGNMENT_IS_XML");
+    expect(res.body.warnings.map((w) => w.code)).not.toContain("NON_ACGT_FRACTION");
+    expect(res.body.summary.sequence_count).toBe(0);
+  });
+
+  it("but that same XML, in `dates_file`, is read", async () => {
+    const alignment = ">a\nATGGCCATG\n>b\nATGGCAATG\n>c\nATGGTAATG\n>d\nTTGGTAATG\n";
+    const out = await run({ analysis: "dates", alignment, dates_file: beast1ish, names: { dates_file: "small.xml" } });
+    expect(out.view.status, JSON.stringify(out.view.error)).toBe("completed");
+    const doc = (await request(handle.app).get("/api/v1/jobs/" + out.id + "/result")).body;
+    expect(doc.date_review.source).toBe("beast");
+    expect(doc.date_review.coverage.dated).toBe(4);
+    expect(doc.date_review.span).toMatchObject({ min: 2001, max: 2004 });
   });
 });
 
@@ -614,6 +907,13 @@ describe("caps and plumbing", () => {
     expect(res.status).toBe(413);
     expect(res.body.error.code).toBe("PAYLOAD_TOO_LARGE");
     expect(res.body.error.kind).toBe("input");
+    // THE 8 MiB IS ONE BUDGET FOR EVERY FIELD, and since Phase 6b `dates_file` can be a BEAST XML
+    // carrying its own alignment (measured at 1.03-1.61x the FASTA inside it). "Submit fewer
+    // sequences" is then the wrong advice — the data is not too big, it arrived twice — so the
+    // hint names that case and the two ways out of it.
+    expect(res.body.error.message).toMatch(/every field together/);
+    expect(res.body.error.hint).toMatch(/BEAST XML/);
+    expect(res.body.error.hint).toMatch(/counted twice/);
   });
 
   it("n_permutations above the cap is refused before the date layer is even consulted", async () => {

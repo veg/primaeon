@@ -76,8 +76,19 @@ export function datingCsv(rows: readonly TaxonDatingRow[]): string {
  * The notes themselves are `datingDownloadNotes(run, options)` — the same options this file passes
  * to the writers, so the note describes the files the reader will actually get rather than the
  * runtime's defaults — and the reproduction clause is appended only when `reproduces` is true.
+ *
+ * `source` IS NOT OPTIONAL DECORATION. `datingReferenceCommand`'s `-d` branch can only fire when it
+ * is told the date file's NAME and handed the `DateIngest` that file produced; called with neither,
+ * as this was, it takes the other branch and answers "the dates on this run were read from the
+ * sequence names by this build's own date layer" — which is a false sentence on every run where the
+ * reader dropped a metadata file, and on every run where they dropped a BEAST XML. The MCP has
+ * always passed both (`mcp/src/time.js`, `reference_command`), so the two surfaces were answering
+ * differently about the same run; this is the page catching up.
  */
-export function datingDownloadNote(run: DatingResult | null): string {
+export function datingDownloadNote(
+	run: DatingResult | null,
+	source: { datesName?: string | null; ingest?: unknown } = {}
+): string {
 	const written = { includeProvenance: true, predictionMethod: true };
 	const notes = run ? (datingDownloadNotes(run as never, written) as string[]) : [];
 	if (!run) {
@@ -88,7 +99,12 @@ export function datingDownloadNote(run: DatingResult | null): string {
 			`reading it.`
 		);
 	}
-	const { reproduces, caveats } = datingReferenceCommand(run as never, {}, {}) as {
+	const { reproduces, caveats } = datingReferenceCommand(
+		run as never,
+		{},
+		{ dates: source.datesName ?? null },
+		source.ingest ?? null
+	) as {
 		reproduces: boolean;
 		caveats: string[];
 	};

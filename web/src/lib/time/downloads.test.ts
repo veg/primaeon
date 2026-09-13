@@ -128,4 +128,33 @@ describe('the JSON', () => {
 		expect(doc.generator).toMatch(/PrimAeon/);
 		expect(doc.generator).toMatch(/not a hyphaeon CLI input format/);
 	});
+
+	/**
+	 * A TAXON NAME IS THE READER'S STRING, AND `entries` IS AN OBJECT KEYED ON IT. A BEAST XML may
+	 * declare `<taxon id="__proto__">`; `fastaNameHazard` lets it through because it round-trips a
+	 * FASTA header unchanged, so it reaches a run and gets a date like any other taxon. On a plain
+	 * `{}` the assignment sets the PROTOTYPE instead of a key and the taxon disappears from the
+	 * file entirely — out of `entries` and out of `undated` both, which is a silent loss of the
+	 * same kind `beastToFasta` refuses. Both halves are asserted here: the dated one is written and
+	 * the undated one is listed.
+	 */
+	it('writes a taxon whose name is a JavaScript object key rather than losing it', () => {
+		const hostile: any = {
+			...record,
+			dates: {
+				...record.dates,
+				entries: [
+					{ taxon: '__proto__', value: 2001.5 },
+					{ taxon: 'constructor', value: 2002.5 },
+					{ taxon: 'toString', value: null },
+					{ taxon: 'plain', value: 2003.5 }
+				]
+			}
+		};
+		const out = JSON.parse(datesJson(hostile, '1.0.0'));
+		expect(Object.keys(out.entries).sort()).toEqual(['__proto__', 'constructor', 'plain']);
+		expect(out.entries['__proto__']).toBe(2001.5);
+		expect(out.entries['constructor']).toBe(2002.5);
+		expect(out.undated).toEqual(['toString']);
+	});
 });

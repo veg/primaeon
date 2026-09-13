@@ -136,6 +136,20 @@ export const CALENDAR_YEAR_MIN = lib.CALENDAR_YEAR_MIN;
 export const CALENDAR_YEAR_MAX = lib.CALENDAR_YEAR_MAX;
 
 /**
+ * `\s` in Python's Unicode sense, as a regex-source character class (`js/src/preprocess/parse.js`).
+ *
+ * It is Unicode White_Space plus the four information separators U+001C–U+001F, and it does NOT
+ * include U+FEFF — which is exactly the set `str.isspace()`, `str.strip()` and `re`'s `\s` share.
+ * Re-exported because `beast.js` mirrors `re.sub(r'\s+', '', seq)` (dataset.py:147) and a second
+ * hand-written copy of that class in this directory would be a second definition of Python's
+ * whitespace, which is the thing `pyStrip` exists to prevent. The fallback is the same 29
+ * characters, for a linked library that predates the constant.
+ */
+export const PY_WS =
+	lib.PY_WS ??
+	'[\\t\\n\\v\\f\\r \\x1c\\x1d\\x1e\\x1f\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
+
+/**
  * `str(row[col])` for a cell of a `parsePhenotypeTable` frame — the library keeps its own
  * `cellToString` private, and this is the same three lines (phenotype.js:552-556): an NA prints
  * `nan`, a float column prints through `pyFloatStr`, an integer column prints without a fraction.

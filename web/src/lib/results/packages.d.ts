@@ -60,7 +60,7 @@ declare module '@veg/hyphaeon-runtime/dates' {
 		raw: string | null;
 		value: number | null;
 		rule: string;
-		source: 'map' | 'auspice' | 'table' | 'regex' | 'header' | 'none';
+		source: 'map' | 'auspice' | 'table' | 'beast' | 'regex' | 'header' | 'none';
 		imputed: boolean;
 		imputations: { month: boolean; day: boolean; dayClamped: boolean };
 		matched: string | null;
@@ -85,6 +85,7 @@ declare module '@veg/hyphaeon-runtime/dates' {
 			from_map: number;
 			from_auspice: number;
 			from_table: number;
+			from_beast: number;
 			from_regex: number;
 			from_header: number;
 			imputed: number;
@@ -102,6 +103,8 @@ declare module '@veg/hyphaeon-runtime/dates' {
 		span: { min: number; max: number; span: number; unique: number; tied: number; finite: number } | null;
 		table: Record<string, unknown> | null;
 		auspice: Record<string, unknown> | null;
+		/** Present only when a BEAST XML was the date source; see `BeastSummary`. */
+		beast: BeastSummary | null;
 		regex: Record<string, unknown> | null;
 		headers: Record<string, unknown> | null;
 		warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
@@ -138,6 +141,123 @@ declare module '@veg/hyphaeon-runtime/dates' {
 		options?: { fileName?: string; delimiter?: string | null; strainCol?: string | null; dateCol?: string | null; timeUnits?: string }
 	): { columns: string[]; strain: { column: string | null; source: string }; date: { column: string | null; source: string }; rowsRead: number; rowsDated: number };
 	export function hasDateLayer(): boolean;
+
+	/**
+	 * The record-shaped half of a BEAST read (`ingestDates(...).beast`). The SEQUENCES are
+	 * deliberately absent — a record is stored in IndexedDB and an alignment has its own slot — so a
+	 * surface that wants them keeps its `parseBeastXml` result or calls `beastToFasta` again.
+	 */
+	export interface BeastSummary {
+		version: string;
+		sequences: number;
+		dates: number;
+		taxa: number;
+		tree_present: boolean;
+		tree_newick: string | null;
+		tree_from: string | null;
+		namespaced: boolean;
+		alignments: { seen: number; chosen_index: number; sizes: Array<{ index: number; size: number; dataType: string | null }> };
+		sequence_sources: { value_attr: number; element_text: number; taxon_tail: number };
+		traits: Array<{ name: string; entries: number; exact: boolean }>;
+		dates_from: { beast1: number; beast2: number };
+		direction_attrs: number;
+		units_attrs: number;
+		/** How many dates came from a calendar string, and therefore from BEAST's own arithmetic. */
+		calendar_dates: number;
+		ungated: string[];
+		nonfinite: string[];
+		duplicates: { sequences: string[]; dates: string[] };
+		reconciliation: { renamed: Array<{ from: string; to: string }>; dates_added: string[] };
+		names_with_whitespace: string[];
+		elements: number;
+		depth: number;
+		[k: string]: unknown;
+	}
+	/** `parseBeastXml`'s return: `parse_beast_xml`'s five keys plus an app-only provenance block. */
+	export interface BeastDocument {
+		version: string;
+		sequences: Map<string, string>;
+		dates: Map<string, number>;
+		tree_newick: string | null;
+		taxa: string[];
+		provenance: {
+			raws: Map<string, string>;
+			rules: Map<string, string>;
+			namespaced: boolean;
+			elements: number;
+			depth: number;
+			alignments: BeastSummary['alignments'];
+			sequence_sources: BeastSummary['sequence_sources'];
+			traits: BeastSummary['traits'];
+			dates_from: BeastSummary['dates_from'];
+			direction_attrs: number;
+			units_attrs: number;
+			calendar_dates: number;
+			ungated: string[];
+			nonfinite: string[];
+			duplicates: BeastSummary['duplicates'];
+			reconciliation: BeastSummary['reconciliation'];
+			/**
+			 * JavaScript's `/\s/` class, kept as it is because `ingest.js` consumes it. It is NOT the
+			 * FASTA hazard list: `fastaNameHazard` uses Python's 29-character whitespace class, so the
+			 * two disagree on U+001C-U+001F, U+0085 (Python whitespace, not `\s`) and U+FEFF (the
+			 * reverse). Read `names_unsafe_for_fasta` when the question is whether a name survives.
+			 */
+			names_with_whitespace: string[];
+			/** Every taxon `beastToFasta` would refuse, with the hazard that would take it. */
+			names_unsafe_for_fasta: Array<{ name: string; hazard: string }>;
+			tree_from: string | null;
+			/** The work meter this read spent, against `XML_LIMITS.maxWork`. */
+			work: { spent: number; max: number };
+			[k: string]: unknown;
+		};
+	}
+	/** dataset.py:84-233. Throws `XmlReadError` and nothing else. */
+	export function parseBeastXml(text: string, options?: { fileName?: string; limits?: Record<string, number> }): BeastDocument;
+	/** dataset.py:62-81, the reference's OWN date arithmetic; never the library's. */
+	export function beastDateParse(value: string | null | undefined): { value: number; rule: string } | null;
+	export function beastDateValue(value: string | null | undefined): number | null;
+	/** dating.py:436-442 — the other reconciliation ladder, read-only, keyed on the original taxon. */
+	export function beastDatesForTaxa(taxa: readonly string[], parsed: BeastDocument): Map<string, number>;
+	/**
+	 * The app's own: the XML's sequences as FASTA, in `taxa` order. THROWS `BeastFastaError` when a
+	 * taxon id would not read back as itself through the library's FASTA reader — it refuses rather
+	 * than renaming, so a surface that calls it must be ready to show the message.
+	 */
+	export function beastToFasta(parsed: BeastDocument, options?: { lineWidth?: number }): string;
+	/** The three ways a BEAST taxon id fails to round-trip a FASTA header. */
+	export const FASTA_NAME_HAZARDS: Readonly<Record<'EMPTY' | 'WHITESPACE' | 'QUOTED', string>>;
+	/** A `FASTA_NAME_HAZARDS` member, or `null` when the name reads back byte for byte. */
+	export function fastaNameHazard(name: string): string | null;
+	/** Every name in `taxa` that would not survive the round trip, with its hazard. */
+	export function unsafeFastaNames(taxa: Iterable<string>): Array<{ name: string; hazard: string }>;
+	/** `beastToFasta`'s refusal. `code` is always `'BEAST_NAME_NOT_FASTA'`. */
+	export class BeastFastaError extends Error {
+		code: string;
+		names: Array<{ name: string; hazard: string }>;
+	}
+	export class XmlReadError extends Error {
+		/** An `XML_REFUSALS` member: `'malformed' | 'too_large' | 'too_deep' | 'entity_expansion' | 'entity_depth' | 'too_much_work'`. */
+		reason: string;
+		line: number;
+		column: number;
+	}
+	/** The five numbers the XML reader refuses on; see `runtime/src/dates/xml.js`'s header. */
+	export const XML_LIMITS: Readonly<{
+		maxChars: number;
+		maxDepth: number;
+		maxEntityChars: number;
+		maxEntityDepth: number;
+		maxWork: number;
+	}>;
+	export const XML_REFUSALS: readonly string[];
+	/** The work meter one document read shares; over its limit every traversal throws `too_much_work`. */
+	export function createWorkBudget(limits?: { maxWork?: number }): { spent: number; max: number };
+	export function chargeWork(budget: { spent: number; max: number } | null | undefined, units: number): void;
+	export const BEAST_DATE_RULES: Readonly<Record<'FLOAT' | 'YMD' | 'YEAR_MONTH', string>>;
+	export const BEAST_DATE_RULE_IDS: readonly string[];
+	export const BEAST_MATCH_TIERS: readonly string[];
+	export const DATE_SCHEMA_VERSION: number;
 	export const DATE_MATCH_TIERS: readonly string[];
 	export const DATE_SOURCES: readonly string[];
 	export const DATE_DIAGNOSTIC_CODES: readonly string[];

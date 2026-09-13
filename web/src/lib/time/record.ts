@@ -55,6 +55,9 @@ export function summarise(ingest: DateIngestLike): DateSummary {
 			header: c.from_header,
 			metadata: c.from_table,
 			auspice: c.from_auspice,
+			// Schema 3 records were written before a BEAST XML could be a date source; `?? 0` is what
+			// such a record's count was, not a guess about it.
+			beast: c.from_beast ?? 0,
 			map: c.from_map,
 			pattern: c.from_regex
 		},

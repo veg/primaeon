@@ -417,8 +417,13 @@ export function mapOptions(analysis, options = {}, extra = {}) {
   if (analysis === "dating") {
     // cli.py:1895-1926 -> runDating's keywords. `--no-optimize-root`, `--ridge`, `--tune-ridge`,
     // `--bootstrap`, `--loocv`, `--plot*`, `--alluvial*` and `--color-by` have no port and are not
-    // in the schema, so nothing can be recorded-and-dropped here. `--beast` is refused by the date
-    // layer (DATES_BEAST_XML_UNSUPPORTED) rather than accepted and ignored.
+    // in the schema, so nothing can be recorded-and-dropped here. `--beast` is not offered either,
+    // and that is a decision rather than a gap: a BEAST XML passed as `dates_file` is READ (the
+    // date layer runs runtime/src/dates/beast.js, a port of dataset.py:84-233), and it is read the
+    // way `-d run.xml` reads one upstream — dates only, dating.py:433-442. `--beast`'s own job is
+    // to fill the alignment and tree slots when they are empty (dating.py:2455-2471, each `if …
+    // is None`), which is a problem a call that names `alignment` and `tree` explicitly does not
+    // have. See dateSourceSchema in src/tools.js for the argument in full.
     if (has("root_taxon")) out.rootTaxon = options.root_taxon;
     if (has("decay_gamma")) out.decayGamma = options.decay_gamma;
     if (has("clock_model")) out.clockModel = options.clock_model;
@@ -996,8 +1001,16 @@ export function createEngine(opts = {}) {
       }
       out.date_layer = {
         engine: "in-process (runtime/src/dates), no model",
-        sources: ["fasta headers", "nextstrain auspice json", "name-to-date json map", "csv/tsv table", "caller regex"],
-        beast_xml: "refused (DATES_BEAST_XML_UNSUPPORTED): the reference reads one, this build does not"
+        sources: ["fasta headers", "nextstrain auspice json", "name-to-date json map", "csv/tsv table", "beast 1.x / 2.x xml", "caller regex"],
+        beast_xml:
+          "read (runtime/src/dates/beast.js, a port of dataset.py:84-233): BEAST 1 <taxon><date> and BEAST 2 " +
+          "<trait traitname=\"date\">, with the reference's own seq_ reconciliation and its own date arithmetic " +
+          "(not a decimal year: measured 0.73 days mean, 2.815 worst, from every other source here). Taken as " +
+          "`-d run.xml` takes it (dating.py:433-442) — DATES ONLY; sequences and a starting tree in the same file " +
+          "are reported in date_review.beast, never substituted for the alignment and tree that were passed. " +
+          "Refused: not well-formed (DATES_XML_UNPARSABLE), external or oversized entities (DATES_XML_UNSAFE, " +
+          "unread), nothing a BEAST file holds incl. a namespaced document (DATES_BEAST_NOT_BEAST), no sampling " +
+          "date (DATES_BEAST_NO_DATES)"
       };
     } catch (err) {
       out.reason = "The HyphAeon runtime could not be loaded: " + ((err && err.message) || err);

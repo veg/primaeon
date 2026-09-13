@@ -18,8 +18,12 @@
  * as `diagnostics.js` sorts `diagnose()`'s output by `DIAGNOSTIC_CODES`.
  */
 
-/** Bumped when `DateIngest`'s shape changes in a way a stored record cannot be read under. */
-export const DATE_SCHEMA_VERSION = 1;
+/**
+ * Bumped when `DateIngest`'s shape changes in a way a stored record cannot be read under.
+ * v2 (BEAST XML): the record gained a `beast` block beside `table` and `auspice`, `'beast'` joined
+ * `DATE_SOURCES`, and a row may now carry a `BEAST_DATE_RULES` rule id the library does not know.
+ */
+export const DATE_SCHEMA_VERSION = 2;
 
 /**
  * Deterministic report order. A warning whose code is not in this list sorts last, stably.
@@ -30,7 +34,18 @@ export const DATE_SCHEMA_VERSION = 1;
 export const DATE_DIAGNOSTIC_CODES = Object.freeze([
 	'DATES_SOURCE_UNREADABLE',
 	'DATES_SOURCE_KIND_UNKNOWN',
-	'DATES_BEAST_XML_UNSUPPORTED',
+	'DATES_XML_UNPARSABLE',
+	'DATES_XML_UNSAFE',
+	'DATES_BEAST_NOT_BEAST',
+	'DATES_BEAST_NO_DATES',
+	'DATES_BEAST_NAMESPACED',
+	'DATES_BEAST_MULTIPLE_ALIGNMENTS',
+	'DATES_BEAST_SEQ_PREFIX',
+	'DATES_BEAST_DIRECTION_IGNORED',
+	'DATES_BEAST_TRAIT_NOT_DATE',
+	'DATES_BEAST_DATE_SCALE',
+	'DATES_BEAST_DATE_UNGATED',
+	'DATES_BEAST_CARRIES_INPUTS',
 	'DATES_TABLE_NO_DATE_COLUMN',
 	'DATES_TABLE_COLUMN_GUESSED',
 	'DATES_DELIMITER_GUESSED',
@@ -102,7 +117,40 @@ export const DATE_THRESHOLDS = Object.freeze({
 });
 
 /** Where a row's value came from. `'none'` is a taxon nothing dated. */
-export const DATE_SOURCES = Object.freeze(['map', 'auspice', 'table', 'regex', 'header', 'none']);
+export const DATE_SOURCES = Object.freeze([
+	'map',
+	'auspice',
+	'table',
+	'beast',
+	'regex',
+	'header',
+	'none'
+]);
+
+/**
+ * THE RULE IDS A BEAST DATE CARRIES, and the only rule ids in this repository that are not the
+ * library's `DATE_RULES`.
+ *
+ * A row's `rule` is normally whatever `@veg/hyphaeon-js` said read the string, because every other
+ * source's values go through the library. A BEAST value does NOT: `_parse_numeric_or_calendar_date`
+ * (dataset.py:62-81) is a second parser IN THE REFERENCE, with its own arithmetic and no year gate,
+ * and re-reading its answer through the library would destroy it (measured in `beast.js`'s header:
+ * `1799`, `50`, `1e9` all become NaN, and every calendar date moves by up to 2.815 days). So the
+ * value is carried in as already parsed, and it says which of the reference's three branches
+ * produced it — the review table must be able to name a number's provenance, and 'decimal_year'
+ * would have been a lie.
+ */
+export const BEAST_DATE_RULES = Object.freeze({
+	/** `float(s)` succeeded — ungated, so `1799`, `-3`, `1e9`, `nan` and `inf` all land here. */
+	FLOAT: 'beast_float',
+	/** `YYYY-MM-DD` through `year + (month-1)/12 + (day-1)/365.25` (dataset.py:73). */
+	YMD: 'beast_ymd',
+	/** `YYYY-MM` through `year + (month-0.5)/12` (dataset.py:79). */
+	YEAR_MONTH: 'beast_year_month'
+});
+
+/** Every `BEAST_DATE_RULES` value, for a surface that labels rules by table. */
+export const BEAST_DATE_RULE_IDS = Object.freeze(Object.values(BEAST_DATE_RULES));
 
 /** What a supplied source was read AS. `'map'` is a caller-supplied object, not a file. */
 export const DATE_SOURCE_KINDS = Object.freeze(['auspice', 'json-map', 'table', 'beast', 'unknown']);
@@ -116,6 +164,27 @@ export const DATE_SOURCE_KINDS = Object.freeze(['auspice', 'json-map', 'table', 
  */
 export const DATE_MATCH_TIERS = Object.freeze([
 	'exact',
+	'quote_stripped',
+	'whitespace_collapsed',
+	'case_insensitive',
+	'first_token',
+	'sanitized',
+	'field_containment'
+]);
+
+/**
+ * The ladder a BEAST document's names are matched on: `DATE_MATCH_TIERS` with ONE tier inserted
+ * after `exact`.
+ *
+ * `seq_prefix_stripped` removes a leading `seq_` from BOTH sides, which covers both of
+ * dating.py:438-442's branches at once (`seq_A` in the XML against `A` in the alignment, and `A` in
+ * the XML against `seq_A` in the alignment) and adds nothing fuzzier than the reference already
+ * does. It is a BEAST-only tier because the prefix is a BEAST 2 idiom — `<sequence id="seq_A"
+ * taxon="A" …>` — and the table and Auspice paths must not move.
+ */
+export const BEAST_MATCH_TIERS = Object.freeze([
+	'exact',
+	'seq_prefix_stripped',
 	'quote_stripped',
 	'whitespace_collapsed',
 	'case_insensitive',
@@ -172,10 +241,46 @@ export const DATE_MESSAGES = Object.freeze({
 	REGEX_TOO_LONG:
 		'The pattern is {length} characters long; the limit is {max}. A pattern that large is almost ' +
 		'always a paste accident, and running it against every name risks hanging the page.',
-	BEAST_XML_UNSUPPORTED:
-		'A BEAST XML file was supplied. The reference reads dates from one (dating.py:433-434); ' +
-		'PrimAeon does not yet. Export the taxon dates as a two-column CSV, or supply the alignment ' +
-		'with dated headers.',
+	XML_UNPARSABLE:
+		'{file} is not well-formed XML: {error}. The reference refuses the same file for the same ' +
+		'reason (dataset.py:109-110 turns the parser\'s error into a ValueError). A BEAST annotation ' +
+		'written `[&rate=…]` in element text is the usual cause: a bare `&` starts an entity, so it ' +
+		'must be written `[&amp;rate=…]` or wrapped in CDATA. If the file is gzipped, decompress it ' +
+		'first — this reader takes text, never bytes.',
+	// ONE CODE, FIVE REASONS, AND THE SENTENCE HAS TO FIT ALL OF THEM. `ingest.js` maps every
+	// `XmlReadError` reason but `malformed` here: `too_large`, `too_deep`, `entity_expansion`,
+	// `entity_depth` and `too_much_work`. Only the first is caught before any parsing, so the
+	// wording says WHOSE limit it was rather than when — the old 'refused before it was read' was
+	// false for the other four — and the no-network clause is attached as a standing property of
+	// this reader rather than as the cause, which it is only for the two entity reasons. The
+	// `{error}` is `XmlReadError.message`, which names the limit it hit and, for `too_much_work`,
+	// the nesting that caused it and the two ways out; `data.reason` carries the machine-readable
+	// half. It ENDS the sentence because it already ends in a full stop of its own — spliced into
+	// the middle it read `…as a separate FASTA file and let the XML carry only the dates.. Nothing
+	// in it was fetched…`. See `xml.js`'s header for what each limit is worth.
+	XML_UNSAFE:
+		'{file} was refused by this reader\'s own limits rather than by the XML parser — nothing in ' +
+		'it was fetched or opened either way, since external entities are never resolved here and ' +
+		'this reader has no filesystem and no network. {error}',
+	BEAST_NOT_BEAST:
+		'{file} is well-formed XML but holds nothing a BEAST file holds: no <alignment>/<data> ' +
+		'sequences, no <taxon><date> or date <trait>, and no starting tree. The reference reads such ' +
+		'a file as an empty result and dates nothing (measured on `<root><a/></root>`: version ' +
+		'"BEAST XML", 0 sequences, 0 dates). If this IS a BEAST file, check whether it declares an ' +
+		'XML namespace: `parse_beast_xml` searches for unqualified tags (dataset.py:123), so a ' +
+		'document whose root carries `xmlns=` matches nothing in it.',
+	BEAST_NO_DATES:
+		'{file} was read as {version} and carries {sequences} sequence(s), but no sampling date. ' +
+		'Dates are read from BEAST 1 `<taxon id="…"><date value="…"/>` (dataset.py:158-174) or from a ' +
+		'BEAST 2 `<trait traitname="date" value="a=…,b=…"/>` (dataset.py:176-188); this file has ' +
+		'neither.',
+	BEAST_DATE_SCALE:
+		'{n} date(s) were read from a calendar string by the BEAST reader\'s OWN arithmetic ' +
+		'(dataset.py:71-80), which is not a decimal year: `YYYY-MM-DD` becomes ' +
+		'`year + (month-1)/12 + (day-1)/365.25` and `YYYY-MM` becomes `year + (month-0.5)/12`. ' +
+		'MEASURED against the conversion every other source in PrimAeon uses (temporal.py:137-141): ' +
+		'mean offset 0.73 days, worst 2.815 days (2019-03-31). These numbers are the reference\'s, so ' +
+		'`hyphaeon dating --beast` will agree with them — and a CSV of the same dates will not.',
 	SOURCE_UNREADABLE: '{file} could not be read as {kind}: {error}.',
 	SOURCE_KIND_UNKNOWN:
 		'{file} is neither a Nextstrain Auspice JSON, a name-to-date JSON object, nor a delimited table.',

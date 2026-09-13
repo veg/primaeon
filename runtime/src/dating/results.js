@@ -36,7 +36,7 @@
 
 import { dataFrameCsv, pyJsonDumps, PY_FLOAT_KEYS, PY_INT_KEYS } from '@veg/hyphaeon-js';
 
-import { DATE_MATCH_TIERS } from '../dates/codes.js';
+import { BEAST_MATCH_TIERS, DATE_MATCH_TIERS } from '../dates/codes.js';
 import { DATING_MESSAGES } from './codes.js';
 import { datingHeadline } from './headline.js';
 import { TAXON_COLUMNS } from './record.js';
@@ -116,6 +116,67 @@ export const DATING_FLOAT_KEYS = new Set([
 export const DATING_INT_KEYS = new Set([...PY_INT_KEYS, 'n']);
 
 /**
+ * THE `sources_used` MEMBERS THAT ARE THE `-d` DOCUMENT ITSELF.
+ *
+ * `ingestDates` labels a row's origin with one of six words (`ingest.js`, `DATE_SOURCES`): four of
+ * them name the file the reader handed over — a delimited `table`, an Auspice JSON, a name-to-date
+ * `map`, and since this phase a `beast` XML — and two name what this build did when that file did
+ * not cover a sequence: `regex` (the reader's own `--date-regex`) and `header` (the fallback
+ * ladder). Only those last two can make "every date came from `-d`" false.
+ *
+ * WHY IT IS A NAMED SET AND NOT A FILTER EXPRESSION. It was written as
+ * `used.filter(s => s !== 'table' && s !== 'auspice' && s !== 'map')`, which is the same list
+ * spelled as three exclusions — and when `'beast'` joined `DATE_SOURCES` the exclusion list did not
+ * grow with it. MEASURED on a four-taxon BEAST 1 document passed as `-d run.xml`:
+ * `sources_used ["beast"]`, `coverage.from_beast 4`, `from_header 0`, and this function answered
+ * `reproduces: false` with "not every date on this run came from it: 4 sequence(s) were dated from
+ * beast" — a false claim about the one file on the line, on EVERY BEAST-sourced run. A set that
+ * `DATE_SOURCES` can be read against is the shape that fails loudly instead: see the assertion in
+ * `runtime/test/dating-port.test.js`.
+ */
+export const DATE_DOCUMENT_SOURCES = Object.freeze(new Set(['table', 'auspice', 'map', 'beast']));
+
+/**
+ * THE TIERS AT WHICH A MATCH IS NOT A FUZZY MATCH, per date source kind.
+ *
+ * The fuzzy caveat exists because this build's name ladder joins metadata rows to sequences that
+ * the reference's join would leave unmatched — a different dated set, and therefore a different
+ * regression. That argument only holds for the tiers the reference does NOT have, and the BEAST
+ * path is the one source where it has more than `exact`:
+ *
+ *   dating.py:436-442   `t_clean = t.strip("'\"")`, then `t_clean in dates`, then `seq_`-stripped,
+ *                       then `seq_`-prefixed — quote stripping and the `seq_` reconciliation in
+ *                       BOTH directions, which are exactly `quote_stripped` and
+ *                       `seq_prefix_stripped`.
+ *   dataset.py:161,178  the XML side is quote-stripped upstream too (`t_id.strip("'\"")` and the
+ *                       trait's `k.strip("'\"")`), so both sides of the comparison match ours.
+ *   dating.py:467       the TABLE path is `str(row[strain_col]).strip()` against the taxon and
+ *                       nothing else, so for every other source the reference's join is `exact`
+ *                       alone.
+ *
+ * WHAT THE BUG WAS. The count summed every non-`exact` key of `match_tiers` — which gained
+ * `seq_prefix_stripped` this phase — and then printed `DATE_MATCH_TIERS`, which does not contain
+ * it. MEASURED on the `seq_` fixture (XML `seq_a, b, c` against taxa `a, seq_b, c`): "2 metadata
+ * name(s) were matched at a tier below `exact` (this build's seven-tier ladder: exact,
+ * quote_stripped, …)" — a ladder with no rung the two names could have matched on, and a
+ * `reproduces: false` for something dating.py:438-442 does itself.
+ */
+const REFERENCE_JOIN_TIERS = Object.freeze({
+	beast: Object.freeze(new Set(['exact', 'seq_prefix_stripped', 'quote_stripped'])),
+	other: Object.freeze(new Set(['exact']))
+});
+
+/** The ladder `ingestDates` actually ran for this source, so a printed ladder contains the tiers the counts name. */
+function ladderFor(sourceKind) {
+	return sourceKind === 'beast' ? BEAST_MATCH_TIERS : DATE_MATCH_TIERS;
+}
+
+/** @see REFERENCE_JOIN_TIERS */
+function referenceJoinTiers(sourceKind) {
+	return sourceKind === 'beast' ? REFERENCE_JOIN_TIERS.beast : REFERENCE_JOIN_TIERS.other;
+}
+
+/**
  * The reference's `out.json`: the same keys, in the same order, formatted the same way. See the
  * header for what a diff against a CLI run shows and what it does not.
  *
@@ -186,7 +247,12 @@ export function datingCsvText(rows, options = {}) {
  *      on by default, so a table naming only some sequences leaves the rest to this build's own
  *      header ladder. Measured on H5N1_HA_geo with the metadata truncated to its first 50 rows:
  *      `sources_used ["table","header"]`, 48 of 98 dates by `header_trailing_year`. Imputation and
- *      the seven-tier name ladder move the dated set the same way and are checked with it.
+ *      the name ladder move the dated set the same way and are checked with it — but only at the
+ *      tiers the reference's own join does NOT have (`REFERENCE_JOIN_TIERS`): quote stripping and
+ *      the `seq_` reconciliation are things `parse_sample_dates` does itself on a BEAST source
+ *      (dating.py:436-442), so a match there is the dated set a command-line run would get.
+ *      A source that IS the `-d` document — a table, an Auspice JSON, a name-to-date map or a
+ *      BEAST XML (`DATE_DOCUMENT_SOURCES`) — is never itself a reason to answer false.
  *   2. THE ESTIMATORS THIS BUILD DOES NOT RUN (`primaeon.estimators_not_built`). A line echoing
  *      `--clock-model power`, `--loocv` or `--bootstrap` would promise a reproduction this port
  *      cannot give, so those flags are never printed and the list is quoted instead.
@@ -250,18 +316,30 @@ export function datingReferenceCommand(run, options = {}, names = {}, ingest = n
 		);
 	} else if (ingest) {
 		const used = Array.isArray(ingest.sources_used) ? ingest.sources_used : [];
-		const elsewhere = used.filter((s) => s !== 'table' && s !== 'auspice' && s !== 'map');
+		// EVERY source that is a FILE is the file on the `-d` line — a BEAST XML included, which is
+		// the whole of B1: `-d run.xml` IS the date document, so `sources_used ["beast"]` is "all of
+		// them came from `-d`" and not the opposite. What remains is what `-d` did not cover.
+		const elsewhere = used.filter((s) => !DATE_DOCUMENT_SOURCES.has(s));
 		const imputed = ingest.coverage?.imputed ?? 0;
+		const sourceKind = ingest.source_kind ?? null;
+		const ladder = ladderFor(sourceKind);
+		const exactly = referenceJoinTiers(sourceKind);
 		const tiers = ingest.match_tiers ?? {};
-		const fuzzy = Object.entries(tiers).reduce((n, [tier, count]) => (tier === 'exact' ? n : n + (count || 0)), 0);
+		// Only the tiers the reference's own join does NOT have. A `seq_prefix_stripped` match is
+		// dating.py:438-442 itself, so counting it as fuzzy answered `reproduces: false` for doing
+		// what the reference does — and then printed a ladder without the rung it had just counted.
+		const fuzzy = Object.entries(tiers).reduce((n, [tier, count]) => (exactly.has(tier) ? n : n + (count || 0)), 0);
+		const seqPrefix = tiers.seq_prefix_stripped ?? 0;
 		if (elsewhere.length > 0) {
 			reproduces = false;
+			// The COUNT is the sequences `-d` did not cover, not the dated total: "4 sequence(s) were
+			// dated from beast" was the whole alignment, printed as if it were the shortfall.
+			const perSource = elsewhere.map((s) => `${ingest.coverage?.[`from_${s}`] ?? 0} from ${sourceLabel(s)}`);
 			caveats.push(
 				`\`-d ${datesFile}\` is on the line above, but not every date on this run came from it: ` +
-					`${ingest.coverage?.dated ?? 'some'} sequence(s) were dated from ${used.join(' and ')} ` +
-					'(`header_fallback` is on by default, the reference\'s own behaviour), so the rest were read from the ' +
-					'sequence names by this build\'s own ladder. A different dated set is a different regression. Refuse ' +
-					'rather than fill in, or export a complete two-column CSV.'
+					`${perSource.join(' and ')} (\`header_fallback\` is on by default, the reference's own behaviour), so ` +
+					'those sequences were dated by this build\'s own ladder and not by the file you named. A different ' +
+					'dated set is a different regression. Refuse rather than fill in, or export a complete two-column CSV.'
 			);
 		}
 		if (imputed > 0) {
@@ -275,9 +353,20 @@ export function datingReferenceCommand(run, options = {}, names = {}, ingest = n
 		if (fuzzy > 0) {
 			reproduces = false;
 			caveats.push(
-				`${fuzzy} metadata name(s) were matched to a sequence at a tier below \`exact\` (this build's ` +
-					`seven-tier ladder: ${DATE_MATCH_TIERS.join(', ')}), which the reference's join does not do. Rename ` +
-					'those rows to match the sequence names exactly to reproduce this run.'
+				`${fuzzy} metadata name(s) were matched to a sequence at a tier the reference's join does not have ` +
+					`(this build's ${ladder.length}-tier ladder for this source: ${ladder.join(', ')}; the reference ` +
+					`joins at ${[...exactly].join(' and ')} and nothing else). Rename those rows to match the sequence ` +
+					'names exactly to reproduce this run.'
+			);
+		}
+		// Said whether or not anything fuzzy happened, and it never touches `reproduces`: matching
+		// across `seq_` is what the reference does (dating.py:438-442), so a reader who sees the tier
+		// in `match_tiers` must be able to find out why it is not in the count above.
+		if (seqPrefix > 0) {
+			caveats.push(
+				`${seqPrefix} name(s) matched across the \`seq_\` prefix. That is not a fuzzy match and costs nothing ` +
+					'above: `parse_sample_dates` reconciles the same prefix in both directions on its own BEAST branch ' +
+					'(dating.py:438-442), so the dated set is the one a command-line run would get.'
 			);
 		}
 	}
@@ -373,6 +462,13 @@ export function datingDownloads(run, options = {}) {
 		{ name: `${stem}.json`, type: 'application/json', text: datingJsonText(run.record) },
 		{ name: `${stem}.csv`, type: 'text/csv', text: datingCsvText(run.rows) }
 	];
+}
+
+/** `'regex'` and `'header'` in the words a reader recognises from the page and the tool. */
+function sourceLabel(source) {
+	if (source === 'regex') return 'your `--date-regex` pattern';
+	if (source === 'header') return 'the sequence names';
+	return source;
 }
 
 function withoutKey(record, key) {

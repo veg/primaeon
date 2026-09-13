@@ -55,11 +55,14 @@ import { LIVE_SECTIONS } from "./runner.js";
 
 /**
  * The inputs written into `<jobsDir>/<id>/` exactly as submitted, so a client whose job died in a
- * restart can see what it sent. `dates_file` is `dates.txt` rather than `.csv` or `.json` because
- * it may honestly be either — an Auspice build, a name-to-date JSON object or a delimited table —
- * and naming it for one of them would be a claim about a file this server deliberately does not
- * interpret before the date layer sniffs it. The name a REPRODUCTION line prints is the caller's
- * own basename from `names.dates_file`, not this one.
+ * restart can see what it sent. `dates_file` is `dates.txt` rather than `.csv`, `.json` or `.xml`
+ * because it may honestly be any of them — an Auspice build, a name-to-date JSON object, a
+ * delimited table or (Phase 6b) a BEAST 1.x/2.x XML — and naming it for one of them would be a
+ * claim about a file this server deliberately does not interpret before the date layer sniffs it.
+ * The BEAST reader did not change that: the door has by then sniffed the document for `dating` and
+ * `temporal`, but not for `dates`, so naming the file from the sniff would put a DIFFERENT name on
+ * the same bytes depending on which analysis they arrived for. The name a REPRODUCTION line prints
+ * is the caller's own basename from `names.dates_file`, not this one.
  */
 const INPUT_FILES = Object.freeze({
   alignment: "alignment.fasta",
@@ -246,7 +249,7 @@ export function createJobManager({ config, pool, logger }) {
      * @param {string} [spec.prediction]
      * @param {string} [spec.meme_result]
      * @param {string} [spec.phenotype_file]  the phenotype table's TEXT
-     * @param {string} [spec.dates_file]      the date metadata's TEXT (Auspice JSON, JSON map or CSV/TSV)
+     * @param {string} [spec.dates_file]      the date metadata's TEXT (Auspice JSON, JSON map, CSV/TSV or BEAST XML)
      * @param {object} [spec.options]
      * @param {number} [spec.seed]
      * @param {object} [spec.names]     {alignment, tree, demo}

@@ -10,7 +10,7 @@
     "./web": "./src/session-web.js",
     "./node": "./src/session-node.js",
     "./dates": "./src/dates/index.js",
-		"./dating": "./src/dating/index.js",
+    "./dating": "./src/dating/index.js",
     "./dating/neural": "./src/datingNeural.js",
     "./clock": "./src/clock.js",
     "./temporal": "./src/temporal/index.js",
@@ -28,7 +28,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@veg/hyphaeon-js": "file:../../HyphAeon/js"
+    "@veg/hyphaeon-js": "file:../../HyphAeon/js",
+    "saxes": "6.0.0"
   },
   "optionalDependencies": {
     "onnxruntime-node": "1.23.2",
