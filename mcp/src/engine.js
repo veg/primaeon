@@ -778,6 +778,46 @@ export function tn93Refusal(message, cause) {
   );
 }
 
+/** `EngineError.code` for an installation whose compiled TN93 cannot be loaded. */
+export const TN93_ENGINE_UNAVAILABLE = "TN93_ENGINE_UNAVAILABLE";
+
+/**
+ * THE OTHER TN93 REFUSAL, AND IT IS THE OPPOSITE CLASS. `tn93Refusal` above is about the DATA — a
+ * saturated pair, two sequences with no overlap — and is an `input` error. This one is about the
+ * INSTALLATION: veg/tn93's compiled build is the only TN93 in the product (@veg/hyphaeon-js
+ * computes none of its own since 2026-09-13), so a build that is missing or does not verify means
+ * this process can run no tree-free analysis for anybody. Telling a caller to fix their alignment
+ * would be wrong in both directions, so it is a `server` error carrying the loader's own stage,
+ * release and hashes — everything an operator needs — and it is matched on `err.code` rather than
+ * on prose.
+ *
+ * @param {unknown} err
+ * @returns {EngineError|null}
+ */
+export function tn93EngineUnavailable(err) {
+  // The library's own `Tn93EngineRequiredError`: a code path that reached a tree-free matrix without
+  // wiring an engine into it. That is a BUG IN THIS APPLICATION rather than a broken installation,
+  // and it must not be reported as anything to do with the caller's alignment either.
+  if (err && err.code === "TN93_ENGINE_REQUIRED") {
+    return new EngineError(
+      "server",
+      "A tree-free analysis was started without a TN93 engine wired into it, which is a defect in this " +
+        "server rather than anything about your data: " + String(err.message || err),
+      { cause: err, code: "TN93_ENGINE_REQUIRED", hint: "Report it to the operator; every tree-free path is supposed to resolve the compiled engine first." }
+    );
+  }
+  if (!err || err.code !== TN93_ENGINE_UNAVAILABLE) return null;
+  return new EngineError("server", String(err.message || err), {
+    cause: err,
+    code: TN93_ENGINE_UNAVAILABLE,
+    hint:
+      (err.hint ? err.hint + " " : "") +
+      "Nothing about the submitted data will change this: veg/tn93's compiled build is the only TN93 " +
+      "this product has, and there is no JavaScript fallback. Report it to the operator; a run whose " +
+      "tree carries branch lengths is unaffected and still works."
+  });
+}
+
 /** Turn any failure inside a native run into an EngineError with a class. */
 export function classifyEngineError(err) {
   if (err instanceof EngineError) return err;
@@ -786,6 +826,9 @@ export function classifyEngineError(err) {
   if (name === "AbortError" || /cancelled/i.test(message)) {
     return new EngineError("input", "The run was cancelled.", { cause: err });
   }
+  // Before the data refusal, because a missing engine is not a property of the alignment.
+  const unavailable = tn93EngineUnavailable(err);
+  if (unavailable) return unavailable;
   const tn93 = tn93Refusal(message, err);
   if (tn93) return tn93;
   // THE ONE RUNTIME MESSAGE THAT NAMES ITS OWN ARGUMENT. `runDating` throws a RangeError for
@@ -977,24 +1020,41 @@ export function createEngine(opts = {}) {
       //
       // THIS LINE IS PROBED, NOT ASSERTED, and until 2026-09-13 it was neither: it read
       // "tn93 (library)" while every tree-free run on this surface had gone through veg/tn93's own
-      // compiled build since that build was vendored. `auto` prefers the compiled engine and falls
-      // back to the library's JavaScript port when the module will not load or verify, so the
-      // request is not the answer and only a resolution can say which one this installation has.
+      // compiled build since that build was vendored. The probe now also answers a question that
+      // has a bad answer: veg/tn93's compiled build is the ONLY TN93 in the product, so an
+      // installation whose vendored bytes are missing or do not verify can run no tree-free
+      // analysis at all, and `list_models` is where a client finds that out before it submits work.
       // MEASURED on darwin/x64, Node 22: 5.9 ms cold (median of 7, module read + sha256 + wasm
       // instantiation), 0.00 ms once resolved — the loader memoises, so the run that follows pays
       // nothing for this and `list_models` stays as cheap as its docstring promises. A graph is
       // still never loaded here.
       const resolveTn93 = rt.resolveTn93Options;
       if (typeof resolveTn93 === "function") {
-        const probe = await resolveTn93({ shape: "square" });
-        out.tree_free =
-          probe.tn93Engine === "wasm"
-            ? "tn93 (veg/tn93's own compiled build, WebAssembly, vendored in the runtime and sha256-verified before it runs)"
-            : "tn93 (the library's JavaScript port of the tn93 package)";
-        // Only present when `auto` actually fell back, so its absence is not an implied success.
-        if (probe.error) out.tree_free_fallback_reason = String(probe.error.message || probe.error);
+        try {
+          const probe = await resolveTn93({ shape: "square" });
+          out.tree_free =
+            probe.tn93Engine === "wasm"
+              ? "tn93 (veg/tn93's own compiled build, WebAssembly, vendored in the runtime and sha256-verified before it runs)"
+              : "tn93 (a distance provider this installation was handed; not vouched for here)";
+        } catch (err) {
+          // A refusal, reported rather than thrown: `list_models` answers "what can this
+          // installation do", and "no tree-free analysis, here is why" is that answer.
+          out.tree_free = null;
+          out.tree_free_unavailable = {
+            code: err && err.code ? err.code : "TN93_ENGINE_UNAVAILABLE",
+            message: String((err && err.message) || err),
+            stage: (err && err.stage) || null,
+            hint: (err && err.hint) || null
+          };
+        }
       } else {
-        out.tree_free = "tn93 (the library's JavaScript port of the tn93 package; this runtime checkout exports no resolveTn93Options)";
+        out.tree_free = null;
+        out.tree_free_unavailable = {
+          code: "TN93_ENGINE_UNAVAILABLE",
+          message: "This runtime checkout exports no resolveTn93Options, so no compiled TN93 engine can be reached.",
+          stage: "library",
+          hint: "Upgrade @veg/hyphaeon-runtime. There is no JavaScript TN93 in either package to fall back to."
+        };
       }
       out.branch_length_estimator = null;
       // Which Phase 2 / Phase 3 entry points this runtime checkout provides.
@@ -1132,8 +1192,11 @@ export function createEngine(opts = {}) {
     if (analysis === "dating") {
       const runDating = requireRuntime(rt, "runDating", "dating/run.js");
       // Node needs no URLs: the loader finds `runtime/vendor/tn93/` beside itself and verifies the
-      // two files against `vendor/tn93/MANIFEST.json` before the module is instantiated. `auto`
-      // falls back to the library's port with the reason attached rather than failing the run.
+      // two files against `vendor/tn93/MANIFEST.json` before the module is instantiated. There is
+      // nothing behind it — @veg/hyphaeon-js computes no TN93 distance — so a build that will not
+      // load raises `Tn93EngineUnavailableError` here and `runToolError` reports it as a SERVER
+      // fault with the loader's own stage, release and hashes: this installation is broken, and it
+      // is not the caller's alignment that is wrong.
       const resolveTn93 = requireRuntime(rt, "resolveTn93Options", "tn93-wasm.js");
       const tn93 = await resolveTn93({ shape: "cross" });
       let neural = null;
@@ -1169,7 +1232,6 @@ export function createEngine(opts = {}) {
           dates: ingest,
           tn93Options: tn93.tn93Options,
           tn93Engine: tn93.tn93Engine,
-          tn93EngineFallbackReason: tn93.error ? String(tn93.error.message || tn93.error) : null,
           neural,
           modelUnavailableReason,
           timeUnits: ingest.time_units,

@@ -13,16 +13,21 @@
  *
  * IT RUNS THE SAME TN93 THE RUN WILL. `diagnose()`'s model-level pass calls
  * `loadAlignmentAndTree`, so a tree-free check computes the whole N x N distance matrix — and the
- * library's signature has no `tn93Options`, so it computed that matrix with the JavaScript port
+ * library's signature had no `tn93Options`, so it computed that matrix with the JavaScript port
  * while the analyze worker two clicks later used veg/tn93's compiled build. `diagnoseUpload`
- * (runtime/src/pipeline.js) is the same `diagnose()` with the resolved engine handed in through its
- * existing `parsed` argument. MEASURED per process, median of 7, alignment only and no tree:
- * camelid 212 taxa 200 ms compiled against 373 ported, HIV1_RT 475 taxa 981 ms against 2,776 — with
- * an IDENTICAL diagnosis either way (same warning codes and severities, byte-identical summary, all
- * five bundled examples). This runs on a debounce as the reader types, so it is the one place in
- * the product where that difference is felt directly. Below the loader's measured break-even the
- * compiled engine's fixed load costs more than the whole matrix (bat_oas1, 18 taxa: 44 ms against
- * 14), so `auto` sizes the job and takes the port there on purpose.
+ * (runtime/src/pipeline.js) is the same `diagnose()` with the resolved engine handed in. MEASURED
+ * per process, median of 7, alignment only and no tree: camelid 212 taxa 200 ms compiled against
+ * 373 in the port, HIV1_RT 475 taxa 981 ms against 2,776 — with an IDENTICAL diagnosis either way
+ * (same warning codes and severities, byte-identical summary, all five bundled examples). This runs
+ * on a debounce as the reader types, so it is the one place in the product where the compiled
+ * engine's fixed ~90 ms load is felt directly on a small input (bat_oas1, 18 taxa: 44 ms against
+ * 14). It is paid anyway: that port is deleted, and one engine everywhere is the point.
+ *
+ * SO A DIAGNOSIS CAN NOW SAY "NO ENGINE". The three files under `static/tn93/` are the only TN93
+ * this page has; a failed fetch or a sha256 mismatch means a tree-free upload cannot be measured at
+ * all. `diagnoseUpload` reports that rather than throwing — a `refuse`-level
+ * `TN93_ENGINE_UNAVAILABLE` row carrying the stage, the vendored release, the files and both
+ * hashes — so the panel shows a refusal a reader can act on and the Run button stays shut.
  *
  * The prescreen (runtime/src/prescreen, DM3's XGBoost gate) reads a Newick STRING with branch
  * lengths. For a user tree that is the text as given; for a tree embedded in a NEXUS alignment
@@ -60,9 +65,10 @@ serve<PrepRequest, PrepResponse>(async (req) => {
 		alignmentText: req.alignmentText,
 		treeText: req.treeText,
 		maxSpecies: req.maxSpecies,
-		// Without URLs there is nothing to load, so ask for the port by name rather than letting
-		// `auto` try, fail and attach a fallback reason that says only "the page served no files".
-		tn93Engine: wasm ? 'auto' : 'js',
+		// The URLs when the page served them, nothing when it did not: only a TREE-FREE diagnosis
+		// loads the engine, so an upload with usable branch lengths is unaffected either way, and one
+		// without gets the loader's own refusal (TN93_ENGINE_UNAVAILABLE, stage `no_sources`) as a
+		// diagnostic row. There is no port to ask for instead.
 		tn93Wasm: wasm
 	});
 	const names = sequenceNames(req.alignmentText);
@@ -88,8 +94,10 @@ serve<PrepRequest, PrepResponse>(async (req) => {
 			warnings: diagnosis.warnings,
 			summary: diagnosis.summary
 		},
-		// The run's own answer, read off the diagnosis rather than off the request: `auto` falls back
-		// to the port when the module will not load, and takes it deliberately below the break-even.
+		// The diagnosis's own answer, read off the result rather than off the request: `'wasm'` when
+		// the compiled build measured this matrix, `'custom'` for a provider handed in, and null when
+		// the upload used a tree, when it was too large to load, or when no engine could be reached
+		// (in which case `diagnosis.warnings` carries the TN93_ENGINE_UNAVAILABLE refusal).
 		tn93Engine: diagnosis.tn93_engine,
 		names,
 		prescreen,

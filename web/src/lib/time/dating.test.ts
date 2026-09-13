@@ -22,6 +22,7 @@
 import { describe, expect, it } from 'vitest';
 import { runDating } from '@veg/hyphaeon-runtime/dating';
 import { ingestDates, taxaForDates } from '@veg/hyphaeon-runtime/dates';
+import { resolveTn93Options } from '@veg/hyphaeon-runtime/tn93-wasm';
 import {
 	clockNote,
 	countsSentence,
@@ -47,6 +48,20 @@ import {
 import { available, example } from './fixtures';
 import type { DatingResult } from './types';
 
+/**
+ * THE ENGINE, RESOLVED ONCE AT MODULE SCOPE. `runDating` is synchronous and the compiled TN93's
+ * loader is not, so every caller resolves first and hands the options in — and since
+ * @veg/hyphaeon-js's JavaScript TN93 was deleted (one implementation, veg/tn93, rather than two kept
+ * in step by hand) a run without this object does not compute the same numbers more slowly, it
+ * throws `Tn93EngineRequiredError`. Under Node the loader finds `runtime/vendor/tn93/` and verifies
+ * its sha256; `'cross'` is the rectangular hook `computeTreeFreeDivergences` calls.
+ *
+ * The numbers below are therefore the COMPILED engine's, checked against the same reference values
+ * this file has always asserted — which is a statement about veg/tn93 reproducing the reference on
+ * a real alignment, not merely about this page's formatting.
+ */
+const TN93 = (await resolveTn93Options({ shape: 'cross' })).tn93Options;
+
 /** `runDating` returns typed arrays the worker drops; the page only ever sees this much. */
 function runOn(text: string, rootTaxon: string | null, excluded: string[] = []): DatingResult {
 	const taxa = taxaForDates(text);
@@ -56,7 +71,8 @@ function runOn(text: string, rootTaxon: string | null, excluded: string[] = []):
 		alignmentName: 'korber_env_gp160.fasta',
 		dates: { rows: ingest.rows.map((r) => ({ taxon: r.taxon, value: r.value })) },
 		rootTaxon,
-		excludedTaxa: excluded
+		excludedTaxa: excluded,
+		tn93Options: TN93
 	});
 	return {
 		ok: run.ok,

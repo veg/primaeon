@@ -32,9 +32,9 @@
  * different in kind — `inferSites` throws — and rejects, which is why the page's Stop button changes
  * its label between the two phases.
  *
- * THE PREPARE BLOCK TRAVELS WITH ALL THREE. `prepareRun` decides, on a tree-free run, WHICH TN93
- * computes the pairwise distances — veg/tn93's compiled build or the library's JavaScript port —
- * and records the answer as `preprocessing.tn93_engine`. This worker asked for the compiled one and
+ * THE PREPARE BLOCK TRAVELS WITH ALL THREE. `prepareRun` records, on a tree-free run, WHICH TN93
+ * computed the pairwise distances — veg/tn93's compiled build, or a provider a caller handed in —
+ * as `preprocessing.tn93_engine`. This worker asked for the compiled one and
  * then returned nothing but the record, so the page could not say which engine had actually run and
  * the provenance it printed was a description of the request rather than of the run. The block is
  * small (counts, names and flags) and is posted whole, once, with the response.
@@ -101,7 +101,12 @@ serve<TemporalRequest, TemporalResponse>(async (req, ctx) => {
 			maxSpecies: req.options.maxSpecies,
 			// D22: a tree with usable branch lengths is used as given; without one the library takes
 			// pairwise TN93 distances straight into the MDS, which is the reference's own `--use-tn93`.
-			...(req.tn93Base ? { tn93Wasm: tn93Sources(req.tn93Base) } : { tn93Engine: 'js' })
+			// The URLs are spread in when the page served them and omitted when it did not: only a
+			// TREE-FREE run loads the engine, so an upload that carries branch lengths still runs on a
+			// page that served no TN93 files, and one that does not gets the loader's own refusal
+			// (TN93_ENGINE_UNAVAILABLE, stage `no_sources`) rather than a second implementation — there
+			// is none left to fall back to.
+			...(req.tn93Base ? { tn93Wasm: tn93Sources(req.tn93Base) } : {})
 		},
 		progress: ctx.progress,
 		signal: ctx.signal

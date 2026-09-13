@@ -49,7 +49,8 @@ export function capsAnalysisFor(analysis) {
  * The caps options an analysis's own request implies. `dating`'s work term switches on `use_model`
  * (mcp/src/caps.js `workFor`): the default path is a root-to-tip regression over pairwise TN93
  * distances, O(N x L) and measured at 43 ms on korber's 143 x 981 (median of 9, date ingest plus
- * `runDating`, with veg/tn93's compiled build; 36 ms with the library's JavaScript port), while
+ * `runDating`, with veg/tn93's compiled build; 36 ms with the JavaScript port that has since been
+ * deleted), while
  * `use_model: true` adds one forward pass over every codon and is the ordinary L x N^2 — and
  * brings the pillar's own
  * DATING_MODEL_MAX_TAXA ceiling with it, which refuses rather than downsampling into it.
@@ -229,12 +230,17 @@ export function dateCheck(analysis, alignment, datesFile, options = {}, names = 
  * accepted — and it computed it with the library's JavaScript port while every accepted job used
  * veg/tn93's compiled build. `diagnoseUpload` resolves the engine (loading a WebAssembly module,
  * hence the promise) and hands it to the same load. MEASURED per process, median of 7, this
- * machine, alignment only and no tree: korber 143 taxa 200 ms compiled against 373 ported,
- * HIV1_RT 475 taxa 981 ms against 2,776 — and the diagnosis is IDENTICAL either way (same warning
+ * machine, alignment only and no tree: korber 143 taxa 200 ms compiled against 373 in the port,
+ * HIV1_RT 475 taxa 981 ms against 2,776 — and the diagnosis was IDENTICAL either way (same warning
  * codes and severities, byte-identical summary, checked on all five bundled examples), which is
- * why swapping it is allowed to be invisible. On a small upload the compiled engine's fixed load
- * costs more than the whole matrix (bat_oas1, 18 taxa: 44 ms against 14), so `auto` sizes the job
- * and takes the port below its measured break-even; `summary.tn93_engine` reports which ran.
+ * why swapping it was allowed to be invisible. That port is now deleted, so the compiled engine's
+ * fixed load is paid on a small upload too (bat_oas1, 18 taxa: 44 ms against 14) and
+ * `summary.tn93_engine` reports which engine ran.
+ *
+ * AND IT CAN NOW SAY "NO ENGINE". `diagnoseUpload` never throws: a deployment whose vendored build
+ * is missing or does not verify gets a `refuse`-level TN93_ENGINE_UNAVAILABLE row here, so
+ * `/validate` tells an operator what is wrong with the INSTALLATION before a job is submitted and
+ * fails in a worker.
  *
  * @param {{alignment: string, tree?: string, analysis?: string, use_tn93?: boolean,
  *   max_species?: number, dates_file?: string, options?: object}} input
@@ -259,8 +265,10 @@ export async function validate({ alignment, tree, analysis = "analyze", use_tn93
     engine: "in-process",
     tree_source: treeSourceFor({ treeGiven, embedded: !treeGiven && hasEmbeddedTree(alignment), treeFree: treeFree !== null }),
     tree_free: treeFree ? treeFree.data.reason : null,
-    // Which TN93 computed the matrix this diagnosis was made from: 'wasm' | 'js' | 'custom' on a
-    // tree-free check, null when a tree supplied the distances or nothing could be loaded.
+    // Which TN93 computed the matrix this diagnosis was made from: 'wasm' (the vendored compiled
+    // build) or 'custom' on a tree-free check, null when a tree supplied the distances, when the
+    // upload was too large to load, or when no engine could be reached — in which case the
+    // TN93_ENGINE_UNAVAILABLE refusal is in `warnings`.
     tn93_engine: lib.tn93_engine,
     distance_rescaled: lib.warnings.some((w) => w.code === "DISTANCE_RESCALED"),
     work: 0,

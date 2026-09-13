@@ -549,24 +549,31 @@ export function statEntries(run: DatingResult, units: TimeUnits): StatEntry[] {
 /**
  * WHICH TN93 COMPUTED THE DIVERGENCES, in the reader's words. `primaeon.tn93_engine` is the run's
  * own answer and is never inferred from the option that was asked for: a page that named the
- * compiled engine on a run that fell back to the port would be making a claim about provenance it
- * had not checked, which is the defect this field was added to close. `ProvenancePanel.svelte` says
- * the same thing for the selection report, in the same two phrasings.
+ * compiled engine on a run that used something else would be making a claim about provenance it had
+ * not checked, which is the defect this field was added to close. `ProvenancePanel.svelte` says the
+ * same thing for the selection report, in the same words.
  */
 export function tn93EngineName(run: DatingResult): string {
 	return tn93EngineWords(((run.record.primaeon ?? {}) as Record<string, unknown>).tn93_engine);
 }
 
 /**
- * The same three phrasings for a bare engine label, so every surface that has one — this pillar's
+ * The phrasings for a bare engine label, so every surface that has one — this pillar's
  * `primaeon.tn93_engine`, the temporal pillar's `preprocessing.tn93_engine`, the selection report's
  * `ProvenancePanel` — says it in the same words. It is here rather than in `temporal.ts` because
  * this is the file that first needed it; `tn93EngineName` above is the record-shaped caller.
+ *
+ * THERE WERE THREE PHRASINGS AND THERE ARE NOW TWO. The third named @veg/hyphaeon-js's JavaScript
+ * port of the tn93 package, which is deleted: veg/tn93's compiled build is the single
+ * implementation, so a second one kept in step by hand cannot silently disagree with it. A record
+ * written before that change can still carry `'js'`, and it is answered honestly — that run really
+ * did use the port — rather than relabelled into a claim about code this build no longer contains.
  */
 export function tn93EngineWords(engine: unknown): string {
 	if (engine === 'wasm') return "veg/tn93's compiled code (WebAssembly)";
 	if (engine === 'custom') return 'a distance engine this run was handed';
-	return 'the JavaScript port of the tn93 package';
+	if (engine === 'js') return 'the JavaScript port of the tn93 package (a build that predates its removal)';
+	return 'an engine this record does not name';
 }
 
 /** `'tn93' | 'latent'` — read off the record, never assumed from whether a model ran. */

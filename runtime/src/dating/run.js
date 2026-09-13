@@ -226,12 +226,11 @@ function refuse(code, message, data = {}, warnings = []) {
  *   MCP and the server each load once, at a boundary that is already async, and hand the result in.
  *   Nothing under `src/dating/` may import the loader (`dating-port.test.js` asserts the import
  *   graph), which is the same constraint stated from the other side.
- * @param {'wasm'|'js'|'custom'|null} [args.tn93Engine] what that object actually is, for the record.
+ * @param {'wasm'|'custom'|null} [args.tn93Engine] what that object actually is, for the record.
  *   The object's own stamp (`tn93Options.tn93Engine`, written by `resolveTn93Options`) wins over
- *   this; this can name an unstamped provider `js` or `custom` and can never make one `wasm`,
- *   because a run must never claim an engine it did not use.
- * @param {string|null} [args.tn93EngineFallbackReason] set by a caller whose `auto` resolution fell
- *   back to the port, so the record says the port ran AND why.
+ *   this; this can name an unstamped provider `custom` and can never make one `wasm`, because a run
+ *   must never claim an engine it did not use. There is no `'js'` any more: @veg/hyphaeon-js
+ *   computes no TN93 distance, so a run that reached here has an engine or it did not start.
  * @param {object|null} [args.neural] what `runDatingModelPass` returned: `{crossAttn, taxaRepr,
  *   taxa, N, embedDim, ...}`. Its ABSENCE is a fact about the run, not an error — the record simply
  *   carries `pgls: null` and `latent_root: null`, as `--method ols` does upstream.
@@ -261,7 +260,6 @@ export function runDating(args = {}) {
 		distanceMode = 'auto',
 		tn93Options = null,
 		tn93Engine = null,
-		tn93EngineFallbackReason = null,
 		neural = null,
 		modelUnavailableReason = null,
 		timeUnits = 'years',
@@ -373,31 +371,25 @@ export function runDating(args = {}) {
 	// is computed at all and `model_pass.tn93_engine` is the one that matters instead.
 	//
 	// IT IS NEVER INFERRED FROM THE PRESENCE OF A FUNCTION. Round one wrote
-	// `tn93Options?.pairwiseDistances ? 'wasm' : 'js'`, which labels ANY provider — a caller's own,
-	// or a future object this module hands back after falling to the port — as veg/tn93's compiled
-	// code. An unstamped provider is `custom`: something else made it and nothing here can vouch for
-	// it. A caller's `tn93Engine` argument is honoured only where it cannot overclaim: it can name a
-	// provider `js` or `custom`, and it cannot turn an unstamped one into `wasm`.
+	// `tn93Options?.pairwiseDistances ? 'wasm' : 'js'`, which labels ANY provider — a caller's own —
+	// as veg/tn93's compiled code. An unstamped provider is `custom`: something else made it and
+	// nothing here can vouch for it. A caller's `tn93Engine` argument is honoured only where it
+	// cannot overclaim: it can name a provider `custom`, and it cannot turn an unstamped one into
+	// `wasm`. THERE IS NO `'js'`: the library's JavaScript TN93 was deleted, so a tn93-mode run that
+	// got this far was handed a provider by someone; an unstamped one is `custom` and a missing one
+	// never gets here at all (the library throws `Tn93EngineRequiredError` at the first matrix).
 	//
 	// The key is written out rather than imported because nothing under `src/dating/` may import
 	// `../tn93-wasm.js` (`dating-port.test.js`'s import-graph rule keeps the `/time` route free of
 	// ORT); `dating-tn93-engine.test.js` asserts the two spellings agree.
 	const stampedEngine = tn93Options?.tn93Engine;
-	const declaredEngine = tn93Engine === 'js' || tn93Engine === 'custom' ? tn93Engine : null;
+	const declaredEngine = tn93Engine === 'custom' ? tn93Engine : null;
 	const tn93EngineUsed =
 		distMode !== 'tn93'
 			? null
-			: stampedEngine === 'wasm' || stampedEngine === 'js' || stampedEngine === 'custom'
+			: stampedEngine === 'wasm' || stampedEngine === 'custom'
 				? stampedEngine
-				: (declaredEngine ?? (tn93Options?.pairwiseDistances ? 'custom' : 'js'));
-	if (distMode === 'tn93' && tn93EngineFallbackReason) {
-		warnings.push(
-			datingWarning('DATING_TN93_ENGINE_FALLBACK', 'note', fillMessage(DATING_MESSAGES.TN93_ENGINE_FALLBACK, { reason: tn93EngineFallbackReason }), {
-				reason: tn93EngineFallbackReason,
-				engine: tn93EngineUsed
-			})
-		);
-	}
+				: (declaredEngine ?? (tn93Options?.pairwiseDistances ? 'custom' : null));
 
 	/** `taxa` in the fit's order, and the taxon's row in the model's matrices. */
 	let taxa;
@@ -724,10 +716,10 @@ export function runDating(args = {}) {
 		distance_mode_reason: distModeReason,
 		/**
 		 * Who computed the root-to-tip TN93 divergences: `'wasm'` is veg/tn93's own compiled code
-		 * through `tn93CrossWasmOptions`, `'js'` the library's port of the tn93 package, `'custom'` a
-		 * provider the caller supplied. Null under `--distance-mode latent`, where the divergences are
-		 * `alpha * ||z_i - z_root||` and no TN93 distance is computed. The selection path records the
-		 * same fact as `preprocessing.tn93_engine`; this is its half of it.
+		 * through `tn93CrossWasmOptions`, `'custom'` a provider the caller supplied. Null under
+		 * `--distance-mode latent`, where the divergences are `alpha * ||z_i - z_root||` and no TN93
+		 * distance is computed. The selection path records the same fact as
+		 * `preprocessing.tn93_engine`; this is its half of it.
 		 */
 		tn93_engine: tn93EngineUsed,
 		/** Pairs the compiled tool declined to write at its threshold; see the warning above. */

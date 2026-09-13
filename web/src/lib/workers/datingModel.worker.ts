@@ -104,9 +104,21 @@ serve<DatingModelRequest, DatingResponse>(async (payload, ctx) => {
 	// The library calls the two hooks with different argument lists, so one object cannot serve
 	// both and `tn93-wasm.js` refuses the wrong call shape rather than mis-indexing a matrix.
 	// MEASURED (korber, 143 x 981): the square matrix is 44.4 ms compiled against 198.7 ms in the
-	// port, so this is where the compiled engine earns its 250 KB on this route.
+	// deleted port, so this is where the compiled engine earned its 250 KB on this route — and since
+	// that port is gone from both packages, the 250 KB is no longer a trade at all: without these
+	// three files this route computes no distance and produces no date. A missing base is refused
+	// here by name, and a failed fetch or a hash mismatch is refused by the loader with its stage,
+	// the vendored release and both hashes.
 	const wasmSources = payload.tn93Base ? tn93Sources(payload.tn93Base) : null;
-	const tn93Cross = await resolveTn93Options(wasmSources ? { shape: 'cross', wasm: wasmSources } : { shape: 'cross', engine: 'js' });
+	if (!wasmSources) {
+		throw new Error(
+			'No TN93 engine URLs were given (tn93Base), so neither the model pass\'s square distance ' +
+				'matrix nor the root-to-tip divergences can be computed: veg/tn93\'s compiled build is the ' +
+				'only TN93 in this product. The page serves it from static/tn93/ (tn93.mjs, tn93.wasm, ' +
+				'MANIFEST.json); check that the build copied them.'
+		);
+	}
+	const tn93Cross = await resolveTn93Options({ shape: 'cross', wasm: wasmSources });
 
 	const pass = await runDatingModelPass({
 		// The RAW text, not a parsed map: `*` is rewritten to `-` inside the pass because the TN93
@@ -116,7 +128,6 @@ serve<DatingModelRequest, DatingResponse>(async (payload, ctx) => {
 		alignmentText: payload.alignmentText,
 		session,
 		manifest,
-		tn93Engine: wasmSources ? 'auto' : 'js',
 		tn93Wasm: wasmSources,
 		progress: ctx.progress,
 		signal: ctx.signal
@@ -135,7 +146,6 @@ serve<DatingModelRequest, DatingResponse>(async (payload, ctx) => {
 		timeUnits: payload.timeUnits,
 		tn93Options: tn93Cross.tn93Options,
 		tn93Engine: tn93Cross.tn93Engine,
-		tn93EngineFallbackReason: tn93Cross.error ? String(tn93Cross.error.message ?? tn93Cross.error) : null,
 		progress: ctx.progress,
 		signal: ctx.signal,
 		provenance: {

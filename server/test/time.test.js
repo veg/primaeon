@@ -991,11 +991,31 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
   });
 
   it.skipIf(!HAVE_EXAMPLES)("keeps the projection small even with the honesty block on every payload", () => {
+    // WHAT IS ACTUALLY BOUNDED HERE IS THE PAYLOAD, NOT THE STREAM, and the first version of this
+    // test asserted the stream. `total` sums every `section` event, and the NUMBER of those events
+    // is a function of how many null chunks finish and how many progress refreshes fire — which
+    // grows with wall-clock, so a loaded machine emits more events for the same run and the sum
+    // rises with it. It failed at 564,667 against 512 KiB under a four-workspace run and passed
+    // 53/53 in isolation, which is the signature of an assertion on something unbounded rather
+    // than of a flake. PHASE6 §3 called it "the bound that protects the server"; it never was one.
+    //
+    // The per-event cap IS real (TEMPORAL_PERM_ROWS_MAX bounds the rows in a permutations payload),
+    // so that assertion stays as it was. The stream is bounded instead by what each event costs on
+    // AVERAGE, which does not move with the event count.
+    //
+    // THE MEAN BOUND IS DERIVED FROM THE PER-EVENT CAP, NOT FROM THE OBSERVATION — half of it. That
+    // matters: the regression this test exists to catch is a payload that starts carrying the whole
+    // record, which is megabytes and fails by two orders of magnitude, not a payload that grows a
+    // field. Measured on this run: 13 events averaging 39,458 B, so the bound has ~1.66x headroom.
+    // Setting it just above what was measured would be fitting the test to the run, which is what
+    // produced the unbounded assertion it replaces.
+    const PER_EVENT_MAX = 128 * 1024;
     const sections = events.filter((e) => e.event === "section");
     const biggest = Math.max(...sections.map((e) => e.bytes));
     const total = sections.reduce((a, e) => a + e.bytes, 0);
-    expect(biggest).toBeLessThan(128 * 1024);
-    expect(total).toBeLessThan(512 * 1024);
+    const mean = total / sections.length;
+    expect(biggest).toBeLessThan(PER_EVENT_MAX);
+    expect(mean, `${sections.length} section events averaging ${Math.round(mean)} B`).toBeLessThan(PER_EVENT_MAX / 2);
   });
 });
 

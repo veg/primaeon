@@ -123,9 +123,10 @@ export interface PrepRequest {
 	/**
 	 * Where `static/tn93/` is served from, as the analyze, temporal and dating requests already
 	 * carry it. `diagnose()` does a model-level load of its own, so a tree-free check computes the
-	 * WHOLE N x N TN93 matrix — before every run, on every upload — and without these URLs it
-	 * computes it with the library's JavaScript port while the run that follows uses veg/tn93's
-	 * compiled build. `diagnosis.tn93Engine` reports which one actually ran.
+	 * WHOLE N x N TN93 matrix — before every run, on every upload — and veg/tn93's compiled build is
+	 * the only thing that can compute it: @veg/hyphaeon-js has no TN93 of its own. Without these
+	 * URLs a tree-free upload gets a TN93_ENGINE_UNAVAILABLE refusal in the panel rather than a
+	 * diagnosis; an upload whose tree carries branch lengths is unaffected.
 	 */
 	tn93Base?: string;
 }
@@ -133,10 +134,10 @@ export interface PrepRequest {
 export interface PrepResponse {
 	diagnosis: DiagnosisSnapshot;
 	/**
-	 * Which TN93 computed the distances this diagnosis was made from: `'wasm'` | `'js'` | `'custom'`
-	 * on a tree-free check, `null` when a tree supplied them or nothing could be loaded. The run's
-	 * own answer, never the request's: `auto` asks for the compiled build and falls back to the port
-	 * when the module will not load, and sizes the job so a small upload takes the port deliberately.
+	 * Which TN93 computed the distances this diagnosis was made from: `'wasm'` (the vendored
+	 * compiled build) or `'custom'` (a provider handed in) on a tree-free check, `null` when a tree
+	 * supplied them, when the upload was too large to load, or when no engine could be reached — in
+	 * which case `diagnosis.warnings` carries the refusal. The run's own answer, never the request's.
 	 */
 	tn93Engine: string | null;
 	/** Sequence names in file order, from the library's parser (the reference dropdown). */
@@ -279,11 +280,12 @@ export interface DatingRequest {
 	timeUnits: string;
 	/**
 	 * Absolute URL prefix of the vendored compiled TN93 (`.../tn93/`), as the analyze and temporal
-	 * requests already carry. The dating pillar's root-to-tip divergences are TN93 distances, so
-	 * without this the worker computes them with the library's JavaScript port and the record says
-	 * so; with it they come from veg/tn93's own compiled code, which is what the rest of the product
-	 * uses and what the reference uses whenever a `tn93` binary is on its PATH. The two agree entry
-	 * for entry — `primaeon.tn93_engine` records which one ran either way.
+	 * requests already carry. The dating pillar's root-to-tip divergences are TN93 distances, and
+	 * veg/tn93's compiled code is the only thing that computes one — the library's JavaScript port
+	 * was deleted, so `tn93DistanceMatrix` and `tn93CrossDistanceMatrix` now THROW without an engine.
+	 * This field is therefore effectively required for any tree-free dating run: without it the
+	 * worker has nothing to hand the library and the run refuses with `TN93_ENGINE_UNAVAILABLE`
+	 * rather than computing a second implementation's number.
 	 */
 	tn93Base?: string;
 }

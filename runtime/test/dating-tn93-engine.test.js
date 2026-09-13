@@ -13,16 +13,30 @@
  * note names the failure mode: a library without the hook "would ignore the option and the run
  * would claim an engine it did not use".
  *
+ * WHAT THE PORT'S DELETION TOOK WITH IT (2026-09-13). Half of this file used to be "compiled
+ * against the port, identical": every root case on two real alignments, and a whole dating record
+ * compared field by field. @veg/hyphaeon-js no longer contains a TN93 implementation — one engine,
+ * veg/tn93, rather than two kept in step by hand — so that comparison has no second side and is
+ * gone. What replaces it is an INVARIANCE check over this repository's own dispatch layer, which is
+ * the part that has actually broken twice: the same run is made with the DUAL-shape provider and
+ * with the narrow single-shape one, and the two records must be identical field for field. That
+ * catches a mis-indexed matrix (the failure mode that returns real numbers read the wrong way and
+ * raises nothing) without claiming to check TN93 arithmetic, which nothing here does any more. The
+ * arithmetic is covered by the parity job and by the measurements recorded in
+ * runtime/vendor/tn93/MANIFEST.json and in tn93-wasm.js's header.
+ *
  * WHAT IS CHECKED:
- *   1. The hook is reached. `runDating` with the resolved options calls the provider, and the
- *      record says `wasm`; with none it says `js`. A label that could be right by accident is
- *      worthless, so both directions are asserted.
- *   2. The numbers did not move. All four of `computeTreeFreeDivergences`'s root cases, on two real
- *      alignments, compiled against the port: every divergence identical, and a WHOLE dating record
- *      compared field by field. Case 3 is run BOTH ways — its rectangular branch and its square one
- *      (dating.js:1087 and :1107), the second selected by a cohort of twelve, because the fixture
- *      this file shipped with dated taxa so that the earliest cohort was always eight or five and
- *      the square branch — the one that crashed — was never entered at all.
+ *   1. The hook is reached. `runDating` with the resolved options calls the provider and the record
+ *      says `wasm`; with NONE the run now REFUSES (`Tn93EngineRequiredError` out of the library)
+ *      instead of quietly computing the same numbers in JavaScript, which is the whole point of the
+ *      deletion and is asserted here in place of the old "records `js`".
+ *   2. The numbers do not move across this module's own plumbing. All four of
+ *      `computeTreeFreeDivergences`'s root cases, on two real alignments, dual provider against
+ *      narrow provider: every divergence identical, and a WHOLE dating record compared field by
+ *      field. Case 3 is run BOTH ways — its rectangular branch and its square one (dating.js:1087
+ *      and :1107), the second selected by a cohort of twelve, because the fixture this file shipped
+ *      with dated taxa so that the earliest cohort was always eight or five and the square branch —
+ *      the one that crashed — was never entered at all.
  *   3. The two call shapes cannot be confused, and a THIRD shape is refused rather than guessed at.
  *      The library calls the square hook with three arguments and the rectangular one with five; a
  *      square provider answering a cross call would return row 0 of the wrong matrix with no error
@@ -35,8 +49,8 @@
  *      wrong by inferring `wasm` from the presence of a function.
  *   6. `diagnose()` — the load every upload pays for, in four standalone callers — gets the engine
  *      as well, through `diagnoseUpload`, and the diagnosis it produces is unchanged.
- *   7. The engine is chosen by the SIZE of the job where a caller knows it, at the measured
- *      crossover, because on a small one the compiled engine's load costs more than the matrix.
+ *   7. The engine is NOT chosen by the size of the job, at any size, and no selector can come back:
+ *      the measured crossover is a cost, not a switch, and `'js'` is refused rather than routed.
  *
  * The alignments come from the engine checkout (HYPHAEON_ENGINE_DIR, default ../../HyphAeon), so
  * the suite skips rather than fails where that checkout is absent.
@@ -223,7 +237,6 @@ describe.skipIf(!ready)('runDating reaches the compiled engine', () => {
 	it('calls the hook it was handed, and records `wasm` only then', async () => {
 		const resolved = await resolveTn93Options({ shape: 'cross' });
 		expect(resolved.tn93Engine).toBe('wasm');
-		expect(resolved.error).toBe(null);
 		const probe = counting(resolved.tn93Options);
 
 		const alignmentText = readFileSync(H5N1, 'utf8');
@@ -239,33 +252,70 @@ describe.skipIf(!ready)('runDating reaches the compiled engine', () => {
 		expect(compiled.record.primaeon.tn93_engine).toBe('wasm');
 		expect(compiled.tn93Engine).toBe('wasm');
 
-		// And the other direction: with nothing handed in, the record must not claim an engine.
-		const ported = runDating(base);
-		expect(ported.record.primaeon.tn93_engine).toBe('js');
+		// AND THE OTHER DIRECTION, WHICH IS THE ONE THE DELETION CHANGED. With nothing handed in the
+		// run used to complete on the library's JavaScript port and record `js`. There is no port, so
+		// it now refuses — loudly, out of the library, naming the option that is missing — rather than
+		// producing a date from an engine nobody chose.
+		let err = null;
+		try {
+			runDating(base);
+		} catch (e) {
+			err = e;
+		}
+		expect(err, 'a tn93-mode run with no engine must refuse, not compute').toBeTruthy();
+		expect(err.code).toBe('TN93_ENGINE_REQUIRED');
+		expect(err.option).toBe('pairwiseDistances');
 	}, 120000);
 
-	it('says `js` with the reason when the compiled engine could not be loaded', async () => {
-		const alignmentText = readFileSync(H5N1, 'utf8');
-		const dates = datesFor(H5N1);
-		const run = runDating({
-			alignmentText,
-			dates,
-			timeUnits: dates.time_units,
-			tn93Engine: 'js',
-			tn93EngineFallbackReason: 'the vendored bytes did not verify'
-		});
-		expect(run.record.primaeon.tn93_engine).toBe('js');
-		const note = run.warnings.find((w) => w.code === 'DATING_TN93_ENGINE_FALLBACK');
-		expect(note, 'a fallback must be loud').toBeTruthy();
-		expect(note.message).toMatch(/the vendored bytes did not verify/);
-		expect(note.data.reason).toBe('the vendored bytes did not verify');
+	it("rejects tn93Engine: 'js' instead of quietly meaning something else by it", async () => {
+		// The option named the library's port. Routing it to "use my own provider" would answer a
+		// request for particular ARITHMETIC with a slot to plug something into; refusing finds the
+		// callers instead. The escape hatch is separate and already exists: hand in
+		// `options.pairwiseDistances` and the result is stamped `custom`.
+		const err = await resolveTn93Options({ engine: 'js' }).then(
+			() => null,
+			(e) => e
+		);
+		expect(err).toBeTruthy();
+		expect(err.code).toBe('TN93_ENGINE_UNAVAILABLE');
+		expect(err.stage).toBe('js_requested');
+		expect(err.message).toMatch(/deleted/);
+		expect(err.message).toMatch(/custom/);
+	}, 120000);
+
+	it('refuses a compiled build whose bytes do not verify, with a hint a person can act on', async () => {
+		// The case that used to be a NOTE and a slower run. It is the end of every tree-free analysis
+		// on that installation now, so the refusal has to say which build, which file and what the
+		// sha256 check found — checked here on the path a dating surface actually resolves through.
+		const err = await resolveTn93Options({ shape: 'cross', wasm: { vendorDir: join(HERE, 'no-such-tn93-vendor-dir') } }).then(
+			() => null,
+			(e) => e
+		);
+		expect(err).toBeTruthy();
+		expect(err.code).toBe('TN93_ENGINE_UNAVAILABLE');
+		expect(err.stage).toBe('manifest');
+		expect(err.files.join(' ')).toMatch(/no-such-tn93-vendor-dir/);
+		expect(err.hint).toBeTruthy();
 	}, 120000);
 });
 
-describe.skipIf(!ready)('the numbers did not move', () => {
+describe.skipIf(!ready)('the numbers do not move across this module\'s own plumbing', () => {
+	// WHAT THIS COMPARES, NOW THAT THERE IS NO PORT. `cross` is the DUAL-shape provider — one object
+	// that answers both of the library's hooks, which is what `computeTreeFreeDivergences` needs
+	// because case 3 picks its shape at runtime from the data. `narrow` is the single-shape provider
+	// for whichever hook the case reaches. Both run veg/tn93's compiled code; what differs is this
+	// repository's dispatch in between, and that dispatch is what has broken twice (a square provider
+	// answering a cross call with row 0 of the wrong matrix, and a cross-only provider throwing on
+	// case 3's square branch). Identical records mean the dual provider routed every call to the same
+	// matrix the narrow one computes directly. It is not a check of TN93 arithmetic; see the header.
 	let cross;
+	let narrowCross;
+	let narrowSquare;
 	beforeAll(async () => {
 		cross = await tn93CrossWasmOptions();
+		const module = await loadTn93Wasm();
+		narrowCross = { [TN93_ENGINE_KEY]: 'wasm', pairwiseDistances: tn93CrossProvider(module) };
+		narrowSquare = await tn93WasmOptions();
 	}, 120000);
 
 	// The four cases of computeTreeFreeDivergences (dating.py:624-698) — and case 3 TWICE, because
@@ -291,20 +341,28 @@ describe.skipIf(!ready)('the numbers did not move', () => {
 				for (const rootTaxon of [null, 'earliest', 'unweighted_consensus', taxa[0]]) {
 					const dated = taxa.filter((t) => t !== rootTaxon);
 					const before = cross.tn93Stats.squareCalls;
-					const ported = computeTreeFreeDivergences(seqs, dated, dates, { rootTaxon });
-					const compiled = computeTreeFreeDivergences(seqs, dated, dates, { ...cross, rootTaxon });
+					const dual = computeTreeFreeDivergences(seqs, dated, dates, { ...cross, rootTaxon });
 					// Case 3 and a cohort over ten is the square hook, and nothing else here is.
 					const wantSquare = cohort.square && rootTaxon === 'earliest';
 					expect({ root: rootTaxon, square: cross.tn93Stats.squareCalls > before }).toEqual({ root: rootTaxon, square: wantSquare });
-					if (wantSquare) expect(compiled.root_description).toMatch(/^earliest_cohort_n(1[1-9]|[2-9]\d)/);
-					expect(compiled.case, `root case for ${rootTaxon}`).toBe(ported.case);
-					expect(compiled.taxa).toEqual(ported.taxa);
-					expect(compiled.root_description).toBe(ported.root_description);
+					if (wantSquare) expect(dual.root_description).toMatch(/^earliest_cohort_n(1[1-9]|[2-9]\d)/);
+					// The SAME case through the narrow provider for the shape it actually reaches. A
+					// dual provider that routed a call to the wrong matrix would differ here.
+					const narrow = computeTreeFreeDivergences(seqs, dated, dates, {
+						...(wantSquare ? narrowSquare : narrowCross),
+						rootTaxon
+					});
+					expect(dual.case, `root case for ${rootTaxon}`).toBe(narrow.case);
+					expect(dual.taxa).toEqual(narrow.taxa);
+					expect(dual.root_description).toBe(narrow.root_description);
 					let worst = 0;
-					for (let i = 0; i < ported.divergences.length; i++) {
-						worst = Math.max(worst, Math.abs(ported.divergences[i] - compiled.divergences[i]));
+					for (let i = 0; i < narrow.divergences.length; i++) {
+						worst = Math.max(worst, Math.abs(narrow.divergences[i] - dual.divergences[i]));
 					}
 					expect({ root: rootTaxon, worst }).toEqual({ root: rootTaxon, worst: 0 });
+					// And the divergences really were measured rather than left at a default: a root
+					// case that returned zeros everywhere would satisfy every equality above.
+					expect(dual.divergences.some((d) => d > 0)).toBe(true);
 				}
 				// No pair was left unwritten at the tool's 1.0 threshold on either alignment, which is the
 				// one condition under which the two engines are allowed to disagree (tn93-wasm.js header).
@@ -329,31 +387,36 @@ describe.skipIf(!ready)('the numbers did not move', () => {
 		expect(earliest).toHaveLength(1);
 		const base = { alignmentText, dates, rootTaxon: 'earliest', excludedTaxa: earliest, timeUnits: dates.time_units };
 
-		const ported = runDating(base);
+		// Narrow SQUARE provider against the dual one: this branch calls tn93DistanceMatrix, so the
+		// narrow square provider answers it directly and the dual one has to route it there.
+		const narrow = runDating({ ...base, tn93Options: narrowSquare, tn93Engine: 'wasm' });
 		const compiled = runDating({ ...base, tn93Options: cross, tn93Engine: 'wasm' });
-		expect(ported.ok).toBe(true);
+		expect(narrow.ok).toBe(true);
 		expect(compiled.ok).toBe(true);
 		// The cohort really is the square branch's: more than ten, fewer than 2500 dated taxa.
 		expect(compiled.record.primaeon.root_taxa.length).toBeGreaterThan(10);
 		expect(compiled.record.root_description).toMatch(/^earliest_cohort_n\d+$/);
-		expect(deepDiff(ported.record, compiled.record).filter(([p]) => !EXPECTED_TO_DIFFER.test(p))).toEqual([]);
-		expect(deepDiff(ported.rows, compiled.rows).filter(([p]) => !EXPECTED_TO_DIFFER.test(p))).toEqual([]);
+		expect(deepDiff(narrow.record, compiled.record).filter(([p]) => !EXPECTED_TO_DIFFER.test(p))).toEqual([]);
+		expect(deepDiff(narrow.rows, compiled.rows).filter(([p]) => !EXPECTED_TO_DIFFER.test(p))).toEqual([]);
 	}, 180000);
 
-	it('a whole dating record is the same record either way', () => {
+	it('a whole dating record is the same record through either provider', () => {
 		const alignmentText = readFileSync(KORBER, 'utf8');
 		const dates = datesFor(KORBER);
 		const base = { alignmentText, alignmentName: 'korber_env_gp160.fasta', dates, timeUnits: dates.time_units };
 		const compiled = runDating({ ...base, tn93Options: cross, tn93Engine: 'wasm' });
-		const ported = runDating(base);
-		expect(compiled.ok && ported.ok).toBe(true);
-		expect(ported.rows.length).toBeGreaterThan(100);
+		const narrow = runDating({ ...base, tn93Options: narrowCross, tn93Engine: 'wasm' });
+		expect(compiled.ok && narrow.ok).toBe(true);
+		expect(narrow.rows.length).toBeGreaterThan(100);
+		// A real fit, not two matching nulls: the estimate exists and the divergences are not zero.
+		expect(Number.isFinite(compiled.record.ols.t_mrca)).toBe(true);
+		expect(compiled.divergences.some((d) => d > 0)).toBe(true);
 
-		const recordDiff = deepDiff(ported.record, compiled.record).filter(([p]) => !EXPECTED_TO_DIFFER.test(p));
+		const recordDiff = deepDiff(narrow.record, compiled.record).filter(([p]) => !EXPECTED_TO_DIFFER.test(p));
 		expect(recordDiff).toEqual([]);
-		const rowDiff = deepDiff(ported.rows, compiled.rows).filter(([p]) => !EXPECTED_TO_DIFFER.test(p));
+		const rowDiff = deepDiff(narrow.rows, compiled.rows).filter(([p]) => !EXPECTED_TO_DIFFER.test(p));
 		expect(rowDiff).toEqual([]);
-		expect(compiled.warnings.map((w) => w.code)).toEqual(ported.warnings.map((w) => w.code));
+		expect(compiled.warnings.map((w) => w.code)).toEqual(narrow.warnings.map((w) => w.code));
 	}, 180000);
 });
 
@@ -424,12 +487,18 @@ describe.skipIf(!ready)('the record names the engine that ran, and cannot be tol
 		// run.js spells the key as a literal. This is the test that keeps the two spellings equal: the
 		// object below is stamped only through the exported constant.
 		expect(TN93_ENGINE_KEY).toBe('tn93Engine');
-		const stampedJs = { [TN93_ENGINE_KEY]: 'js', pairwiseDistances: (...args) => crossOptions.pairwiseDistances(...args) };
-		expect(runDating({ ...baseRun(), tn93Options: stampedJs }).record.primaeon.tn93_engine).toBe('js');
+		const stampedCustom = { [TN93_ENGINE_KEY]: 'custom', pairwiseDistances: (...args) => crossOptions.pairwiseDistances(...args) };
+		expect(runDating({ ...baseRun(), tn93Options: stampedCustom }).record.primaeon.tn93_engine).toBe('custom');
 		const stampedWasm = { ...crossOptions };
 		expect(runDating({ ...baseRun(), tn93Options: stampedWasm }).record.primaeon.tn93_engine).toBe('wasm');
-		// And with no options at all, the port ran and the record says so.
-		expect(runDating(baseRun()).record.primaeon.tn93_engine).toBe('js');
+		// A STAMP NO LONGER MAKES AN ENGINE EXIST. 'js' named the library's port, which is deleted; a
+		// record carrying it would be a claim about code this build does not contain, so it is not a
+		// value this run can be told to write. The object still has a provider, so the run completes
+		// and the honest label for a provider nothing here vouches for is `custom`.
+		const stampedJs = { [TN93_ENGINE_KEY]: 'js', pairwiseDistances: (...args) => crossOptions.pairwiseDistances(...args) };
+		expect(runDating({ ...baseRun(), tn93Options: stampedJs }).record.primaeon.tn93_engine).toBe('custom');
+		// And with no options at all there is no engine, so the run refuses rather than recording one.
+		expect(() => runDating(baseRun())).toThrow(/no compiled TN93 engine/);
 	}, 120000);
 
 	it('the omitted-pair count is this run\'s, not the counter\'s running total', () => {
@@ -465,44 +534,63 @@ describe.skipIf(!ready)('the record names the engine that ran, and cannot be tol
 	it('every object this module hands out carries its own engine, and `custom` is what unstamped means', async () => {
 		expect(tn93EngineOf(crossOptions)).toBe('wasm');
 		expect(tn93EngineOf(await tn93WasmOptions())).toBe('wasm');
-		expect(tn93EngineOf((await resolveTn93Options({ engine: 'js' })).tn93Options)).toBe('js');
 		expect(tn93EngineOf({ pairwiseDistances: () => [] })).toBe('custom');
-		expect(tn93EngineOf(null)).toBe('js');
-		expect(tn93EngineOf({ matchMode: 'resolve' })).toBe('js');
+		// NO ENGINE IS `null`, NOT `'js'`. An options object with no provider is not a run computing
+		// its distances in JavaScript; it is a run that cannot start (the library throws at the first
+		// matrix). Reporting it as an engine name would put a claim in the record for a run that
+		// produced no distance at all.
+		expect(tn93EngineOf(null)).toBe(null);
+		expect(tn93EngineOf({ matchMode: 'resolve' })).toBe(null);
+		// And a stale `'js'` stamp is not honoured into existence either.
+		expect(tn93EngineOf({ [TN93_ENGINE_KEY]: 'js', pairwiseDistances: () => [] })).toBe('custom');
 	}, 120000);
 });
 
-describe('the compiled engine is the engine, at every size', () => {
+describe('the compiled engine is the engine, at every size, with nothing behind it', () => {
 	// The measurements say the compiled build cannot pay back its ~90 ms of load below a few
 	// thousand pairs, and an earlier draft of this work turned that into a switch: small jobs went
 	// to the port. That was wrong, and this block is what stops it coming back.
 	//
 	// veg/tn93 is a repository this project's authors maintain, and the vendored build is how its
-	// updates arrive here. The JavaScript port is a second implementation of the same arithmetic,
-	// kept in step by hand — so a path still running the port is a path where the two can silently
-	// diverge the day upstream changes. The compiled target was asked for on that ground, and it
-	// overrides the timing. The port is the fallback for a build that will not load, not a fast path.
+	// updates arrive here. A JavaScript port is a second implementation of the same arithmetic, kept
+	// in step by hand — so a path still able to run it is a path where the two can silently diverge
+	// the day upstream changes. The compiled target was asked for on that ground, and it overrides
+	// the timing. The port has now been DELETED rather than demoted to a fallback, so there is no
+	// longer anything for a size rule, a shape rule or a surface to select.
 	it('resolves `auto` to the compiled engine no matter how small the job is', async () => {
 		for (const pairs of [1, 10, 153, 3499, 10 ** 9]) {
 			const out = await resolveTn93Options({ shape: 'cross', pairs });
 			expect(out.tn93Engine, `pairs=${pairs}`).toBe('wasm');
 			expect(typeof out.tn93Options.pairwiseDistances).toBe('function');
-			expect(out.tn93EngineReason).toBeNull();
 		}
 	}, 120000);
 
-	it('has no size-based selector left to reintroduce the port silently', async () => {
+	it('has no size-based selector and no fallback path left to reintroduce a second engine', async () => {
 		const src = readFileSync(new URL('../src/tn93-wasm.js', import.meta.url), 'utf8');
 		// The prose explains why the crossover is NOT a switch; no live code may branch on it.
 		expect(src).not.toMatch(/export const TN93_WASM_BREAK_EVEN_PAIRS/);
 		expect(src).not.toMatch(/export function tn93EngineForPairs/);
-		expect(src).not.toMatch(/return ported\('below_break_even'/);
+		expect(src).not.toMatch(/return ported\(/);
+		// And nothing may hand back an options object claiming the deleted port.
+		expect(src).not.toMatch(/TN93_ENGINE_KEY\]: 'js'/);
 	});
 
-	it('an explicit engine is still honoured in both directions', async () => {
+	it('an explicit `wasm` is honoured, and `js` is refused rather than routed', async () => {
 		expect((await resolveTn93Options({ engine: 'wasm', pairs: 1 })).tn93Engine).toBe('wasm');
-		expect((await resolveTn93Options({ engine: 'js', pairs: 10 ** 9 })).tn93Engine).toBe('js');
 		expect((await resolveTn93Options({ shape: 'cross' })).tn93Engine).toBe('wasm');
+		await expect(resolveTn93Options({ engine: 'js', pairs: 10 ** 9 })).rejects.toThrow(/TN93 engine/);
+		// An engine name that never existed is refused the same way, rather than falling through to
+		// the compiled build and quietly succeeding.
+		await expect(resolveTn93Options({ engine: 'native' })).rejects.toThrow(/not an engine this product has/);
+	}, 120000);
+
+	it("a caller's own provider is still accepted, and is labelled `custom` rather than ours", async () => {
+		// The escape hatch `'js'` must not be re-pointed at. It is separate, explicit, and honest
+		// about whose numbers these are.
+		const mine = { pairwiseDistances: () => new Float64Array(4) };
+		const out = await resolveTn93Options({ options: mine });
+		expect(out.tn93Engine).toBe('custom');
+		expect(out.tn93Options).toBe(mine);
 	}, 120000);
 });
 
@@ -525,14 +613,36 @@ describe.skipIf(!ready)('diagnose() gets the engine too, on the path every uploa
 
 	it('changes nothing about the diagnosis itself', async () => {
 		// The engine is a question of who multiplies; the report a reader sees must be the same one.
-		// `parsed` is the only mechanism used, so this is the test that it was used faithfully.
+		// `parsed` and `tn93Options` are the only mechanisms used, so this is the test that they were
+		// used faithfully — `diagnose` given the same engine directly must produce the same document.
 		const alignmentText = readFileSync(KORBER, 'utf8');
-		const plain = diagnose({ alignmentText });
+		const { tn93Options } = await resolveTn93Options();
+		const plain = diagnose({ alignmentText, tn93Options });
 		const withEngine = await diagnoseUpload({ alignmentText });
 		expect(withEngine.ok).toBe(plain.ok);
 		expect(withEngine.summary).toEqual(plain.summary);
 		expect(withEngine.warnings).toEqual(plain.warnings);
-		expect(withEngine.tn93_engine).toBe('wasm'); // 10,153 pairs, over the crossover
+		expect(withEngine.tn93_engine).toBe('wasm');
+	}, 180000);
+
+	it('reports a missing engine as a refusal rather than throwing out of a diagnosis', async () => {
+		// `diagnose()` is what a surface runs to find out what is wrong with an upload, so it must not
+		// be the thing that explodes. With the port deleted a tree-free diagnosis cannot be produced
+		// at all without an engine — bare `diagnose` throws — and `diagnoseUpload` turns that into a
+		// `refuse` row a panel can render, carrying the stage, the release, the files and the hint.
+		const alignmentText = readFileSync(KORBER, 'utf8');
+		const out = await diagnoseUpload({ alignmentText, tn93Wasm: { vendorDir: join(HERE, 'no-such-tn93-vendor-dir') } });
+		expect(out.ok).toBe(false);
+		expect(out.tn93_engine).toBe(null);
+		const row = out.warnings.find((w) => w.code === 'TN93_ENGINE_UNAVAILABLE');
+		expect(row, 'the refusal must be a diagnostic, not an exception').toBeTruthy();
+		expect(row.severity).toBe('refuse');
+		expect(row.data.stage).toBe('manifest');
+		expect(row.data.hint).toBeTruthy();
+		expect(out.tn93_engine_error.code).toBe('TN93_ENGINE_UNAVAILABLE');
+		// AND IT IS NOT THE SATURATION REFUSAL. Reporting a missing engine as TN93_SATURATED_PAIRS
+		// would tell a reader their alignment is too divergent to measure when nothing measured it.
+		expect(out.warnings.some((w) => w.code === 'TN93_SATURATED_PAIRS')).toBe(false);
 	}, 180000);
 
 	it('does not load an engine for a run that will not compute a TN93 matrix', async () => {
@@ -543,6 +653,10 @@ describe.skipIf(!ready)('diagnose() gets the engine too, on the path every uploa
 		const out = await diagnoseUpload({ alignmentText, treeText });
 		expect(out.tn93_engine).toBe(null);
 		expect(out.warnings).toEqual(diagnose({ alignmentText, treeText }).warnings);
+		// And it really did not load one: a vendor directory that does not exist changes nothing here.
+		const noEngine = await diagnoseUpload({ alignmentText, treeText, tn93Wasm: { vendorDir: join(HERE, 'no-such-tn93-vendor-dir') } });
+		expect(noEngine.ok).toBe(out.ok);
+		expect(noEngine.warnings).toEqual(out.warnings);
 	}, 180000);
 
 	it('takes the compiled engine even on a small upload, and matches `diagnose` exactly', async () => {
@@ -552,7 +666,7 @@ describe.skipIf(!ready)('diagnose() gets the engine too, on the path every uploa
 		const alignmentText = readFileSync(join(EXAMPLES, 'bat_oas1.fasta'), 'utf8');
 		const out = await diagnoseUpload({ alignmentText });
 		expect(out.tn93_engine).toBe('wasm');
-		expect(out.tn93_engine_reason).toBeNull();
-		expect(out.warnings).toEqual(diagnose({ alignmentText }).warnings);
+		expect(out.tn93_engine_error).toBeNull();
+		expect(out.warnings).toEqual(diagnose({ alignmentText, tn93Options: (await resolveTn93Options()).tn93Options }).warnings);
 	}, 180000);
 });

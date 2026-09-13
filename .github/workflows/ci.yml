@@ -116,7 +116,15 @@ env:
   # the estimator's own sampling distribution, which on a field checked nine times a run fails a
   # defect-free run about three quarters of the time. The new classes TIGHTEN the null mean 2-3.9x
   # and loosen only the std, from 1.65 sigma to 3.
-  ENGINE_REF: phase-5f
+  #
+  # phase-5g DELETES the JavaScript TN93 port from the library. `tn93DistanceMatrix` and
+  # `tn93CrossDistanceMatrix` now REQUIRE an injected `pairwiseDistances` and throw without one, so
+  # this pin and the app's engine plumbing move together in the strongest sense yet: an older ref
+  # has a port to fall back on and would quietly compute a second implementation's numbers, which is
+  # exactly what the deletion exists to prevent. It also threads `tn93Options` through
+  # `runAlignmentFilter` and `diagnose`, which the app now needs — the report's FILTER section had
+  # no way to receive an engine before it.
+  ENGINE_REF: phase-5g
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on

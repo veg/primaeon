@@ -182,8 +182,9 @@
 	/**
 	 * `prepareRun`'s own preprocessing block for this run, which the record does not carry. It is
 	 * held for one field — `tn93_engine`, which TN93 computed the distances the model was given — and
-	 * the page prints the run's answer rather than the request it made: `auto` asks for veg/tn93's
-	 * compiled build and falls back to the library's JavaScript port when the module will not load.
+	 * the page prints the run's answer rather than the request it made. `auto` is veg/tn93's compiled
+	 * build; there is no JavaScript port left to fall back to, so a build that will not load refuses
+	 * the run instead of answering it differently.
 	 */
 	let temporalPreprocessing = $state<TemporalPreprocessing | null>(null);
 	let temporalAbort: AbortController | null = null;

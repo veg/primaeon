@@ -2233,8 +2233,9 @@ export function registerTools(server, deps) {
         "taxon caps, ONNX contract, PRNG) read through the runtime's manifest reader, and the " +
         "engine's status: the models directory, onnxruntime-node, the MDS sign convention, how " +
         "distances are obtained without a usable tree (pairwise TN93 — `tree_free` names the engine " +
-        "that answered the probe: veg/tn93's vendored compiled build, or the library's JavaScript " +
-        "port when that build will not load), and which runtime " +
+        "that answered the probe: veg/tn93's vendored compiled build, which is the only " +
+        "implementation there is. There is no JavaScript fallback; if that build will not load, " +
+        "tree-free analysis refuses), and which runtime " +
         "entry points this build provides. Every pillar runs in this process; nothing is shelled " +
         "out and no Python is involved.",
       inputSchema: {},

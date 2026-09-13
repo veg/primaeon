@@ -586,14 +586,16 @@ export async function runEverything({
 		try {
 			const filter = await timed('filter', async () => {
 				phase('filter', 0, 1, 'Screening for alignment artifacts...');
-				// THE ONE TN93 CALL IN THIS FILE THAT DOES NOT GET THE COMPILED ENGINE. When this
-				// masks a patch it re-loads the cleaned alignment (filter.js:608), and on a tree-free
-				// run that load computes a second full N x N TN93 matrix — with the library's
-				// JavaScript port, because `runAlignmentFilter` destructures its options at
-				// filter.js:453-465 and `tn93Options` is not among them, so there is nothing to pass.
-				// The numbers are unaffected (both engines are bit-identical, measured); the cost is
-				// not (HIV1_RT 476 taxa: 835 ms ported against 178 compiled, warm). Flagged in
-				// runtime/src/tn93-wasm.js's header; the fix is a parameter upstream.
+				// THE SECOND TN93 MATRIX, AND WHY IT GETS THE ENGINE NOW. When this masks a patch it
+				// re-loads the cleaned alignment (filter.js:618), and on a tree-free run that load
+				// computes a second full N x N TN93 matrix. `runAlignmentFilter` used to destructure
+				// its options with no `tn93Options` among them, so there was nothing to pass and that
+				// matrix fell to the library's JavaScript port while `preprocessing.tn93_engine` said
+				// `wasm` for the first — flagged in runtime/src/tn93-wasm.js, fixed upstream by the
+				// parameter forwarded below. Since the port was deleted this is no longer a cost
+				// question at all: without `tn93Options` the load throws `Tn93EngineRequiredError`
+				// here, in section 6, after five sections have already run. `prep.tn93Options` is the
+				// SAME object the meme pass used, so both matrices come from one engine.
 				const res = await runAlignmentFilter(
 					{ alignmentText, treeText: treeArg, loaded, baseLrts: sites.arrays.lrt },
 					predict,
@@ -603,6 +605,7 @@ export async function runEverything({
 						maxSpecies: speciesCap,
 						pruneDuplicates: options.pruneDuplicates !== false,
 						batchSize,
+						...(prep.tn93Options ? { tn93Options: prep.tn93Options } : {}),
 						onProgress: (p) => phase('filter', p.done, p.total, `Re-scoring cleaned alignment: site ${p.done} of ${p.total}...`)
 					}
 				);

@@ -1,18 +1,37 @@
 /**
  * WHY THIS FILE EXISTS
  *
- * The tree-free path (PLAN.md D22) needs pairwise TN93 distances. `@veg/hyphaeon-js` computes them
- * in pure JavaScript, mirroring the `tn93` PyPI package the reference falls back to; this file runs
- * veg/tn93's own compiled code instead, through the WebAssembly build published as a release asset
- * from v1.0.17 onwards. It exists because the distances the product ships should come from the
- * lab's own tool rather than from a second implementation of it — the same reason the reference
- * prefers the binary whenever `shutil.which("tn93")` finds one (dataset.py:505-537).
+ * The tree-free path (PLAN.md D22) needs pairwise TN93 distances. THIS FILE IS THE ONLY THING IN
+ * the product that can produce one: it runs veg/tn93's own compiled code, through the WebAssembly
+ * build published as a release asset from v1.0.17 onwards and vendored under `runtime/vendor/tn93/`.
+ *
+ * THERE IS NO SECOND IMPLEMENTATION AND NO FALLBACK (2026-09-13). @veg/hyphaeon-js used to carry a
+ * JavaScript port of the `tn93` PyPI package — the pure-Python branch dataset.py takes when no
+ * binary is on PATH — and this module used to fall back to it when the compiled build would not
+ * load. That port is deleted from the library, by the repository owner's decision, and the reason
+ * is edge cases rather than speed:
+ *
+ *   veg/tn93 is a repository THIS TEAM MAINTAINS, and the vendored build is how its updates reach a
+ *   run: a fix lands upstream, the release is re-vendored, MANIFEST.json's sha256 verifies it. A
+ *   JavaScript port is a second implementation of the same arithmetic, kept in step by hand, and
+ *   every path still able to reach it is a path where the two can silently disagree the day the
+ *   tool changes — on an ambiguity convention, a gap rule, a saturated pair. Timings are not the
+ *   argument: the compiled engine is the SLOWER of the two on a small matrix (the cost table below
+ *   keeps the numbers) and that price was accepted. An earlier change that picked between them by
+ *   matrix size was rejected for exactly this reason, which is also why nothing here chooses an
+ *   engine by size, by shape or by surface.
+ *
+ * SO A BUILD THAT WILL NOT LOAD IS A REFUSAL, NOT A SLOWER RUN. `Tn93EngineUnavailableError`
+ * (`code: 'TN93_ENGINE_UNAVAILABLE'`) carries what a person needs to act: the stage that failed, the
+ * release the manifest names, the files it was reading, and — on an integrity failure — both
+ * hashes. Every surface reports it as a refusal with that code rather than scoring anything.
  *
  * WHAT THIS FILE OWNS, AND WHAT IT DOES NOT. It owns everything the library must not: locating and
  * verifying bytes, instantiating a module, a virtual filesystem, an argv. It returns nothing but
  * RAW pairwise distances. The sentinel, the float32 rounding and dataset.py's imputation stay in
- * `tn93DistanceMatrix`, which takes these numbers through its `pairwiseDistances` hook, so the two
- * engines cannot drift in how a distance is USED — only in what it is.
+ * `tn93DistanceMatrix`, which takes these numbers through its `pairwiseDistances` hook — now a
+ * REQUIRED option there, throwing the library's own `Tn93EngineRequiredError` when it is absent, so
+ * a path that forgets to wire an engine fails loudly instead of quietly computing something else.
  *
  * THE ARGV is the reference's own: `-t 1.0 -l 1 -q -o <csv> <fasta>` (dataset.py:507-537) — a 1.0
  * threshold, a one-nucleotide minimum overlap, quiet, CSV out with the binary's default `-a resolve`
@@ -44,21 +63,17 @@
  * (case 3, cohort > 10 — the SQUARE one), `:1136` (case 4) and `preprocess/assemble.js:283`, the
  * square matrix every model-level load computes. Four cross, two square, one options object each.
  *
- * ONE APP PATH REACHES assemble.js:283 AND CANNOT BE GIVEN THE HOOK, and it is recorded here rather
- * than quietly left out of the enumeration above. The report's alignment-artifact FILTER section
- * (`analyze.js`, the `runAlignmentFilter` call) re-loads the CLEANED alignment when it masks a patch
- * — `filter.js:608` -> `loadAlignmentAndTree` -> `tn93Assembly` -> `tn93DistanceMatrix` — and the
- * library's `runAlignmentFilter` destructures its options at `filter.js:453-465` with no
- * `tn93Options` among them, so there is no argument to forward. A tree-free report that finds an
- * artifact therefore computes its SECOND full N x N matrix on the library's JavaScript port while
- * `preprocessing.tn93_engine` says `wasm` for the first. MEASURED with the library's two matrix
- * functions instrumented: on camelid `runEverything` makes exactly two 212-taxon square calls, the
- * first hooked (one compiled `main()`) and the second not. It costs time and nothing else — the two
- * engines are bit-identical, worst |delta| exactly 0 at 20, 143, 212 and 476 taxa — and the time is
- * small where N is (camelid 38.4 ms ported against 22.9 compiled, warm) and not where it is not
- * (HIV1_RT 476 taxa: 835.4 ms against 177.8, with the module already loaded and warm). Closing it
- * needs a `tn93Options` parameter on `runAlignmentFilter` upstream; it is FLAGGED here, not worked
- * around, because the fix belongs in @veg/hyphaeon-js. This predates the hook work on both sides.
+ * THE FILTER SECTION'S SECOND MATRIX IS NOW HOOKED TOO, and it is worth recording what closing it
+ * took, because until this change it was the one hole in the enumeration above. The report's
+ * alignment-artifact FILTER section (`analyze.js`) re-loads the CLEANED alignment when it masks a
+ * patch — `filter.js:618` -> `loadAlignmentAndTree` -> `tn93Assembly` -> `tn93DistanceMatrix` — and
+ * `runAlignmentFilter` used to destructure its options with no `tn93Options` among them, so there
+ * was no argument to forward and that second full N x N matrix fell to the library's port while
+ * `preprocessing.tn93_engine` said `wasm` for the first. It was flagged here rather than worked
+ * around, the parameter landed upstream (`filter.js:473`, forwarded to BOTH loads), and `analyze.js`
+ * now passes `prep.tn93Options`. With the port deleted the hole would no longer be a slow path at
+ * all: it would be a `Tn93EngineRequiredError` thrown out of the middle of a report that had already
+ * run six sections.
  *
  * ONE OPTIONS OBJECT REACHES BOTH HOOKS, WHICH IS WHY THE CROSS OPTIONS ANSWER BOTH SHAPES.
  * `computeTreeFreeDivergences` (dating.js:1035) hands its `options` — ours — to whichever library
@@ -165,6 +180,81 @@ import { sha256Hex } from './manifest.js';
 /** The reference's own argv for the compiled tool (dataset.py:507-537). */
 export const TN93_ARGV = Object.freeze(['-t', '1.0', '-l', '1', '-q']);
 
+/**
+ * THE ONE REFUSAL FOR "THE COMPILED ENGINE IS NOT AVAILABLE", on every surface.
+ *
+ * It exists because there is nothing to fall back to. Until 2026-09-13 a build that would not load
+ * was a NOTE (`TN93_ENGINE_FALLBACK`) and the run continued on @veg/hyphaeon-js's JavaScript port;
+ * that port is deleted (see the head of this file) and a failed load now means no tree-free
+ * analysis at all. A refusal that says only "TN93 failed" would leave a reader with nothing to do,
+ * so this carries what a person can act on:
+ *
+ *   `stage`    where it broke — 'js_requested' | 'no_sources' | 'read' | 'manifest' | 'integrity' |
+ *              'instantiate' | 'library'. The first is a caller asking for an engine that no longer
+ *              exists; the rest are the load itself, in the order it happens.
+ *   `release`  what `MANIFEST.json` says it vendored (`tn93 v1.0.17`), when the manifest was read.
+ *   `files`    the paths or URLs it was reading — a Node vendor directory, or the three URLs a page
+ *              serves from `static/tn93/`.
+ *   `expectedSha256` / `actualSha256` on an integrity failure, so "what the sha256 check said" is in
+ *              the error rather than in a log somewhere.
+ *   `hint`     one sentence of what to do about it, differing per stage.
+ *
+ * `code` is the stable string every surface reports: the runtime's warning code, the MCP's error
+ * code, the server's job error, the report's and /time's refusal. Classify on `code`, never on the
+ * message.
+ */
+export class Tn93EngineUnavailableError extends Error {
+	/**
+	 * @param {object} args
+	 * @param {string} args.stage
+	 * @param {string} args.hint
+	 * @param {string[]} [args.files]
+	 * @param {string|null} [args.release]
+	 * @param {string|null} [args.expectedSha256]
+	 * @param {string|null} [args.actualSha256]
+	 * @param {string} [args.detail] what actually went wrong, in the underlying error's own words
+	 * @param {unknown} [args.cause]
+	 */
+	constructor({ stage, hint, files = [], release = null, expectedSha256 = null, actualSha256 = null, detail = '', cause = undefined }) {
+		const where = files.length ? ` Reading: ${files.join(', ')}.` : '';
+		const rel = release ? ` Vendored release: ${release}.` : '';
+		const hashes = expectedSha256 ? ` sha256 expected ${expectedSha256}, got ${actualSha256 ?? '(none)'}.` : '';
+		super(
+			`The compiled TN93 engine (veg/tn93, WebAssembly) is unavailable, so no tree-free analysis ` +
+				`can run: ${detail || stage}.${rel}${where}${hashes} ${hint}`,
+			cause === undefined ? undefined : { cause }
+		);
+		this.name = 'Tn93EngineUnavailableError';
+		/** The stable code every surface reports; classify on this, not on the message. */
+		this.code = 'TN93_ENGINE_UNAVAILABLE';
+		this.stage = stage;
+		this.files = files;
+		this.release = release;
+		this.expectedSha256 = expectedSha256;
+		this.actualSha256 = actualSha256;
+		this.hint = hint;
+	}
+
+	/** The fields a record, a job error or an MCP payload carries; JSON-safe, no Error inside. */
+	toDetail() {
+		return {
+			code: this.code,
+			stage: this.stage,
+			release: this.release,
+			files: this.files,
+			expected_sha256: this.expectedSha256,
+			actual_sha256: this.actualSha256,
+			hint: this.hint,
+			message: this.message
+		};
+	}
+}
+
+/** True for the refusal above, however many module copies of this file a bundler made. */
+export function isTn93EngineUnavailable(err) {
+	return Boolean(err) && /** @type {any} */ (err).code === 'TN93_ENGINE_UNAVAILABLE';
+}
+
 /** One instantiated module per resolved source; a failed load is never kept. */
 const modules = new Map();
 
@@ -193,6 +283,39 @@ async function nodeSources(dir) {
 	};
 }
 
+/** An error's own words, for a refusal's `detail`; never an object rendered as [object Object]. */
+function message(err) {
+	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * What MANIFEST.json says it vendored, for the refusal's `release`. `version` first, because that
+ * is the tag a person re-vendors from (`v1.0.17`); `release` in that file is the release URL and is
+ * appended rather than used as the name. Shape-tolerant: it is diagnostic only, and a manifest that
+ * failed to parse must not turn a load failure into a TypeError.
+ */
+function releaseOf(manifest) {
+	const m = manifest ?? {};
+	const tag = m.version ?? m.tag ?? null;
+	const tool = m.tool ?? 'tn93';
+	if (!tag) return m.release ? String(m.release) : null;
+	return `${tool} ${tag}${m.asset ? ` (${m.asset})` : ''}`;
+}
+
+/** `fetch` with a non-2xx treated as a failure; the browser's own resolve-on-404 is a trap here. */
+async function fetchJson(url) {
+	const res = await fetch(url);
+	if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+	return await res.json();
+}
+
+/** The same, for bytes. */
+async function fetchBytes(url) {
+	const res = await fetch(url);
+	if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+	return new Uint8Array(await res.arrayBuffer());
+}
+
 /**
  * Instantiate the tn93 module, verifying both files against the vendored manifest first.
  *
@@ -213,49 +336,120 @@ export async function loadTn93Wasm(args = {}) {
 
 	const promise = (async () => {
 		const isNode = typeof process !== 'undefined' && process.versions?.node && !args.glueUrl;
-		const src = isNode
-			? await nodeSources(args.vendorDir)
-			: {
-					// Everything a browser caller passes must survive structuredClone — these options
-					// travel to a worker inside the run's `options` and are stored with the record —
-					// so the manifest is named by URL and fetched HERE, not handed over as an object
-					// or a promise. (A promise in that payload fails as "could not be cloned", which
-					// is how this was found.)
-					manifest: args.manifest ?? (args.manifestUrl ? await (await fetch(args.manifestUrl)).json() : null),
-					glueUrl: args.glueUrl,
-					wasmUrl: args.wasmUrl,
-					readBytes: async (u) => new Uint8Array(await (await fetch(u)).arrayBuffer())
-				};
+		// EVERY FAILURE BELOW IS A REFUSAL WITH A STAGE, because there is no fallback left and a
+		// person has to be able to act on it. `where` is the best description of the files in play at
+		// each point; it grows as the load learns more (the vendor directory, then the three URLs).
+		let where = isNode ? [args.vendorDir ?? 'runtime/vendor/tn93/'] : [args.glueUrl, args.wasmUrl, args.manifestUrl].filter(Boolean);
+		/** @type {string|null} */
+		let release = null;
+
+		/** @type {any} */
+		let src;
+		try {
+			src = isNode
+				? await nodeSources(args.vendorDir)
+				: {
+						// Everything a browser caller passes must survive structuredClone — these options
+						// travel to a worker inside the run's `options` and are stored with the record —
+						// so the manifest is named by URL and fetched HERE, not handed over as an object
+						// or a promise. (A promise in that payload fails as "could not be cloned", which
+						// is how this was found.)
+						manifest: args.manifest ?? (args.manifestUrl ? await fetchJson(args.manifestUrl) : null),
+						glueUrl: args.glueUrl,
+						wasmUrl: args.wasmUrl,
+						readBytes: fetchBytes
+					};
+		} catch (err) {
+			throw new Tn93EngineUnavailableError({
+				stage: 'manifest',
+				files: where,
+				detail: `MANIFEST.json could not be read (${message(err)})`,
+				hint: isNode
+					? 'Check that runtime/vendor/tn93/ is present in this checkout; it is tracked, not downloaded.'
+					: 'The page must serve tn93.mjs, tn93.wasm and MANIFEST.json from the same origin; check that the build copied static/tn93/ and that no request was blocked.',
+				cause: err
+			});
+		}
+		release = releaseOf(src.manifest);
+		if (!isNode) where = [src.glueUrl, src.wasmUrl, args.manifestUrl].filter(Boolean);
+		else where = [src.dir];
+
 		if (!src.glueUrl || !src.wasmUrl) {
-			throw new Error('loadTn93Wasm: glueUrl and wasmUrl are required outside Node');
+			throw new Tn93EngineUnavailableError({
+				stage: 'no_sources',
+				files: where,
+				release,
+				detail: 'no glueUrl/wasmUrl were given and this is not Node, so there is nowhere to load from',
+				hint: 'A browser caller must pass glueUrl, wasmUrl and manifestUrl (the page serves them from static/tn93/).'
+			});
 		}
 
-		const wasmBytes = await src.readBytes(src.wasmUrl);
+		/** @type {Uint8Array} */
+		let wasmBytes;
+		try {
+			wasmBytes = await src.readBytes(src.wasmUrl);
+		} catch (err) {
+			throw new Tn93EngineUnavailableError({
+				stage: 'read',
+				files: [src.wasmUrl],
+				release,
+				detail: `tn93.wasm could not be read (${message(err)})`,
+				hint: isNode
+					? 'Re-vendor the release named in runtime/vendor/tn93/MANIFEST.json.'
+					: 'The page served no readable tn93.wasm; check the build copied static/tn93/ and that the request was not blocked.',
+				cause: err
+			});
+		}
+
 		if (args.verifyHash !== false) {
 			const expected = src.manifest?.files?.['tn93.wasm']?.sha256;
-			if (!expected) throw new Error('loadTn93Wasm: MANIFEST.json names no sha256 for tn93.wasm');
+			if (!expected) {
+				throw new Tn93EngineUnavailableError({
+					stage: 'manifest',
+					files: where,
+					release,
+					detail: 'MANIFEST.json names no sha256 for tn93.wasm, so the bytes cannot be verified',
+					hint: 'An unverified engine is not run. Re-vendor from a veg/tn93 release, which ships the hashes.'
+				});
+			}
 			const got = await sha256Hex(wasmBytes);
 			if (got !== expected) {
-				throw new Error(
-					`tn93 WebAssembly integrity check failed: expected sha256 ${expected}, got ${got}. ` +
-						'Re-vendor from the release named in vendor/tn93/MANIFEST.json.'
-				);
+				throw new Tn93EngineUnavailableError({
+					stage: 'integrity',
+					files: [src.wasmUrl],
+					release,
+					expectedSha256: expected,
+					actualSha256: got,
+					detail: 'the vendored tn93.wasm does not match the sha256 in MANIFEST.json',
+					hint: 'A mismatched engine is never run and never memoised. Re-vendor from the release named in MANIFEST.json, or restore the file the build copied.'
+				});
 			}
 		}
 
-		const factory = isNode
-			? (await import(/* @vite-ignore */ 'node:module')).createRequire(import.meta.url)(src.glueUrl)
-			: (await import(/* @vite-ignore */ src.glueUrl)).default;
+		try {
+			const factory = isNode
+				? (await import(/* @vite-ignore */ 'node:module')).createRequire(import.meta.url)(src.glueUrl)
+				: (await import(/* @vite-ignore */ src.glueUrl)).default;
 
-		return await factory({
-			noInitialRun: true,
-			print: () => {},
-			printErr: () => {},
-			// The glue would otherwise resolve tn93.wasm beside the SCRIPT, which under Vite is a
-			// hashed bundle path; hand it the verified bytes we already read.
-			instantiateWasm: (imports, done) =>
-				WebAssembly.instantiate(wasmBytes, imports).then((out) => done(out.instance, out.module))
-		});
+			return await factory({
+				noInitialRun: true,
+				print: () => {},
+				printErr: () => {},
+				// The glue would otherwise resolve tn93.wasm beside the SCRIPT, which under Vite is a
+				// hashed bundle path; hand it the verified bytes we already read.
+				instantiateWasm: (imports, done) =>
+					WebAssembly.instantiate(wasmBytes, imports).then((out) => done(out.instance, out.module))
+			});
+		} catch (err) {
+			throw new Tn93EngineUnavailableError({
+				stage: 'instantiate',
+				files: [src.glueUrl, src.wasmUrl],
+				release,
+				detail: `the module would not instantiate (${message(err)})`,
+				hint: "The page needs 'wasm-unsafe-eval' in script-src and a browser with WebAssembly; under Node the glue is required through createRequire.",
+				cause: err
+			});
+		}
 	})();
 
 	modules.set(key, promise);
@@ -670,22 +864,14 @@ export const TN93_ENGINE_KEY = 'tn93Engine';
  *   HIV1_RT 200  19,900 162.9 ms  198.0 ms   yes
  *   HIV1_RT 476 113,050 338.9 ms  865.1 ms   yes
  *
- * Below ~3,500 unordered pairs the compiled engine does not earn its ~90 ms of load back, and above
- * it the gap widens with N². THAT IS RECORDED HERE AS A COST AND IS NOT A SWITCH. An earlier draft
- * of this file turned it into one — `TN93_WASM_BREAK_EVEN_PAIRS` with a `tn93EngineForPairs` that
- * sent small jobs to the port — and that was wrong on a ground the timings cannot see.
- *
- * WHY THE COMPILED ENGINE IS NOT A PERFORMANCE CHOICE. veg/tn93 is a repository this project's
- * authors maintain, and the vendored build is how its updates arrive here: a fix or a change in the
- * tool lands as a new release we re-vendor, verified by MANIFEST.json's sha256. The JavaScript port
- * is a second implementation of the same arithmetic that has to be kept in step BY HAND, and every
- * code path still running it is a path where the two can silently diverge the day upstream changes.
- * Sergei asked for the compiled target for exactly that reason, and the decision was recorded as a
- * stakeholder directive that overrides the measurement.
- *
- * So `auto` means the compiled engine, on every job, whatever its size. The port remains as the
- * FALLBACK when the compiled build cannot load — and only then, loudly, with `TN93_ENGINE_FALLBACK`
- * and a reason. The ~90 ms on a small job is a price this project has decided to pay.
+ * The "port" column is what the deleted JavaScript port measured on the day it was removed, kept
+ * because it is the price of this decision and a price should be written down rather than implied.
+ * Below ~3,500 unordered pairs the compiled engine did not earn its ~90 ms of load back. THAT IS
+ * RECORDED HERE AS A COST AND IS NOT A SWITCH, and there is no longer anything for a switch to
+ * select: an earlier draft of this file made it one (`TN93_WASM_BREAK_EVEN_PAIRS` with a
+ * `tn93EngineForPairs` that sent small jobs to the port) and it was rejected on a ground the
+ * timings cannot see — see the head of this file. The ~90 ms on a small job is a price this project
+ * has decided to pay, on every job, at every size, on every surface.
  */
 
 
@@ -698,10 +884,11 @@ export const TN93_ENGINE_KEY = 'tn93Engine';
  */
 export async function tn93WasmOptions(args = {}) {
 	if (!libraryHonoursProvider()) {
-		throw new Error(
-			'@veg/hyphaeon-js does not support tn93Options.pairwiseDistances, so the compiled TN93 ' +
-				'would be loaded and then ignored. Upgrade the library, or ask for tn93Engine: "js".'
-		);
+		throw new Tn93EngineUnavailableError({
+			stage: 'library',
+			detail: '@veg/hyphaeon-js ignores tn93Options.pairwiseDistances, so the compiled engine would be loaded and then not used',
+			hint: 'Upgrade @veg/hyphaeon-js to a version whose tn93DistanceMatrix takes the pairwiseDistances hook. There is no JavaScript TN93 to fall back to in either package.'
+		});
 	}
 	const module = await loadTn93Wasm(args);
 	return { pairwiseDistances: tn93Provider(module), [TN93_ENGINE_KEY]: 'wasm' };
@@ -724,11 +911,13 @@ export async function tn93CrossWasmOptions(args = {}) {
 	// that honoured only one of them would compute that branch in JavaScript while the record said
 	// `wasm`, which is the exact failure this module exists to make impossible.
 	if (!libraryHonoursCrossProvider() || !libraryHonoursProvider()) {
-		throw new Error(
-			'@veg/hyphaeon-js does not support both shapes of tn93Options.pairwiseDistances, so the ' +
-				'compiled TN93 would be loaded and then ignored on at least one root case. Upgrade the ' +
-				'library, or ask for tn93Engine: "js".'
-		);
+		throw new Tn93EngineUnavailableError({
+			stage: 'library',
+			detail:
+				'@veg/hyphaeon-js ignores at least one shape of tn93Options.pairwiseDistances, so the compiled ' +
+				'engine would be loaded and then not used on at least one root case',
+			hint: 'Upgrade @veg/hyphaeon-js to a version whose tn93DistanceMatrix AND tn93CrossDistanceMatrix both take the pairwiseDistances hook. There is no JavaScript TN93 to fall back to in either package.'
+		});
 	}
 	const module = await loadTn93Wasm(args);
 	const tn93Stats = { pairs: 0, omitted: 0, calls: 0, squareCalls: 0 };
@@ -738,18 +927,32 @@ export async function tn93CrossWasmOptions(args = {}) {
 /**
  * What engine an options object was made by, read from the stamp and NEVER inferred.
  *
+ * TWO ANSWERS, PLUS "NOTHING". `'wasm'` is the vendored veg/tn93 build, stamped by this file.
  * `'custom'` is the honest answer for a provider this module did not make: it may be anyone's, and
- * round one's `pairwiseDistances ? 'wasm' : 'js'` would have called it — and a future fallback to
- * the port inside a stamped object — `wasm` in the record.
+ * round one's `pairwiseDistances ? 'wasm' : 'js'` would have called it `wasm` in the record.
+ * `null` is an options object with no engine at all — which since the library's port was deleted is
+ * not a run that computes distances in JavaScript, it is a run that cannot start: the library
+ * throws `Tn93EngineRequiredError`. The third value this used to return, `'js'`, named an
+ * implementation that no longer exists anywhere and is gone from every record and every panel.
  *
  * @param {object|null|undefined} options
- * @returns {'wasm'|'js'|'custom'}
+ * @returns {'wasm'|'custom'|null}
  */
 export function tn93EngineOf(options) {
 	const stamped = options?.[TN93_ENGINE_KEY];
-	if (stamped === 'wasm' || stamped === 'js' || stamped === 'custom') return stamped;
-	return options?.pairwiseDistances ? 'custom' : 'js';
+	if (stamped === 'wasm' || stamped === 'custom') return stamped;
+	return options?.pairwiseDistances ? 'custom' : null;
 }
+
+/**
+ * THE ONE HINT FOR A CALLER STILL ASKING FOR THE PORT, kept as a named constant because three
+ * surfaces quote it and because it is the whole of the answer to "why did my option stop working".
+ */
+export const TN93_JS_ENGINE_REMOVED =
+	"tn93Engine: 'js' asked for @veg/hyphaeon-js's JavaScript port of the tn93 package. That port was " +
+	'deleted: veg/tn93 is the single implementation, and a second one kept in step by hand is a second ' +
+	'set of edge cases. Use the compiled engine (omit the option, or pass \'wasm\'), or supply your own ' +
+	'tn93Options.pairwiseDistances, which is recorded as engine \'custom\' and vouched for by nobody here.';
 
 /**
  * ONE PLACE THAT DECIDES WHO COMPUTES THE DISTANCES, because four call sites had to agree and three
@@ -757,62 +960,71 @@ export function tn93EngineOf(options) {
  * computed their distances in JavaScript while the product's provenance claimed the compiled
  * engine). `pipeline.js`, `runDating`'s callers and `runDatingModelPass` all come through here.
  *
- * `'auto'` takes the compiled engine and falls back to the port, returning the error so the caller
- * can raise its own surface's TN93_ENGINE_FALLBACK note; `'wasm'` refuses to fall back; `'js'` does
- * not load anything. A caller that already holds a provider keeps it and is labelled `'custom'` —
+ * THERE ARE NOW TWO OUTCOMES AND NO THIRD. `'auto'` (the default) and `'wasm'` both mean the
+ * vendored compiled build — they are synonyms, kept apart only so an explicit request still reads
+ * as one — and a build that will not load RAISES `Tn93EngineUnavailableError` rather than quietly
+ * downgrading the run. A caller that already holds a provider keeps it and is labelled `'custom'`;
  * provenance must not call someone else's engine one of ours.
+ *
+ * `'js'` IS REJECTED, LOUDLY, RATHER THAN ACCEPTED AS AN ESCAPE HATCH. It named @veg/hyphaeon-js's
+ * port, which no longer exists, so there is nothing for it to select; and it must not be quietly
+ * re-pointed at "use my own provider", because a caller passing `'js'` is asking for the ARITHMETIC
+ * it used to mean, not for a slot to plug something into. The escape hatch already exists and is
+ * separate: hand `options.pairwiseDistances` in and the result is stamped `'custom'`, so a record
+ * can never claim veg/tn93 computed numbers that something else did. Rejecting also finds the
+ * callers: every `tn93Engine: 'js'` left in the tree — a worker's "the page served no URLs" branch,
+ * a test's shortcut — fails at the call instead of running a second implementation that is not there.
  *
  * IT HANDS BACK THE DUAL-SHAPE PROVIDER WHENEVER THE LIBRARY HONOURS BOTH HOOKS, whatever `shape`
  * says. `shape` was round one's way of asking for a narrower object, and a narrower object is a
  * loaded gun: `computeTreeFreeDivergences` chooses its hook AT RUNTIME from the data (case 3's
  * cohort, dating.js:1087 vs :1107), so a square-only object handed to a dating run throws on three
- * of the four root cases and a cross-only one threw on the branch that crashed this round. The dual
- * provider answers each shape with its OWN matrix, so no caller can pick wrong. `shape` now says
- * only which hook the caller CANNOT do without, for the one case that still matters: a library tag
- * that carries one hook and not the other.
+ * of the four root cases and a cross-only one threw on the branch that crashed an earlier round.
+ * The dual provider answers each shape with its OWN matrix, so no caller can pick wrong. `shape`
+ * now says only which hook the caller CANNOT do without, for the one case that still matters: a
+ * library tag that carries one hook and not the other.
  *
- * `pairs` is the size of the job, when the caller knows it. It is RECORDED, not acted on: `'auto'`
- * is the compiled engine at every size. An earlier draft used it to send small jobs to the port and
- * that was wrong — see the cost section in this file's header for why the port is a fallback rather
- * than a fast path.
+ * `pairs` is the size of the job, when the caller knows it. It is RECORDED, not acted on: the
+ * compiled engine runs at every size. An earlier draft used it to send small jobs to the port and
+ * that was rejected — see the head of this file.
  *
  * @param {object} [args]
- * @param {'auto'|'wasm'|'js'} [args.engine]
+ * @param {'auto'|'wasm'} [args.engine] synonyms; `'js'` is rejected
  * @param {object} [args.wasm] loader arguments; Node finds its own vendored copy, a browser passes URLs
  * @param {object} [args.options] `tn93Options` the caller already has (matchMode, or its own provider)
  * @param {'square'|'cross'} [args.shape] the hook the caller must have; both are supplied when the
  *   library honours both
  * @param {number|null} [args.pairs] unordered pairs this run will compute, if known
- * @returns {Promise<{tn93Options: object|undefined, tn93Engine: 'wasm'|'js'|'custom',
- *   tn93EngineReason: string|null, error: Error|null}>}
+ * @returns {Promise<{tn93Options: object, tn93Engine: 'wasm'|'custom'}>}
+ * @throws {Tn93EngineUnavailableError} when the compiled build cannot be loaded, or `'js'` is asked for
  */
 export async function resolveTn93Options({ engine = 'auto', wasm = {}, options = null, shape = 'square', pairs = null } = {}) {
 	// A provider this module did not make is the caller's business, and its own stamp decides what it
 	// is called: `tn93EngineOf` returns `custom` for anything unstamped.
 	if (options?.pairwiseDistances) {
-		return { tn93Options: options, tn93Engine: tn93EngineOf(options), tn93EngineReason: null, error: null };
+		return { tn93Options: options, tn93Engine: /** @type {'wasm'|'custom'} */ (tn93EngineOf(options) ?? 'custom') };
 	}
-	const ported = (/** @type {string|null} */ reason, /** @type {Error|null} */ error) => ({
-		tn93Options: { ...(options ?? {}), [TN93_ENGINE_KEY]: 'js' },
-		tn93Engine: /** @type {'js'} */ ('js'),
-		tn93EngineReason: reason,
-		error
-	});
-	if (engine === 'js') return ported('requested', null);
-	// `auto` is the compiled engine at every size. See the header: this is not a timing decision, and
-	// a `pairs` hint does NOT send a small job to the port — the port is the fallback for a build that
-	// will not load, not a fast path. `pairs` is still accepted and recorded, because the cost of the
-	// choice is worth reporting even when it does not change it.
-	try {
-		// Both hooks when the library has both (the object may meet either shape at runtime); the one
-		// the caller named when it has only that one, so an older library still runs rather than
-		// refusing over a hook this call will never reach.
-		const both = libraryHonoursProvider() && libraryHonoursCrossProvider();
-		const resolved = both || shape === 'cross' ? await tn93CrossWasmOptions(wasm) : await tn93WasmOptions(wasm);
-		return { tn93Options: { ...(options ?? {}), ...resolved }, tn93Engine: 'wasm', tn93EngineReason: null, error: null };
-	} catch (err) {
-		// An explicit request for the compiled engine is not a preference to be quietly downgraded.
-		if (engine === 'wasm') throw err;
-		return ported('load_failed', err instanceof Error ? err : new Error(String(err)));
+	if (engine === 'js') {
+		throw new Tn93EngineUnavailableError({
+			stage: 'js_requested',
+			detail: "tn93Engine: 'js' was requested and there is no JavaScript TN93 in this product",
+			hint: TN93_JS_ENGINE_REMOVED
+		});
 	}
+	if (engine !== 'auto' && engine !== 'wasm') {
+		throw new Tn93EngineUnavailableError({
+			stage: 'js_requested',
+			detail: `tn93Engine: ${JSON.stringify(engine)} is not an engine this product has`,
+			hint: TN93_JS_ENGINE_REMOVED
+		});
+	}
+	// `pairs` is accepted and ignored on purpose: the cost of the choice is worth reporting even
+	// where it does not change it, and a size that changed the engine is the rejected design.
+	void pairs;
+	// Both hooks when the library has both (the object may meet either shape at runtime); the one
+	// the caller named when it has only that one, so an older library still runs rather than
+	// refusing over a hook this call will never reach.
+	const both = libraryHonoursProvider() && libraryHonoursCrossProvider();
+	const resolved = both || shape === 'cross' ? await tn93CrossWasmOptions(wasm) : await tn93WasmOptions(wasm);
+	return { tn93Options: { ...(options ?? {}), ...resolved }, tn93Engine: 'wasm' };
 }

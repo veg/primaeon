@@ -163,22 +163,47 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   it from the memo (releasing a handle alone hands the next caller a "Session already disposed"
   session); `mcp` `engine.close()` calls it and the bin sets `process.exitCode` afterwards instead
   of `process.exit(0)`.
-- **The tree-free distances come from veg/tn93's own compiled code.** `runtime/vendor/tn93/` holds
-  the WebAssembly build published with tn93 v1.0.17 (250 KB: `tn93.cjs` glue, `tn93.wasm`, and
-  `MANIFEST.json` recording the release and each file's sha256, verified before the module is
-  instantiated exactly as the ONNX graphs are). `runtime/src/tn93-wasm.js` runs it with the
-  reference's own argv (`-t 1.0 -l 1 -q -o`) and returns RAW pairwise distances; the sentinel, the
-  float32 rounding and dataset.py's imputation stay in the library, which takes those numbers
-  through `tn93Options.pairwiseDistances` (a hook added to `@veg/hyphaeon-js` for this and probed at
-  runtime, because a library without it would ignore the option and the run would claim an engine it
-  did not use). `options.tn93Engine` is `'auto'` by default: the compiled engine, falling back to
-  the JavaScript port with a `TN93_ENGINE_FALLBACK` note; `preprocessing.tn93_engine` records which
-  ran and the provenance panel shows it. Measured: every matrix entry identical to the port on all
-  five examples, the gallery rebake changed no number, and HIV1_RT is 181 ms against 887 ms. The
-  browser gets the same files from `static/tn93/` with the glue rewritten as an ES module by
-  `copy-assets.mjs` (the page's CSP already carries `'wasm-unsafe-eval'` for onnxruntime and no
-  `'unsafe-eval'`; the glue has no `eval`). Options crossing into the worker must stay
-  structured-cloneable, which is why the manifest is named by URL rather than handed over.
+- **veg/tn93's compiled code is the ONLY TN93 in the product, and a build that will not load is a
+  refusal.** `runtime/vendor/tn93/` holds the WebAssembly build published with tn93 v1.0.17 (250 KB:
+  `tn93.cjs` glue, `tn93.wasm`, and `MANIFEST.json` recording the release and each file's sha256,
+  verified before the module is instantiated exactly as the ONNX graphs are).
+  `runtime/src/tn93-wasm.js` runs it with the reference's own argv (`-t 1.0 -l 1 -q -o`) and returns
+  RAW pairwise distances; the sentinel, the float32 rounding and dataset.py's imputation stay in the
+  library, which takes those numbers through `tn93Options.pairwiseDistances` — now a REQUIRED option
+  there, throwing `Tn93EngineRequiredError` when it is absent, and still probed at runtime because a
+  library that ignored the hook would let a run claim an engine it did not use.
+  **WHY THERE IS NO FALLBACK (2026-09-13).** `@veg/hyphaeon-js` used to carry a line-by-line port of
+  the `tn93` PyPI package and this module fell back to it, with a `TN93_ENGINE_FALLBACK` note, when
+  the compiled build would not load. That port is DELETED, by the repository owner's decision, and
+  the reason is edge cases rather than speed: veg/tn93 is a repository this team maintains and the
+  vendored build is how its fixes reach a run — upstream fix, re-vendor, new sha256 — whereas a
+  JavaScript port is a second implementation of the same arithmetic kept in step BY HAND, so every
+  path able to reach it is a path where the two can silently disagree the day the tool changes, on
+  an ambiguity convention, a gap rule or a saturated pair. Timings are not the argument: the
+  compiled engine is the SLOWER of the two below ~3,500 pairs (bat_oas1, 18 taxa: 44 ms against 14)
+  and that price was accepted; an earlier change that picked between them by matrix size was
+  rejected for exactly this reason, which is also why the library's refusal is unconditional and a
+  one-taxon matrix refuses as loudly as a thousand-taxon one.
+  So `options.tn93Engine` has TWO values, `'auto'` (default) and `'wasm'`, which are synonyms for
+  the vendored build; `'js'` is REJECTED with `TN93_ENGINE_UNAVAILABLE` rather than quietly re-read
+  as "use my own provider" (that escape hatch is separate and explicit: pass
+  `tn93Options.pairwiseDistances` and the run is stamped `'custom'`, which provenance never calls
+  ours). A failed load raises `Tn93EngineUnavailableError` (`code: 'TN93_ENGINE_UNAVAILABLE'`,
+  carrying `stage`, the vendored `release`, the `files` and both hashes): the report shows it as a
+  failed run, `/time` as a failed estimate, `diagnoseUpload` as a `refuse`-level diagnostic row (it
+  never throws — `diagnose()` is what a surface runs to find out what is wrong with an upload), the
+  MCP's `list_models` as `tree_free_unavailable`, and `copy-assets.mjs` fails the BUILD rather than
+  shipping a site that cannot analyse a tree-free upload. `preprocessing.tn93_engine` is `'wasm'` or
+  `'custom'` and the provenance panel shows it. Measured before the deletion: every matrix entry
+  identical to the port on all five examples, the gallery rebake changed no number, and HIV1_RT is
+  181 ms against 887 ms. What stands behind a TN93 number now is the chain outside this repository's
+  JavaScript — tn93 binary 1.0.15 == the Python package 1.2.2 (max |Δ| 0.0), vendored v1.0.17 WASM
+  == native 1.0.15 (`vendor/tn93/MANIFEST.json`), and the `parity` CI job. The browser gets the same
+  files from `static/tn93/` with the glue rewritten as an ES module by `copy-assets.mjs` (the page's
+  CSP already carries `'wasm-unsafe-eval'` for onnxruntime and no `'unsafe-eval'`; the glue has no
+  `eval`), so in a browser the engine is three fetched, hash-checked files and a failed fetch means
+  no tree-free analysis at all. Options crossing into the worker must stay structured-cloneable,
+  which is why the manifest is named by URL rather than handed over.
 - **`resolveTn93Options` is the ONE place that decides who computes a TN93 distance**, and until
   2026-09-13 three call sites never asked it: `runDating`, `runDatingModelPass` and the library's
   `diagnose()` all computed their matrices with the JavaScript port on every surface while the

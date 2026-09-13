@@ -98,8 +98,7 @@ function report(progress, done, total, message) {
  * @param {AbortSignal} [args.signal]
  * @returns {Promise<{crossAttn: Float64Array, taxaRepr: Float64Array, taxa: string[], N: number,
  *   L: number, embedDim: number, rowLayers: number, batchSize: number, calls: number,
- *   starsRewritten: number, tn93Engine: string, tn93EngineFallbackReason: string|null,
- *   elapsedSeconds: number}>}
+ *   starsRewritten: number, tn93Engine: 'wasm'|'custom', elapsedSeconds: number}>}
  *   `crossAttn` is row-major N*N and `taxaRepr` row-major N*embedDim, both already divided —
  *   `splits.py:152-153`'s `mean_cross_attn` and `mean_taxa_repr`, over ALL alignment taxa in
  *   alignment order.
@@ -118,7 +117,9 @@ export async function runDatingModelPass(args = {}) {
 		// straight into the MDS the graph reads. It therefore gets the same engine choice the
 		// selection path gets (`resolveTn93Options`, tn93-wasm.js) instead of silently falling to the
 		// JavaScript port, which is what it did until this was fixed. `tn93Wasm` carries the browser's
-		// URLs; Node finds its own vendored copy and needs nothing.
+		// URLs; Node finds its own vendored copy and needs nothing. A build that will not load now
+		// ENDS THE PASS (`Tn93EngineUnavailableError`): there is no port behind it to compute the
+		// matrix instead, and a model input is the last thing to improvise.
 		tn93Engine = 'auto',
 		tn93Wasm = null,
 		tn93Options = null
@@ -224,10 +225,10 @@ export async function runDatingModelPass(args = {}) {
 		batchSize,
 		calls,
 		starsRewritten: stars,
-		/** Who computed the square TN93 matrix this pass fed the graph; `runDating` records it. */
+		/** Who computed the square TN93 matrix this pass fed the graph; `runDating` records it.
+		 * `'wasm'` (the vendored veg/tn93 build) or `'custom'` (a provider the caller handed in);
+		 * there is no third value, because a pass that could not get an engine threw above. */
 		tn93Engine: tn93.tn93Engine,
-		/** Why the compiled engine was not used, when `auto` fell back to the port. */
-		tn93EngineFallbackReason: tn93.error ? String(tn93.error.message ?? tn93.error) : null,
 		elapsedSeconds: (Date.now() - t0) / 1000
 	};
 }

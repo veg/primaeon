@@ -23,8 +23,11 @@
  * NO TREE IS REQUIRED, AND NOTHING IS ESTIMATED (PLAN.md D22). A tree with branch lengths is used
  * as it is; a job with no tree, with a tree that has no usable branch lengths, or with
  * `options.use_tn93` takes pairwise TN93 distances instead — computed by veg/tn93's own compiled
- * build, vendored in the runtime, falling back to the library's JavaScript port when that build
- * will not load, with `provenance.preprocessing.tn93_engine` recording which ran. This server
+ * build, vendored in the runtime and sha256-verified before it runs, with
+ * `provenance.preprocessing.tn93_engine` recording which engine ran. There is nothing behind it:
+ * @veg/hyphaeon-js computes no TN93 distance of its own, so a deployment whose vendored build is
+ * missing or does not verify FAILS such a job (TN93_ENGINE_UNAVAILABLE, with the loader's stage,
+ * the release and both hashes) rather than answering with a second implementation. This server
  * therefore has no branch-length estimator and no tree inference of its own, and
  * `provenance.preprocessing.tree_source` ('user' | 'embedded' | 'tn93') records which path ran.
  *
