@@ -19,13 +19,13 @@
 </svelte:head>
 
 <div class="container">
-	{#if data.genes.length === 0}
+	{#if data.index.genes.length === 0}
 		<p class="empty">
 			No temporal records are built yet. Run the prebake with the study data available, or see
 			<a href="{base}/methods/">Methods</a>.
 		</p>
 	{:else}
-		<TemporalReport index={data.index} genomeMap={data.genomeMap} genes={data.genes} />
+		<TemporalReport index={data.index} genomeMap={data.genomeMap} />
 	{/if}
 </div>
 

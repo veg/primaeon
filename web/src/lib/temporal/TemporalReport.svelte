@@ -1,31 +1,34 @@
 <!--
-	TemporalReport.svelte — the SARS-CoV-2 temporal-selection study as a paper: title, abstract,
-	methods (with the Pango caveat), the genome-map overview, then a numbered section per gene.
+	TemporalReport.svelte — the SARS-CoV-2 temporal-selection study INDEX: title, abstract, methods
+	(with the Pango caveat), the genome-map overview, and a card per gene linking to its own page.
 
-	WHY THIS FILE EXISTS. REPORTS_PLAN.md §1/§5: /reports is one study, genes as sections, in the
-	lab-notebook grammar (DESIGN.md). The CSS counter on `.report` numbers each gene section by
-	`h2::before`, so the h2 text stays exactly the gene name (no number in markup). Figures and
-	tables number continuously in DOM order. Nothing here computes — it renders the DAA-safe
-	prebaked records the page loaded.
+	WHY THIS FILE EXISTS. REPORTS_PLAN.md §1/§5 (revised): /reports is one study, but rendering all
+	22 genes' panels and per-site tables on a single page produced a ~326,000 px page the browser
+	could not handle. So the study is now an index — the overview plus a catalogue — and each gene's
+	full report lives at /reports/<gene>/ (GeneReport). Nothing here computes; it renders the DAA-safe
+	index the page loaded.
 -->
 <script lang="ts">
-	import type { GenomeMap, TemporalGeneRecord, TemporalIndex } from './types';
-	import GeneSection from './GeneSection.svelte';
+	import { base } from '$app/paths';
+	import type { GenomeMap, TemporalIndex } from './types';
 	import GenomeMapView from '$lib/viz/temporal/GenomeMap.svelte';
 
 	interface Props {
 		index: TemporalIndex;
 		genomeMap: GenomeMap;
-		genes: TemporalGeneRecord[];
 	}
-	let { index, genomeMap, genes }: Props = $props();
+	let { index, genomeMap }: Props = $props();
 
 	const runGenes = $derived(genomeMap.genes.filter((g) => g.run));
 	const totalConfirmed = $derived(index.genes.reduce((a, g) => a + g.confirmed_sweeps, 0));
 	const totalRescued = $derived(index.genes.reduce((a, g) => a + g.rescued_sweeps, 0));
+	// Order the catalogue by genome position so it reads 5'→3' like the map.
+	const cards = $derived(
+		[...index.genes].sort((a, b) => (a.coords?.[0] ?? 0) - (b.coords?.[0] ?? 0))
+	);
 
-	function scrollTo(gene: string) {
-		document.getElementById(`gene-${gene}`)?.scrollIntoView({ behavior: 'smooth' });
+	function go(gene: string) {
+		window.location.href = `${base}/reports/${encodeURIComponent(gene)}/`;
 	}
 </script>
 
@@ -35,7 +38,7 @@
 		<p class="byline">
 			Continuous episodic-selection dynamics across {runGenes.length} coding regions ·
 			<span class="mono">hyphaeon temporal</span>
-			{#if index.partial}· <strong>partial build ({genes.length} of {runGenes.length} regions shown)</strong>{/if}
+			{#if index.partial}· <strong>partial build ({index.genes.length} of {runGenes.length} regions)</strong>{/if}
 		</p>
 		<hr class="rule" />
 	</header>
@@ -47,7 +50,8 @@
 			each codon it fits a continuous selection trajectory over collection time, extracts the
 			collective epidemic-wave modes by functional PCA, and cross-classifies each site against a
 			static MEME baseline. Across the regions here it finds {totalConfirmed} confirmed and {totalRescued}
-			rescued sweeps.
+			rescued sweeps. Open a region for its trajectories, velocity waterfall, wave modes, and
+			per-site table.
 		</p>
 		<p class="methods">
 			<strong>What this shows.</strong> Every number is the aggregate, site-level result of a
@@ -60,30 +64,37 @@
 	</section>
 
 	<section class="overview">
-		<h2 class="unnumbered">Genome overview</h2>
+		<h2>Genome overview</h2>
 		<figure>
-			<GenomeMapView map={genomeMap} onPick={scrollTo} />
+			<GenomeMapView map={genomeMap} onPick={go} />
 			<figcaption>
 				<b></b>Analysed regions on the SARS-CoV-2 reference ({genomeMap.reference}); bar height is the
-				confirmed-sweep count. Faint regions were not run in this build (e.g. S, ORF1a, nsp2/nsp3),
-				an honest view of coverage. Jump to a region below.
+				confirmed-sweep count. Faint regions were not run in this build (e.g. ORF1a, ORF6/7b/10), an
+				honest view of coverage.
 			</figcaption>
 		</figure>
-		<nav class="jump" aria-label="Regions">
-			{#each index.genes as g (g.gene)}
-				<button type="button" onclick={() => scrollTo(g.gene)}>{g.gene}</button>
-			{/each}
-		</nav>
 	</section>
 
-	{#each genes as record (record.gene)}
-		<GeneSection {record} />
-	{/each}
+	<section class="catalogue">
+		<h2>Regions</h2>
+		<ul class="grid">
+			{#each cards as g (g.gene)}
+				<li>
+					<a href="{base}/reports/{g.gene}/">
+						<span class="name">{g.gene}</span>
+						<span class="stat">{g.confirmed_sweeps} confirmed · {g.rescued_sweeps} rescued</span>
+						<span class="sub"
+							>{g.taxa_total.toLocaleString('en-US')} seqs · {g.codons_variable} variable codons</span
+						>
+					</a>
+				</li>
+			{/each}
+		</ul>
+	</section>
 </article>
 
 <style>
 	.report {
-		counter-reset: figure table;
 		max-width: 72ch;
 	}
 	.head h1 {
@@ -95,6 +106,9 @@
 		color: var(--text-muted);
 		font-size: var(--text-md);
 		margin: 0 0 var(--space-3);
+	}
+	.mono {
+		font-family: var(--font-mono);
 	}
 	.rule {
 		border: none;
@@ -109,15 +123,15 @@
 		color: var(--text-muted);
 		font-size: var(--text-md);
 	}
-	.overview {
+	section {
 		margin-top: var(--space-8);
 	}
-	.overview h2.unnumbered {
+	h2 {
 		font-size: var(--text-lg);
 		font-weight: 700;
 		margin: 0 0 var(--space-4);
 	}
-	.overview figure {
+	figure {
 		margin: 0 0 var(--space-4);
 	}
 	figcaption {
@@ -130,44 +144,41 @@
 		color: var(--text);
 		font-weight: 700;
 	}
-	.jump {
+	.grid {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+		gap: 1px;
+		background: var(--hair);
+		border: 1px solid var(--hair);
+	}
+	.grid li {
+		background: var(--bg);
+	}
+	.grid a {
 		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-2);
+		flex-direction: column;
+		gap: 0.15rem;
+		padding: var(--space-3) var(--space-4);
+		text-decoration: none;
+		color: var(--text);
 	}
-	.jump button {
-		font-family: var(--font-mono);
-		font-size: 13px;
+	.grid a:hover {
+		background: var(--surface-2);
+	}
+	.name {
+		font-weight: 700;
 		color: var(--brand);
-		background: none;
-		border: none;
-		padding: 0.1rem 0.3rem;
-		cursor: pointer;
 	}
-	.jump button:hover {
-		text-decoration: underline;
+	.stat {
+		font-size: var(--text-md);
+		font-variant-numeric: tabular-nums;
 	}
-	/* Number gene sections (figure/table counters continue across them). The counter lives here so
-	   only gene sections increment it; the unnumbered overview h2 is excluded by class. */
-	.report :global(.section) {
-		counter-increment: section;
-	}
-	.report {
-		counter-reset: section figure table;
-	}
-	.report :global(.section h2::before) {
-		content: counter(section);
+	.sub {
+		font-size: 13px;
 		color: var(--text-muted);
-		font-weight: 400;
-		position: absolute;
-		left: 0;
-	}
-	.report :global(figcaption b::before) {
-		counter-increment: figure;
-		content: 'Figure ' counter(figure) '. ';
-	}
-	.report :global(caption b::before) {
-		counter-increment: table;
-		content: 'Table ' counter(table) '. ';
+		font-variant-numeric: tabular-nums;
 	}
 </style>

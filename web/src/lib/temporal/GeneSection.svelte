@@ -22,19 +22,27 @@
 
 	interface Props {
 		record: TemporalGeneRecord;
+		/** When the section IS the page (GeneReport supplies the h1), suppress the section heading. */
+		headless?: boolean;
 	}
-	let { record }: Props = $props();
+	let { record, headless = false }: Props = $props();
 
 	const s = $derived(record.summary);
 	const hasCurves = $derived(record.curves.length > 0);
 	const waveReading = WAVE_READING.map((w, i) => `W${i + 1} ${w}`).join('; ');
 </script>
 
-<section class="section" id="gene-{record.gene}">
-	<div class="section__head">
-		<h2>{record.gene}</h2>
-		<span class="eyebrow">hyphaeon temporal · surrogate for episodic selection over time</span>
-	</div>
+<section class="section" class:headless id="gene-{record.gene}">
+	{#if !headless}
+		<div class="section__head">
+			<h2>{record.gene}</h2>
+			<span class="eyebrow">hyphaeon temporal · surrogate for episodic selection over time</span>
+		</div>
+	{:else}
+		<p class="eyebrow eyebrow--solo">
+			hyphaeon temporal · surrogate for episodic selection over time
+		</p>
+	{/if}
 
 	<p class="meta">
 		{s.taxa_total.toLocaleString('en-US')} sequences · {s.codons_total} codons ({s.codons_variable} variable)
@@ -105,6 +113,15 @@
 		position: relative;
 		margin-top: var(--space-10);
 		padding-left: 2.5rem;
+	}
+	/* When the section is the whole page (GeneReport), there is no numbered study around it, so
+	   drop the hanging number column. */
+	.section.headless {
+		margin-top: 0;
+		padding-left: 0;
+	}
+	.eyebrow--solo {
+		margin: 0 0 var(--space-2);
 	}
 	.section__head {
 		display: flex;

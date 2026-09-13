@@ -17,17 +17,23 @@
 	}
 	let { sites }: Props = $props();
 
-	// Sweep sites first (chronological), then the rest by site.
-	const rows = $derived.by(() => {
-		const sweeps = sites
+	// The table shows every sweep site (the signal) plus a capped sample of other variable sites
+	// for context — NOT all variable sites, which for large genes (S has 861) makes an unusably
+	// long page (the phase-space plot carries every site; this table is the readable digest).
+	const OTHER_CAP = 25;
+	const sweeps = $derived(
+		sites
 			.filter((s) => s.is_confirmed_sweep || s.is_rescued_sweep)
-			.sort((a, b) => (a.peak_date ?? 0) - (b.peak_date ?? 0));
-		const others = sites
-			.filter((s) => !(s.is_confirmed_sweep || s.is_rescued_sweep))
-			.sort((a, b) => a.site - b.site);
-		return [...sweeps, ...others];
-	});
-	const sweepCount = $derived(sites.filter((s) => s.is_confirmed_sweep || s.is_rescued_sweep).length);
+			.sort((a, b) => (a.peak_date ?? 0) - (b.peak_date ?? 0))
+	);
+	const others = $derived(sites.filter((s) => !(s.is_confirmed_sweep || s.is_rescued_sweep)));
+	// The context rows: strongest static signal first, so the sample is the most notable non-sweeps.
+	const otherShown = $derived(
+		[...others].sort((a, b) => (b.lrt ?? 0) - (a.lrt ?? 0)).slice(0, OTHER_CAP)
+	);
+	const rows = $derived([...sweeps, ...otherShown]);
+	const sweepCount = $derived(sweeps.length);
+	const otherHidden = $derived(Math.max(0, others.length - otherShown.length));
 
 	function fmt(v: number | null, dp = 3): string {
 		if (v === null || !Number.isFinite(v)) return '—';
@@ -41,10 +47,13 @@
 <figure class="wrap">
 	<table>
 		<caption>
-			<b></b>Per-site temporal metrics for the {sites.length} variable codons, sweep sites (confirmed
-			or rescued, {sweepCount} of them) first and then in chronological peak-date order. A purple square
-			marks a sweep site. <span class="mono">q</span> columns are FDR-adjusted; R² is the fPCA dynamic-alignment
-			fit; L₁–L₄ are the wave loadings.
+			<b></b>Per-site temporal metrics: all {sweepCount} sweep sites (confirmed or rescued, in chronological
+			peak-date order), then the {otherShown.length} other variable codons with the strongest static
+			signal.{#if otherHidden > 0}
+				{otherHidden} further variable codons of {sites.length} total are not listed here; every variable
+				site appears in the phase-space figure above.{/if} A purple square marks a sweep site.
+			<span class="mono">q</span> columns are FDR-adjusted; R² is the fPCA dynamic-alignment fit; L₁–L₄
+			are the wave loadings.
 		</caption>
 		<thead>
 			<tr>
