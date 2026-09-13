@@ -198,6 +198,16 @@ const HEADLINE = {
  * larger, because we hold ONE sample per platform and onnxruntime's reduction order is already
  * known to move with the thread count (see `lrt`, which carries 10 % for that reason). Tighten them
  * again when there are enough runs to say what the spread actually is.
+ *
+ * AND A THIRD, ON THE NEXT RUN: `loadings.rel` at 1.390e-5 against its 1.29e-5. `expect` stops a
+ * test at its first failure, so ONE run only ever reveals the FIRST bound that is too tight —
+ * fixing what a run shows is not the same as fixing what is wrong, and this table cost two CI
+ * rounds to learn that. What makes the remaining entries credible is not that they have not failed
+ * yet but that they were EXERCISED on that Linux run and passed: `lrt`, `p_static`, `q_static`,
+ * `r2_fpca`, `prevalence`, `velocity` and `waves` all sit in assertions that ran to completion
+ * there. The three that needed widening are exactly the wave decomposition's — energy, loadings
+ * abs and rel — which is what one would expect, since a singular value decomposition amplifies
+ * whatever float noise it is handed.
  */
 const MEASURED = {
 	/**
@@ -214,8 +224,12 @@ const MEASURED = {
 	prevalence: { abs: 6.7e-9 },
 	velocity: { abs: 1.05e-7 },
 	waves: { abs: 8.7e-8 },
-	/** abs: darwin/x64 Rosetta 4.8e-6, linux/x64 5.020e-6; 1.5x the larger. rel is unmoved. */
-	loadings: { abs: 7.5e-6, rel: 1.29e-5 },
+	/**
+	 * abs: darwin/x64 Rosetta 4.8e-6, linux/x64 5.020e-6.
+	 * rel: darwin/x64 Rosetta 1.29e-5, linux/x64 1.390e-5.
+	 * 1.5x the larger of each. CLASS.loadingsRel is 1e-3, so both stay two decades inside the gate.
+	 */
+	loadings: { abs: 7.5e-6, rel: 2.1e-5 },
 	/** The reference against ITSELF, MPS vs CPU, over the same 4,384 rows. */
 	deviceSpread: { lrt: 6.4e-6, r2: 2.7e-7, energy: 5.6e-7, wave1Loading: 1.71e-4 },
 	sweeps: { ours: 32, disagreeing: 18, worstDistanceFromCut: 0.0392, withinOneDraw: 11 },
