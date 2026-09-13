@@ -22,8 +22,10 @@
  *
  * NO TREE IS REQUIRED, AND NOTHING IS ESTIMATED (PLAN.md D22). A tree with branch lengths is used
  * as it is; a job with no tree, with a tree that has no usable branch lengths, or with
- * `options.use_tn93` takes the library's pairwise TN93 distances instead. This server therefore
- * has no branch-length estimator and no tree inference of its own, and
+ * `options.use_tn93` takes pairwise TN93 distances instead — computed by veg/tn93's own compiled
+ * build, vendored in the runtime, falling back to the library's JavaScript port when that build
+ * will not load, with `provenance.preprocessing.tn93_engine` recording which ran. This server
+ * therefore has no branch-length estimator and no tree inference of its own, and
  * `provenance.preprocessing.tree_source` ('user' | 'embedded' | 'tn93') records which path ran.
  *
  * NOTHING SPAWNS A PROCESS. Every pillar, phenotype included, is JavaScript in this worker thread

@@ -52,6 +52,8 @@ export const DATING_DIAGNOSTIC_CODES = Object.freeze([
 	'DATING_ALIGNMENT_TRIMMED',
 	'DATING_STOP_CODONS',
 	'DATING_STARS_REWRITTEN',
+	'DATING_TN93_ENGINE_FALLBACK',
+	'DATING_TN93_PAIRS_OMITTED',
 	'DATING_ROOT_TAXON_NOT_FOUND',
 	'DATING_ROOT_SYNTHETIC',
 	'DATING_TAXA_EXCLUDED',
@@ -170,6 +172,17 @@ export const DATING_MESSAGES = Object.freeze({
 		'computed. That is what the reference does when a compiled `tn93` is on its PATH ' +
 		'(dataset.py:840, 844) and not what it does otherwise, and the two give different answers: ' +
 		'on this pillar the gap convention is the one the published numbers came from.',
+	TN93_ENGINE_FALLBACK:
+		'Divergences were computed by the JavaScript port of the tn93 package rather than by ' +
+		"veg/tn93's own compiled code, because the compiled engine could not be loaded: {reason}. " +
+		'The two agree on every alignment measured, so no number below moves; the run was only ' +
+		'slower. The record says `js` so it cannot be read as a compiled-engine run.',
+	TN93_PAIRS_OMITTED:
+		'{n} of {total} root-to-tip distances were not written by the compiled tn93 at its 1.0 ' +
+		'threshold and were imputed rather than measured. That is what the reference does with a ' +
+		'`tn93` binary on its PATH (dataset.py:922-925) and it is the ONE case in which the two ' +
+		'engines differ: the JavaScript port would have returned the number it computed. Those ' +
+		'sequences are saturated against the root, so their dates rest on an imputed distance.',
 	ROOT_TAXON_NOT_FOUND:
 		"No sequence is named '{root}', so divergence was not measured to it. The reference tests " +
 		'that name against the alignment first and falls through without a word (dating.py:643); ' +

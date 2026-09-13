@@ -63,11 +63,43 @@
  * `ciMethod` strings rather than silently returning Fieller as the reference's `else` branch does,
  * so this file validates the option before it gets there and says which methods exist.
  *
- * COST, MEASURED on this machine (Node 22, one thread, pure JavaScript): the whole korber chain —
- * 143 sequences x 2943 nt, parse to per-taxon table — is about 0.35 s, of which the 142 cross-TN93
- * distances are nearly all. The cost is quadratic in taxa only when the root is a consensus
- * (N distances either way; it is the CONSENSUS that is O(N·L)), so a surveillance-sized upload is
- * dominated by N·L character work, not by the fit, which is microseconds.
+ * WHO COMPUTES THE DISTANCES. Divergence here is a TN93 distance, and until 2026-09-13 this file
+ * computed it with the library's JavaScript port on EVERY surface while the product's provenance
+ * panel stood ready to name veg/tn93's own compiled code. `tn93Options` is the fix and it arrives
+ * ALREADY RESOLVED, because this function is synchronous and the loader is not — and because
+ * nothing under `src/dating/` may import `tn93-wasm.js` (`dating-port.test.js` asserts the import
+ * graph that keeps the `/time` route free of ORT). `primaeon.tn93_engine` records which engine ran,
+ * read off the stamp the resolution left on the object and never inferred (see the note at the
+ * derivation below).
+ *
+ * THE NUMBERS DO NOT MOVE, MEASURED 2026-09-13: the whole record and the whole per-taxon table,
+ * computed both ways on korber_env_gp160 (143 sequences, 142 dated) and H5N1_HA_geo (98), agree on
+ * every field — worst |Δ divergence| exactly 0, identical `t_mrca`, identical interval, identical
+ * warning set — and all four root cases of `computeTreeFreeDivergences` agree entry for entry,
+ * including case 3's SQUARE sub-branch (H5N1 with the 1996 sequence excluded: `earliest_cohort_n20`,
+ * t_mrca 1994.8279548937924 from both engines). `runtime/test/dating-tn93-engine.test.js` is that
+ * comparison, kept.
+ *
+ * COST, MEASURED on this machine (Node 22, one thread): the whole korber chain — 143 sequences x
+ * 2943 nt, parse to per-taxon table — is about 0.35 s, of which the 142 cross-TN93 distances are
+ * nearly all. The cost is quadratic in taxa only when the root is a consensus (N distances either
+ * way; it is the CONSENSUS that is O(N·L)), so a surveillance-sized upload is dominated by N·L
+ * character work, not by the fit, which is microseconds.
+ *
+ * WHAT THE COMPILED ENGINE COSTS THIS PILLAR, measured 2026-09-13 in a FRESH PROCESS (the state a
+ * reader is actually in: a worker, an MCP call, a job), engine load included, three runs each:
+ *
+ *   korber, default root (case 4, one landmark)  compiled 181-188 ms   port 100-101 ms
+ *   H5N1 `earliest`, cohort 20 (case 3, square)  compiled 178-180 ms   port 105-111 ms
+ *
+ * so on dating-sized alignments the compiled engine roughly DOUBLES the run for numbers that are
+ * identical to the last bit (t_mrca 1979.7591896284164 and 1994.8279548937924 from both engines).
+ * Its ~90 ms of load and first-call warm-up is only earned above ~3,500 unordered pairs
+ * (`TN93_WASM_BREAK_EVEN_PAIRS`, tn93-wasm.js), which a one-landmark root case never reaches — but
+ * case 3's square sub-branch does, at 2,500 dated taxa by two million. The engine therefore cannot
+ * be chosen by SHAPE, since `computeTreeFreeDivergences` picks the shape at runtime from the data;
+ * it is chosen by the size of the job, which is what `resolveTn93Options`'s `pairs` argument is for
+ * and what a caller of this function should pass.
  */
 
 import { computeTreeFreeDivergences, parseAlignmentSequences, runOlsDating, runRestrictedSplineClockDating } from '@veg/hyphaeon-js';
@@ -186,6 +218,19 @@ function refuse(code, message, data = {}, warnings = []) {
  * @param {'fieller'|'delta'|'linear'} [args.ciMethod]
  * @param {'auto'|'tn93'|'latent'} [args.distanceMode] `auto` (the reference's default) resolves to
  *   `latent` when `neural` is supplied and to `tn93` when it is not.
+ * @param {object|null} [args.tn93Options] an ALREADY-RESOLVED options object for the library's
+ *   rectangular `tn93CrossDistanceMatrix` — in practice `runtime/src/tn93-wasm.js`'s
+ *   `tn93CrossWasmOptions()`, which puts veg/tn93's own compiled code behind the hook. It arrives
+ *   resolved because this function is SYNCHRONOUS and the loader is not: `/time`'s two workers, the
+ *   MCP and the server each load once, at a boundary that is already async, and hand the result in.
+ *   Nothing under `src/dating/` may import the loader (`dating-port.test.js` asserts the import
+ *   graph), which is the same constraint stated from the other side.
+ * @param {'wasm'|'js'|'custom'|null} [args.tn93Engine] what that object actually is, for the record.
+ *   The object's own stamp (`tn93Options.tn93Engine`, written by `resolveTn93Options`) wins over
+ *   this; this can name an unstamped provider `js` or `custom` and can never make one `wasm`,
+ *   because a run must never claim an engine it did not use.
+ * @param {string|null} [args.tn93EngineFallbackReason] set by a caller whose `auto` resolution fell
+ *   back to the port, so the record says the port ran AND why.
  * @param {object|null} [args.neural] what `runDatingModelPass` returned: `{crossAttn, taxaRepr,
  *   taxa, N, embedDim, ...}`. Its ABSENCE is a fact about the run, not an error — the record simply
  *   carries `pgls: null` and `latent_root: null`, as `--method ols` does upstream.
@@ -213,6 +258,9 @@ export function runDating(args = {}) {
 		clockModel = 'auto',
 		ciMethod = 'fieller',
 		distanceMode = 'auto',
+		tn93Options = null,
+		tn93Engine = null,
+		tn93EngineFallbackReason = null,
 		neural = null,
 		modelUnavailableReason = null,
 		timeUnits = 'years',
@@ -316,6 +364,40 @@ export function runDating(args = {}) {
 	}
 	throwIfAborted(signal);
 
+	// WHO COMPUTES THE DISTANCES, AND WHAT THE RECORD SAYS ABOUT IT. `runDating` is synchronous and
+	// the compiled engine's loader is not, so the resolution happens in the caller
+	// (`resolveTn93Options`, runtime/src/tn93-wasm.js) and arrives here already made. The label comes
+	// from THAT resolution, carried on the options object under `tn93Engine` (tn93-wasm.js's
+	// `TN93_ENGINE_KEY`, a key the library ignores); it is null under `latent`, where no TN93 distance
+	// is computed at all and `model_pass.tn93_engine` is the one that matters instead.
+	//
+	// IT IS NEVER INFERRED FROM THE PRESENCE OF A FUNCTION. Round one wrote
+	// `tn93Options?.pairwiseDistances ? 'wasm' : 'js'`, which labels ANY provider — a caller's own,
+	// or a future object this module hands back after falling to the port — as veg/tn93's compiled
+	// code. An unstamped provider is `custom`: something else made it and nothing here can vouch for
+	// it. A caller's `tn93Engine` argument is honoured only where it cannot overclaim: it can name a
+	// provider `js` or `custom`, and it cannot turn an unstamped one into `wasm`.
+	//
+	// The key is written out rather than imported because nothing under `src/dating/` may import
+	// `../tn93-wasm.js` (`dating-port.test.js`'s import-graph rule keeps the `/time` route free of
+	// ORT); `dating-tn93-engine.test.js` asserts the two spellings agree.
+	const stampedEngine = tn93Options?.tn93Engine;
+	const declaredEngine = tn93Engine === 'js' || tn93Engine === 'custom' ? tn93Engine : null;
+	const tn93EngineUsed =
+		distMode !== 'tn93'
+			? null
+			: stampedEngine === 'wasm' || stampedEngine === 'js' || stampedEngine === 'custom'
+				? stampedEngine
+				: (declaredEngine ?? (tn93Options?.pairwiseDistances ? 'custom' : 'js'));
+	if (distMode === 'tn93' && tn93EngineFallbackReason) {
+		warnings.push(
+			datingWarning('DATING_TN93_ENGINE_FALLBACK', 'note', fillMessage(DATING_MESSAGES.TN93_ENGINE_FALLBACK, { reason: tn93EngineFallbackReason }), {
+				reason: tn93EngineFallbackReason,
+				engine: tn93EngineUsed
+			})
+		);
+	}
+
 	/** `taxa` in the fit's order, and the taxon's row in the model's matrices. */
 	let taxa;
 	let divergences;
@@ -324,6 +406,8 @@ export function runDating(args = {}) {
 	let rootSequence = null;
 	let latent = null;
 	let tf = null;
+	/** Pairs THIS run's compiled engine declined to write; a delta, never the shared counter. */
+	let tn93PairsOmitted = 0;
 
 	if (distMode === 'latent') {
 		// dating.py:2571-2574 — the dated taxa the MODEL also read, in the dated set's order. A name
@@ -388,8 +472,32 @@ export function runDating(args = {}) {
 				)
 			);
 		}
+		// THE COUNTER IS CUMULATIVE AND THE RECORD IS PER RUN. `tn93Stats` belongs to the options
+		// object, which a surface resolves ONCE and reuses for every job it serves (the server's
+		// worker pool, an MCP session, the browser's dating worker across re-runs), so reading it
+		// after the call reports every pair every earlier run omitted as well. Taken as a delta
+		// across this call only — the same reason `pairs` is read this way below.
+		const statsBefore = {
+			omitted: Number(tn93Options?.tn93Stats?.omitted ?? 0),
+			pairs: Number(tn93Options?.tn93Stats?.pairs ?? 0)
+		};
 		try {
-			tf = computeTreeFreeDivergences(seqs, datedTaxa, dateOf, { rootTaxon, decayGamma, decayHalfLife });
+			// `tn93Options` carries the library's rectangular `pairwiseDistances` hook, which
+			// `computeTreeFreeDivergences` passes straight through to `tn93CrossDistanceMatrix`
+			// (dating.js:1049). With it, the distances come from veg/tn93's own compiled code, which
+			// is what the reference uses whenever `shutil.which("tn93")` finds a binary
+			// (dataset.py:846-876) and what the rest of this product already used on the SELECTION
+			// path; without it the library computes them in JavaScript. The two agree entry for entry
+			// on every alignment measured — the point of the hook is that everything downstream of the
+			// raw numbers (the sentinel, the float32 rounding, dataset.py's imputation) stays in the
+			// library, so the engines can differ in what a distance IS and never in what is done with
+			// it. Spreading last so a caller's provider wins over nothing, and never over the roots.
+			tf = computeTreeFreeDivergences(seqs, datedTaxa, dateOf, {
+				...(tn93Options ?? {}),
+				rootTaxon,
+				decayGamma,
+				decayHalfLife
+			});
 		} catch (err) {
 			if (isTn93Refusal(err)) {
 				return refuse(
@@ -408,6 +516,24 @@ export function runDating(args = {}) {
 					case: tf.case,
 					gamma: tf.gamma
 				})
+			);
+		}
+		// A pair the compiled tool declined to write at its 1.0 threshold is imputed by the library to
+		// `max(1.0, max_d)` — dataset.py:922-925's own branch for a binary run — where the port would
+		// have returned the number it computed. The two engines agree everywhere else, so this is the
+		// ONE place they can drift, and it is counted rather than assumed away (tn93-wasm.js exposes
+		// the counter because the library call it happens inside is synchronous).
+		const omitted = Number(tn93Options?.tn93Stats?.omitted ?? 0) - statsBefore.omitted;
+		const pairsSeen = Number(tn93Options?.tn93Stats?.pairs ?? 0) - statsBefore.pairs;
+		tn93PairsOmitted = omitted;
+		if (omitted > 0) {
+			warnings.push(
+				datingWarning(
+					'DATING_TN93_PAIRS_OMITTED',
+					'warn',
+					fillMessage(DATING_MESSAGES.TN93_PAIRS_OMITTED, { n: omitted, total: pairsSeen }),
+					{ omitted, pairs: pairsSeen, engine: tn93EngineUsed }
+				)
 			);
 		}
 		taxa = tf.taxa;
@@ -595,6 +721,16 @@ export function runDating(args = {}) {
 		root_taxa: tf?.root_taxa ?? null,
 		decay_gamma: tf?.gamma ?? null,
 		distance_mode_reason: distModeReason,
+		/**
+		 * Who computed the root-to-tip TN93 divergences: `'wasm'` is veg/tn93's own compiled code
+		 * through `tn93CrossWasmOptions`, `'js'` the library's port of the tn93 package, `'custom'` a
+		 * provider the caller supplied. Null under `--distance-mode latent`, where the divergences are
+		 * `alpha * ||z_i - z_root||` and no TN93 distance is computed. The selection path records the
+		 * same fact as `preprocessing.tn93_engine`; this is its half of it.
+		 */
+		tn93_engine: tn93EngineUsed,
+		/** Pairs the compiled tool declined to write at its threshold; see the warning above. */
+		tn93_pairs_omitted: distMode === 'tn93' ? tn93PairsOmitted : null,
 		model_pass: hasModel
 			? {
 					taxa: neural.N,
@@ -603,7 +739,9 @@ export function runDating(args = {}) {
 					calls: neural.calls ?? null,
 					row_layers: neural.rowLayers ?? null,
 					embed_dim: neural.embedDim ?? null,
-					elapsed_seconds: neural.elapsedSeconds ?? null
+					elapsed_seconds: neural.elapsedSeconds ?? null,
+					/** The pass builds its OWN square TN93 matrix as a model input (datingNeural.js). */
+					tn93_engine: neural.tn93Engine ?? null
 				}
 			: null,
 		model_unavailable_reason: hasModel ? null : (modelUnavailableReason ?? null),
@@ -662,6 +800,8 @@ export function runDating(args = {}) {
 		spline,
 		distanceMode: distMode,
 		distanceModeReason: distModeReason,
+		/** Who computed the divergences, for a surface's own provenance block. Null in latent mode. */
+		tn93Engine: tn93EngineUsed,
 		pagelLambda,
 		printedRidge,
 		covTrain,

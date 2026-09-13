@@ -27,11 +27,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { tn93DistanceMatrix } from '@veg/hyphaeon-js';
+import { tn93CrossDistanceMatrix, tn93DistanceMatrix } from '@veg/hyphaeon-js';
 import {
+	libraryHonoursCrossProvider,
 	libraryHonoursProvider,
 	loadTn93Wasm,
 	resetTn93Wasm,
+	tn93CrossWasmOptions,
 	tn93Provider,
 	tn93WasmOptions,
 	TN93_ARGV
@@ -99,6 +101,50 @@ describe('the vendored tn93 build', () => {
 	it("runs the reference's own argv", () => {
 		expect(TN93_ARGV).toEqual(['-t', '1.0', '-l', '1', '-q']);
 	});
+
+	it('checks the RECTANGULAR hook separately, because it is a separate call site', () => {
+		// `tn93CrossDistanceMatrix` is what the dating pillar's divergences go through, and a library
+		// tag could carry one hook without the other. The probe also pins the ARGUMENT ORDER, so a
+		// library that ever called this hook the square way fails here rather than mis-indexing a
+		// real matrix.
+		expect(libraryHonoursCrossProvider()).toBe(true);
+	});
+});
+
+describe.skipIf(!ready)('the compiled engine on the RECTANGULAR shape', () => {
+	let cross;
+	beforeAll(async () => {
+		cross = await tn93CrossWasmOptions();
+	}, 120000);
+
+	for (const file of EXAMPLE_FILES) {
+		it(`${file}: every landmark column identical to the port`, () => {
+			const { names, sequences } = readFasta(file);
+			// Three landmarks rather than one, so the [i*m + j] indexing is exercised in both axes.
+			const landmarks = [names[0], names[Math.floor(names.length / 2)], names[names.length - 1]];
+			const rows = names.filter((n) => !landmarks.includes(n));
+			const js = tn93CrossDistanceMatrix(sequences, rows, landmarks);
+			const compiled = tn93CrossDistanceMatrix(sequences, rows, landmarks, cross);
+			expect(compiled.length).toBe(js.length);
+			let differing = 0;
+			let worst = 0;
+			for (let i = 0; i < js.length; i++) {
+				if (js[i] !== compiled[i]) {
+					differing++;
+					worst = Math.max(worst, Math.abs(js[i] - compiled[i]));
+				}
+			}
+			expect({ differing, worst }).toEqual({ differing: 0, worst: 0 });
+		}, 120000);
+	}
+
+	it('counts the pairs the tool declined to write rather than assuming there were none', () => {
+		const { names, sequences } = readFasta(EXAMPLE_FILES[0]);
+		const before = cross.tn93Stats.pairs;
+		tn93CrossDistanceMatrix(sequences, names.slice(1), [names[0]], cross);
+		expect(cross.tn93Stats.pairs).toBe(before + names.length - 1);
+		expect(cross.tn93Stats.omitted).toBe(0);
+	}, 120000);
 });
 
 describe.skipIf(!ready)('the compiled engine against the library JavaScript', () => {

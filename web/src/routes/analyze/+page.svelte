@@ -197,7 +197,10 @@
 				treeText: t.trim() ? t : null,
 				maxSpecies: cap,
 				treeSource: t.trim() ? 'user' : 'unknown',
-				prescreen: true
+				prescreen: true,
+				// The same compiled TN93 the run itself will use: a tree-free diagnosis computes the
+				// whole distance matrix, and it ran on the JavaScript port until this was passed.
+				tn93Base: new URL(`${base}/tn93/`, location.href).href
 			});
 			if (seq !== diagnosisSeq) return;
 			diagnosis = response.diagnosis;

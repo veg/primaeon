@@ -251,6 +251,12 @@ export function loadRuntime() {
       taxaForDates: await optional("taxaForDates", "dates/ingest.js"),
       alignDatesToRun: await optional("alignDatesToRun", "dates/ingest.js"),
       runDating: await optional("runDating", "dating/run.js"),
+      // The compiled TN93 loader. `runDating` is synchronous and this is not, so the MCP resolves
+      // it once, here, and hands the resolved `{pairwiseDistances}` in — the same object the
+      // browser's two dating workers build from URLs. Without it the dating pillar computed its
+      // root-to-tip distances with the library's JavaScript port while the product's provenance
+      // claimed veg/tn93's own compiled code, on every surface.
+      resolveTn93Options: await optional("resolveTn93Options", "tn93-wasm.js"),
       datingDownloads: await optional("datingDownloads", "dating/results.js"),
       runDatingModelPass: await optional("runDatingModelPass", "datingNeural.js"),
       runTemporal: await optional("runTemporal", "temporal/run.js"),
@@ -966,9 +972,30 @@ export function createEngine(opts = {}) {
       const rt = await runtime();
       out.runtime_version = rt.version;
       out.mds_sign = MDS_SIGN;
-      // D22: distances come from the tree when it has branch lengths, otherwise from TN93 in the
-      // library. Nothing estimates branch lengths and nothing builds a tree for the model.
-      out.tree_free = "tn93 (library)";
+      // D22: distances come from the tree when it has branch lengths, otherwise from TN93. Nothing
+      // estimates branch lengths and nothing builds a tree for the model.
+      //
+      // THIS LINE IS PROBED, NOT ASSERTED, and until 2026-09-13 it was neither: it read
+      // "tn93 (library)" while every tree-free run on this surface had gone through veg/tn93's own
+      // compiled build since that build was vendored. `auto` prefers the compiled engine and falls
+      // back to the library's JavaScript port when the module will not load or verify, so the
+      // request is not the answer and only a resolution can say which one this installation has.
+      // MEASURED on darwin/x64, Node 22: 5.9 ms cold (median of 7, module read + sha256 + wasm
+      // instantiation), 0.00 ms once resolved — the loader memoises, so the run that follows pays
+      // nothing for this and `list_models` stays as cheap as its docstring promises. A graph is
+      // still never loaded here.
+      const resolveTn93 = rt.resolveTn93Options;
+      if (typeof resolveTn93 === "function") {
+        const probe = await resolveTn93({ shape: "square" });
+        out.tree_free =
+          probe.tn93Engine === "wasm"
+            ? "tn93 (veg/tn93's own compiled build, WebAssembly, vendored in the runtime and sha256-verified before it runs)"
+            : "tn93 (the library's JavaScript port of the tn93 package)";
+        // Only present when `auto` actually fell back, so its absence is not an implied success.
+        if (probe.error) out.tree_free_fallback_reason = String(probe.error.message || probe.error);
+      } else {
+        out.tree_free = "tn93 (the library's JavaScript port of the tn93 package; this runtime checkout exports no resolveTn93Options)";
+      }
       out.branch_length_estimator = null;
       // Which Phase 2 / Phase 3 entry points this runtime checkout provides.
       out.runtime_provides = {
@@ -1104,6 +1131,11 @@ export function createEngine(opts = {}) {
 
     if (analysis === "dating") {
       const runDating = requireRuntime(rt, "runDating", "dating/run.js");
+      // Node needs no URLs: the loader finds `runtime/vendor/tn93/` beside itself and verifies the
+      // two files against `vendor/tn93/MANIFEST.json` before the module is instantiated. `auto`
+      // falls back to the library's port with the reason attached rather than failing the run.
+      const resolveTn93 = requireRuntime(rt, "resolveTn93Options", "tn93-wasm.js");
+      const tn93 = await resolveTn93({ shape: "cross" });
       let neural = null;
       let modelUnavailableReason = null;
       if (toolOptions.use_model === true) {
@@ -1116,6 +1148,16 @@ export function createEngine(opts = {}) {
         const runPass = requireRuntime(rt, "runDatingModelPass", "datingNeural.js");
         const handle = await sessionFor(mapped.variant, { taxaGraph: true });
         const taxaHandle = await handle.loadTaxaGraph();
+        // The pass builds a SQUARE TN93 matrix of its own and feeds it to the graph as an input
+        // (datingNeural.js note 4), and it makes its OWN resolution rather than taking
+        // `tn93.tn93Options` from above. Not because that object could not answer it — since
+        // `resolveTn93Options` hands back the DUAL-shape provider whenever the library honours both
+        // hooks, it answers the square call as readily as the rectangular one (tn93-wasm.js, "TWO
+        // SHAPES, TWO PROVIDERS"; measured both ways) — but because this pass is reached on a branch
+        // the model-free path never takes, and resolving where the work is keeps the two engines
+        // separately reportable: its `tn93Engine` defaults to 'auto', under Node the loader finds
+        // `runtime/vendor/tn93/` with no URLs, and it records what it got as
+        // `primaeon.model_pass.tn93_engine`, which is the field to read rather than this call site.
         neural = await runPass({ alignmentText: req.alignment, session: taxaHandle, manifest: handle.manifest, progress, signal });
       } else {
         modelUnavailableReason = "use_model was not requested; this run is the model-free (root-to-tip over TN93 distances) estimate.";
@@ -1125,6 +1167,9 @@ export function createEngine(opts = {}) {
           alignmentText: req.alignment,
           alignmentName,
           dates: ingest,
+          tn93Options: tn93.tn93Options,
+          tn93Engine: tn93.tn93Engine,
+          tn93EngineFallbackReason: tn93.error ? String(tn93.error.message || tn93.error) : null,
           neural,
           modelUnavailableReason,
           timeUnits: ingest.time_units,
@@ -1163,6 +1208,10 @@ export function createEngine(opts = {}) {
           taxa_used: Array.isArray(out.rows) ? out.rows.length : null,
           branch_lengths_estimated: false,
           tn93_saturated_pairs: null,
+          // Who computed the root-to-tip distances. The selection path records the same fact from
+          // `prepareRun`; this pillar never calls it, so the value comes from the run itself rather
+          // than from the option that was asked for.
+          tn93_engine: out.tn93Engine || null,
           date_source: ingest.source,
           date_units: ingest.time_units,
           date_coverage: ingest.coverage,
@@ -1365,8 +1414,9 @@ export function createEngine(opts = {}) {
       // BEFORE ANY GRAPH IS LOADED. `hyphaeon_dating` is model-free by default and the whole point
       // of that default is that it costs no model byte: the runtime's `./dating` subtree imports no
       // manifest, no session and no predict.js (measured: 93 ms of import, zero onnxruntime modules
-      // loaded). A dispatch placed after `session()` would have loaded a 7 MB graph to run an 85 ms
-      // regression, which is a different tool from the one advertised.
+      // loaded). A dispatch placed after `session()` would have loaded a 7 MB graph to run a 43 ms
+      // regression (korber, median of 9, ingest plus `runDating` with the compiled TN93; src/caps.js
+      // carries the measurement), which is a different tool from the one advertised.
       if (analysis === "dating" || analysis === "temporal") {
         return await runTimePillar({
           analysis,

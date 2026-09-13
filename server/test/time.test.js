@@ -269,6 +269,13 @@ describe("analysis: dating — the molecular clock", () => {
     // D34: no tree, on any surface. The record says so rather than leaving it to be inferred.
     expect(doc.provenance.preprocessing.tree_source).toBe("tn93");
     expect(doc.provenance.preprocessing.branch_lengths_estimated).toBe(false);
+    // THE SERVER NEEDS NO CODE OF ITS OWN FOR THIS, and that is what is being asserted: dating runs
+    // through `@veg/hyphaeon-mcp/engine` (runner.js), so the engine's resolution of the compiled
+    // TN93 is the server's too. `js` here would mean the distances came from the library's
+    // JavaScript port while the record named veg/tn93's compiled code — the defect this field
+    // exists to close, and the one that made every dating run on every surface use the port.
+    expect(doc.record.primaeon.tn93_engine).toBe("wasm");
+    expect(doc.provenance.preprocessing.tn93_engine).toBe("wasm");
   });
 
   it.skipIf(!HAVE_EXAMPLES)("carries the reproduction line as an OBJECT that refuses to over-promise", async () => {

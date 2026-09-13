@@ -3,11 +3,23 @@
  *
  * WHY THIS FILE EXISTS, AND WHY IT IS A FOURTH WORKER RATHER THAN A REQUEST ON THE ANALYZE ONE.
  * The analyze worker exists to keep ONE warm, hash-verified ORT session and the prepared tensors
- * every pillar reads; this run touches none of that. It loads no manifest, no graph and no
- * WebAssembly — its whole import graph is `@veg/hyphaeon-runtime/dating`, which reaches
- * `@veg/hyphaeon-js` and nothing else — and putting it on the analyze worker would drag ORT's
- * ~20 MB of WASM into a route whose entire claim is that it costs no model byte. `e2e/time.spec.ts`
- * asserts that claim by watching the network, and this file is the mechanism that makes it true.
+ * every pillar reads; this run touches none of that. It loads no manifest and no graph — the only
+ * thing it fetches is the 250 KB compiled TN93 named below, not the ~20 MB of ORT WASM and 7-8 MB
+ * of graph that putting this on the analyze worker would drag into a route whose entire claim is
+ * that it costs no MODEL byte. `e2e/time.spec.ts` asserts that claim by watching the network for
+ * `*.onnx` and `ort-*.wasm`, and this file is the mechanism that makes it true.
+ *
+ * WHY IT FETCHES THE COMPILED TN93 AT ALL. Root-to-tip divergence here IS a TN93 distance
+ * (`computeTreeFreeDivergences` -> `tn93CrossDistanceMatrix`), and until this was fixed this worker
+ * computed it with the library's JavaScript port while `web/src/lib/viz/ProvenancePanel.svelte`
+ * stood ready to say the compiled engine had run. The distances the product ships should come from
+ * veg/tn93's own code — the reason runtime/src/tn93-wasm.js exists — and the run must be able to
+ * say which engine produced them. `tn93Base` is optional: with no URLs, and on a browser where the
+ * module will not load, the port runs and `primaeon.tn93_engine` says `js` with the reason beside
+ * it. MEASURED (korber, 143 sequences x 2,943 nt, Node): the rectangular matrix is 142 comparisons,
+ * not 143^2, so the compiled engine is 6.1 ms against the port's 4.2 — this is the one shape where
+ * it is SLOWER, because the fixed cost of two FASTA files and a CLI invocation dominates 142 pairs.
+ * Two milliseconds buys provenance that is true and one engine across the product.
  *
  * WHY A WORKER AT ALL, AND WHAT THE RUN ACTUALLY COSTS — measured, because the obvious guess is
  * wrong. `compute_tree_free_divergences` measures divergence to ONE root, so it is N comparisons of
@@ -35,11 +47,25 @@
  */
 
 import { runDating } from '@veg/hyphaeon-runtime/dating';
+import { resolveTn93Options } from '@veg/hyphaeon-runtime/tn93-wasm';
 import { serve } from './serve';
 import type { DatingRequest, DatingResponse } from './protocol';
 
-serve<DatingRequest, DatingResponse>((payload, ctx) => {
+/** Where the page serves the compiled TN93 from; strings only, as temporal.worker.ts does. */
+function tn93Sources(base: string): { glueUrl: string; wasmUrl: string; manifestUrl: string } {
+	const prefix = base.replace(/\/+$/, '');
+	return { glueUrl: `${prefix}/tn93.mjs`, wasmUrl: `${prefix}/tn93.wasm`, manifestUrl: `${prefix}/MANIFEST.json` };
+}
+
+serve<DatingRequest, DatingResponse>(async (payload, ctx) => {
 	const started = Date.now();
+	// `runDating` is synchronous and this loader is not, so the resolution happens HERE and the
+	// resolved `{pairwiseDistances}` is handed in. `'cross'` is the rectangular hook, which is the
+	// one `computeTreeFreeDivergences` calls; handing it the square provider would silently return
+	// row 0 of a square matrix as every taxon's distance to the root (tn93-wasm.js guards it).
+	const tn93 = await resolveTn93Options(
+		payload.tn93Base ? { shape: 'cross', wasm: tn93Sources(payload.tn93Base) } : { shape: 'cross', engine: 'js' }
+	);
 	const run = runDating({
 		alignmentText: payload.alignmentText,
 		alignmentName: payload.alignmentName,
@@ -49,6 +75,9 @@ serve<DatingRequest, DatingResponse>((payload, ctx) => {
 		clockModel: payload.clockModel,
 		ciMethod: payload.ciMethod,
 		timeUnits: payload.timeUnits,
+		tn93Options: tn93.tn93Options,
+		tn93Engine: tn93.tn93Engine,
+		tn93EngineFallbackReason: tn93.error ? String(tn93.error.message ?? tn93.error) : null,
 		progress: ctx.progress,
 		signal: ctx.signal,
 		provenance: { surface: 'web-time' }

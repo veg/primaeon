@@ -586,6 +586,14 @@ export async function runEverything({
 		try {
 			const filter = await timed('filter', async () => {
 				phase('filter', 0, 1, 'Screening for alignment artifacts...');
+				// THE ONE TN93 CALL IN THIS FILE THAT DOES NOT GET THE COMPILED ENGINE. When this
+				// masks a patch it re-loads the cleaned alignment (filter.js:608), and on a tree-free
+				// run that load computes a second full N x N TN93 matrix — with the library's
+				// JavaScript port, because `runAlignmentFilter` destructures its options at
+				// filter.js:453-465 and `tn93Options` is not among them, so there is nothing to pass.
+				// The numbers are unaffected (both engines are bit-identical, measured); the cost is
+				// not (HIV1_RT 476 taxa: 835 ms ported against 178 compiled, warm). Flagged in
+				// runtime/src/tn93-wasm.js's header; the fix is a parameter upstream.
 				const res = await runAlignmentFilter(
 					{ alignmentText, treeText: treeArg, loaded, baseLrts: sites.arrays.lrt },
 					predict,

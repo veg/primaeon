@@ -258,6 +258,10 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		batchSize: number;
 		calls: number;
 		starsRewritten: number;
+		/** Who computed the square TN93 matrix the pass fed the graph: 'wasm' | 'js' | 'custom'. */
+		tn93Engine: string;
+		/** Why the compiled engine was not used, when `auto` fell back to the port. */
+		tn93EngineFallbackReason: string | null;
 		elapsedSeconds: number;
 	}
 	export interface DatingWarning {
@@ -297,6 +301,8 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		spline: Record<string, unknown> | null;
 		distanceMode: 'tn93' | 'latent';
 		distanceModeReason: string;
+		/** Who computed the root-to-tip distances; null in latent mode, where none were computed. */
+		tn93Engine: 'wasm' | 'js' | 'custom' | null;
 		pagelLambda: number | null;
 		printedRidge: number | null;
 		active: Record<string, unknown>;
@@ -329,6 +335,18 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		 * root is a position in the MODEL'S space and there is nothing to approximate it with.
 		 */
 		distanceMode?: 'auto' | 'tn93' | 'latent';
+		/**
+		 * An ALREADY-RESOLVED options object for the library's RECTANGULAR `tn93CrossDistanceMatrix`
+		 * — `resolveTn93Options({shape: 'cross'})`'s `tn93Options`, which puts veg/tn93's own compiled
+		 * code behind the hook. It arrives resolved because `runDating` is synchronous and the loader
+		 * is not. Without it the divergences are computed by the library's JavaScript port and
+		 * `primaeon.tn93_engine` says so.
+		 */
+		tn93Options?: Record<string, unknown> | null;
+		/** What that object actually is; derived from it when absent, never assumed. */
+		tn93Engine?: 'wasm' | 'js' | 'custom' | null;
+		/** Why `auto` fell back to the port, so the record can say the port ran AND why. */
+		tn93EngineFallbackReason?: string | null;
 		/** What `runDatingModelPass` returned, or null. Its absence is a fact, not an error. */
 		neural?: DatingModelPass | null;
 		/** Why `neural` is absent, when the caller knows; reported as DATING_MODEL_GRAPH_ABSENT. */

@@ -75,6 +75,7 @@ import { starsToGaps } from './dating/alignment.js';
 import { runTaxaSites } from './feeds.js';
 import { taxaGraphArch, taxaOutputNames } from './manifest.js';
 import { abortError, resolveBatchSize, throwIfAborted, yieldToLoop } from './predict.js';
+import { resolveTn93Options } from './tn93-wasm.js';
 
 /** `progress(phase, done, total, message)`, the package's one progress contract. */
 function report(progress, done, total, message) {
@@ -97,14 +98,31 @@ function report(progress, done, total, message) {
  * @param {AbortSignal} [args.signal]
  * @returns {Promise<{crossAttn: Float64Array, taxaRepr: Float64Array, taxa: string[], N: number,
  *   L: number, embedDim: number, rowLayers: number, batchSize: number, calls: number,
- *   starsRewritten: number, elapsedSeconds: number}>}
+ *   starsRewritten: number, tn93Engine: string, tn93EngineFallbackReason: string|null,
+ *   elapsedSeconds: number}>}
  *   `crossAttn` is row-major N*N and `taxaRepr` row-major N*embedDim, both already divided —
  *   `splits.py:152-153`'s `mean_cross_attn` and `mean_taxa_repr`, over ALL alignment taxa in
  *   alignment order.
  */
 export async function runDatingModelPass(args = {}) {
 	const t0 = Date.now();
-	const { alignmentText = null, sequences = null, session: handle, manifest = null, progress = null, signal = null } = args;
+	const {
+		alignmentText = null,
+		sequences = null,
+		session: handle,
+		manifest = null,
+		progress = null,
+		signal = null,
+		// THIS PASS COMPUTES A SQUARE TN93 MATRIX OF ITS OWN, and it is a model INPUT, not a
+		// diagnostic: `loadAlignmentAndTree(..., {useTn93: true})` below takes those distances
+		// straight into the MDS the graph reads. It therefore gets the same engine choice the
+		// selection path gets (`resolveTn93Options`, tn93-wasm.js) instead of silently falling to the
+		// JavaScript port, which is what it did until this was fixed. `tn93Wasm` carries the browser's
+		// URLs; Node finds its own vendored copy and needs nothing.
+		tn93Engine = 'auto',
+		tn93Wasm = null,
+		tn93Options = null
+	} = args;
 	if (!handle || !handle.session || !handle.ort) {
 		throw new Error('runDatingModelPass: pass the handle returned by loadTaxaGraph() as `session`');
 	}
@@ -143,7 +161,14 @@ export async function runDatingModelPass(args = {}) {
 	// loader takes text — and because the reference re-reads the FILE here too (prepare_alignment at
 	// dating.py:2554 opens `align_p` again rather than reusing the `seq_dict` verify_coding_alignment
 	// looked at), so the two sides start from the same place.
-	const loaded = loadAlignmentAndTree(fastaFrom(seqs), null, { useTn93: true, pruneDuplicates: false, maxSpecies: null });
+	const tn93 = await resolveTn93Options({ engine: tn93Engine, wasm: tn93Wasm ?? {}, options: tn93Options, shape: 'square' });
+	throwIfAborted(signal);
+	const loaded = loadAlignmentAndTree(fastaFrom(seqs), null, {
+		useTn93: true,
+		pruneDuplicates: false,
+		maxSpecies: null,
+		tn93Options: tn93.tn93Options
+	});
 	const { N, L, taxa } = loaded;
 	const { rowLayers, embedDim } = taxaGraphArch(manifest);
 	throwIfAborted(signal);
@@ -199,6 +224,10 @@ export async function runDatingModelPass(args = {}) {
 		batchSize,
 		calls,
 		starsRewritten: stars,
+		/** Who computed the square TN93 matrix this pass fed the graph; `runDating` records it. */
+		tn93Engine: tn93.tn93Engine,
+		/** Why the compiled engine was not used, when `auto` fell back to the port. */
+		tn93EngineFallbackReason: tn93.error ? String(tn93.error.message ?? tn93.error) : null,
 		elapsedSeconds: (Date.now() - t0) / 1000
 	};
 }

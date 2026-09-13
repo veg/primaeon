@@ -71,6 +71,7 @@
 		classificationFigure,
 		costMeasured,
 		costSentences,
+		distanceProvenance,
 		duration,
 		honestyNotes,
 		ledeSentence,
@@ -82,6 +83,7 @@
 		waveFigure,
 		TEMPORAL_MAX_SPECIES,
 		type TemporalGate,
+		type TemporalPreprocessing,
 		type TemporalRecord
 	} from './temporal';
 	import type { TimeUnits } from './types';
@@ -100,6 +102,12 @@
 		taxa: string[];
 		/** The run's own reference command, computed in the worker (see protocol.ts). */
 		reference: { command: string; reproduces: boolean; caveats: string[] } | null;
+		/**
+		 * `prepareRun`'s block for this run: the section reads one field off it, `tn93_engine`, so it
+		 * can name the engine that computed the distances the model was given instead of describing
+		 * the one that was asked for. Null before a run, and on a run whose worker sent none.
+		 */
+		preprocessing: TemporalPreprocessing | null;
 		downloadNotes: string[];
 		workersAvailable: boolean;
 		draws: number | null;
@@ -122,6 +130,7 @@
 		units,
 		taxa,
 		reference,
+		preprocessing,
 		downloadNotes,
 		workersAvailable,
 		draws = $bindable(null),
@@ -175,6 +184,8 @@
 	const notes = $derived(record ? honestyNotes(record) : []);
 	const diagnostics = $derived(record ? record.warnings.filter((w) => w.severity !== 'refuse') : []);
 	const label = $derived(record ? 'Run temporal selection again' : 'Run temporal selection');
+	/** Where the distances the model was given came from; null until a run has reported it. */
+	const distances = $derived(distanceProvenance(preprocessing));
 </script>
 
 <div class="temporal" data-state={refusal || failure ? 'refused' : !gate.ok ? 'blocked' : runState === 'running' ? 'running' : record ? 'landed' : 'offered'}>
@@ -478,6 +489,10 @@
 				that likeness goes arrive with the completed record.
 			{/if}
 		</p>
+
+		{#if distances}
+			<p class="hint">{distances}</p>
+		{/if}
 
 		{#if reference}
 			<p class="hint">This run at the command line:</p>

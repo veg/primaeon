@@ -32,6 +32,13 @@
  * different in kind — `inferSites` throws — and rejects, which is why the page's Stop button changes
  * its label between the two phases.
  *
+ * THE PREPARE BLOCK TRAVELS WITH ALL THREE. `prepareRun` decides, on a tree-free run, WHICH TN93
+ * computes the pairwise distances — veg/tn93's compiled build or the library's JavaScript port —
+ * and records the answer as `preprocessing.tn93_engine`. This worker asked for the compiled one and
+ * then returned nothing but the record, so the page could not say which engine had actually run and
+ * the provenance it printed was a description of the request rather than of the run. The block is
+ * small (counts, names and flags) and is posted whole, once, with the response.
+ *
  * WHAT IT DOES NOT DO. There is no date ingestion here (that is `runtime/src/dates/`, whose union of
  * three parsers is wider than the reference's own and must be reported rather than enjoyed, D31),
  * and no result semantics (that is `lib/time/temporal.ts`). This file is a session, a signal and
@@ -146,10 +153,15 @@ serve<TemporalRequest, TemporalResponse>(async (req, ctx) => {
 	});
 
 	const model = { variant: variant.name, file: modelUrl.split('/').pop() ?? `${variant.name}.onnx`, sha256: session.sha256 ?? variant.onnxSha256 };
+	// Structured-cloneable as it stands: numbers, strings, booleans and arrays of names.
+	const preprocessing = (prepared.preprocessing ?? null) as TemporalResponse['preprocessing'];
 	if (run && (run as { ok?: boolean }).ok === false) {
 		const refusal = run as unknown as { refusal: string; message: string; warnings: Array<{ code: string; severity: string; message: string }> };
 		return {
 			record: null,
+			// A refusal is still a run that prepared an alignment, and the engine it used is part of
+			// why it refused (TN93_UNCOMPUTABLE is the clearest case), so the block travels here too.
+			preprocessing,
 			refusal: { code: refusal.refusal, message: refusal.message, warnings: refusal.warnings ?? [] },
 			numThreads: session.numThreads ?? 1,
 			crossOriginIsolated: globalThis.crossOriginIsolated === true,
@@ -163,6 +175,7 @@ serve<TemporalRequest, TemporalResponse>(async (req, ctx) => {
 	const record = run as unknown as Record<string, unknown>;
 	return {
 		record,
+		preprocessing,
 		refusal: null,
 		numThreads: session.numThreads ?? 1,
 		crossOriginIsolated: globalThis.crossOriginIsolated === true,

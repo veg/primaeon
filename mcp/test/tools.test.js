@@ -183,6 +183,20 @@ describe("tool registry", () => {
     // D22 / Phase 3: no estimator, no second engine.
     expect(body.native.branch_length_estimator).toBeNull();
     expect(body.native.tree_free).toMatch(/tn93/);
+    // AND IT NAMES THE ENGINE THAT ACTUALLY ANSWERED. This line read "tn93 (library)" while every
+    // tree-free run on this surface had gone through veg/tn93's vendored compiled build, which is
+    // a capability block stating the opposite of what the process does. `status()` resolves the
+    // engine now, so on a checkout carrying the vendored build the string must say `compiled`; the
+    // fallback wording is asserted too, so neither branch can be reached by a phrase that fits both.
+    expect(body.native.tree_free).toMatch(/compiled build|JavaScript port/);
+    if (/compiled build/.test(body.native.tree_free)) {
+      expect(body.native.tree_free).toMatch(/veg\/tn93/);
+      // Only a run that fell back carries a reason; its presence here would mean the claim above
+      // was made about an engine that did not load.
+      expect(body.native.tree_free_fallback_reason).toBeUndefined();
+    } else {
+      expect(typeof body.native.tree_free_fallback_reason).toBe("string");
+    }
     expect(body.bridge).toBeUndefined();
   });
 });

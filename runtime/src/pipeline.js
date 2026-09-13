@@ -68,7 +68,7 @@
  * §2, hard truth 1). Nothing here presents the output as a completed selection analysis.
  */
 
-import { tn93WasmOptions } from './tn93-wasm.js';
+import { resolveTn93Options } from './tn93-wasm.js';
 import {
 	loadAlignmentAndTree,
 	parseAlignmentSequences,
@@ -80,6 +80,7 @@ import {
 	memeSiteRecords,
 	attributionsOneIndexed,
 	diagnose,
+	DIAGNOSTIC_THRESHOLDS,
 	TN93_MATCH_MODE,
 	MAX_SPECIES_DEFAULT,
 	MAX_SPECIES_CAP as LIBRARY_MAX_SPECIES_CAP
@@ -494,20 +495,26 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 	// Everything downstream of the raw numbers stays in the library either way (see tn93-wasm.js).
 	let tn93Options = options.tn93Options;
 	let tn93Engine = 'js';
-	if (policy.useTn93 && options.tn93Engine !== 'js' && !options.tn93Options?.pairwiseDistances) {
-		try {
-			const wasm = await tn93WasmOptions(options.tn93Wasm ?? {});
-			tn93Options = { ...(options.tn93Options ?? {}), ...wasm };
-			tn93Engine = 'wasm';
-		} catch (err) {
-			if (options.tn93Engine === 'wasm') throw err;
+	if (policy.useTn93) {
+		// `resolveTn93Options` is the ONE decision, shared with `runDating`'s callers and
+		// `runDatingModelPass`; before it existed those three resolved nothing and computed their
+		// distances in JavaScript while the product's provenance said otherwise.
+		const resolved = await resolveTn93Options({
+			engine: options.tn93Engine ?? 'auto',
+			wasm: options.tn93Wasm ?? {},
+			options: options.tn93Options ?? null,
+			shape: 'square'
+		});
+		tn93Options = resolved.tn93Options;
+		tn93Engine = resolved.tn93Engine;
+		if (resolved.error) {
 			warnings.push(
 				warning(
 					'TN93_ENGINE_FALLBACK',
 					'info',
 					'The compiled TN93 could not be loaded, so distances were computed in JavaScript. ' +
 						'The two agree on every alignment measured; this run was only slower.',
-					{ error: String(err?.message ?? err) }
+					{ error: String(resolved.error.message ?? resolved.error) }
 				)
 			);
 		}
@@ -691,6 +698,120 @@ export function diagnoseWarnings({ alignmentText, treeArg, loaded, speciesCap, r
 		out.push(warning('DIAGNOSTICS_FAILED', 'info', `diagnose() failed: ${err?.message ?? err}`));
 	}
 	return out;
+}
+
+/**
+ * `diagnose()` FOR A STANDALONE UPLOAD, with the distance engine this product actually runs.
+ *
+ * WHY THIS EXISTS. `diagnose()` does a full model-level load of its own (diagnostics.js:654,
+ * `loadAlignmentAndTree(text, …, {maxSpecies, pruneDuplicates, useTn93})`) and the library's
+ * signature has no `tn93Options`, so a tree-free diagnose computes its whole N×N TN93 matrix with
+ * the library's JavaScript port — every time, on every upload, before anything else runs. Inside a
+ * run that is already avoided: `diagnoseWarnings` above hands `parsed: loaded`, the matrix the
+ * pipeline already computed with the resolved engine. The FOUR STANDALONE callers had no such
+ * thing (web `prep.worker.ts`, `mcp/src/tools.js`, `mcp/src/validate.js`, `server/src/validate.js`),
+ * and this is what they should call instead.
+ *
+ * IT CHANGES NO LIBRARY CODE AND ASKS FOR NONE. `diagnose`'s existing `parsed` argument is the
+ * whole mechanism: do the model-level load here — the same call, verbatim, with `tn93Options`
+ * added — and hand the result in, exactly as the pipeline does. `diagnose` then skips its own load
+ * and everything it derives comes from the same object. (A `tn93Options` parameter on `diagnose`
+ * itself would be the cleaner shape and would need a library change; this does not, and the split
+ * says the app does not change the library for its own convenience.)
+ *
+ * THE LOAD IS ATTEMPTED ONLY WHERE `diagnose` WOULD DO ONE ANYWAY, and only where it would compute
+ * TN93 at all: the D22 decision is `decideTreePolicy`'s, and the taxon-limit gate is
+ * `diagnose`'s own `canLoad` (diagnostics.js:651 — over the limit it REFUSES without loading, so
+ * loading here would both waste the work and hand it a `parsed` it never asked for, changing what
+ * it reports). Anything that throws is swallowed and `parsed` stays null: `diagnose` then loads as
+ * it always did and turns a saturated matrix into its own TN93_SATURATED_PAIRS refusal, which is
+ * the behaviour this function must not quietly take away. The returned `tn93_engine` is null in
+ * that case, because the engine's matrix is not the one the diagnosis was made from.
+ *
+ * @param {object} args
+ * @param {string} args.alignmentText
+ * @param {string|null} [args.treeText]
+ * @param {number} [args.maxSpecies] the cap the model run will use; `diagnose`'s own default
+ * @param {number} [args.taxaLimit] PLAN.md §3.5's hard limit; `diagnose`'s own default
+ * @param {boolean} [args.useTn93] force the tree-free path, exactly as `diagnose`'s own argument
+ * @param {'auto'|'wasm'|'js'} [args.tn93Engine] who computes the distances (see `resolveTn93Options`)
+ * @param {object} [args.tn93Wasm] loader arguments; a browser passes URLs, Node needs nothing
+ * @param {object|null} [args.tn93Options] options the caller already holds (matchMode, or a provider)
+ * WHICH ENGINE IT ASKS FOR. `'auto'`, with the SIZE of the job (`resolveTn93Options({pairs})`), so
+ * the measured crossover decides: a diagnose is the whole of its request, with no model inference
+ * after it to hide a fixed cost in, and below ~3,500 pairs the compiled engine's ~90 ms of load and
+ * warm-up is more than the entire matrix costs ported (18 taxa: 3 ms). Above it — a 476-taxon
+ * upload — the compiled engine is 339 ms against 865. Both engines produce identical matrices
+ * (measured; tn93-wasm.js's table), so this is a choice about time only, and `tn93_engine` reports
+ * which one actually ran rather than which one was wanted.
+ *
+ * @returns {Promise<object>} `diagnose`'s own `{ok, warnings, summary}` plus `tn93_engine`
+ *   (`'wasm' | 'js' | 'custom' | null`), `tn93_engine_reason` (why, when it is not the compiled one)
+ *   and `tn93_engine_error` (the reason `auto` fell back)
+ */
+export async function diagnoseUpload({
+	alignmentText,
+	treeText = null,
+	maxSpecies = MAX_SPECIES_CAP,
+	taxaLimit = DIAGNOSTIC_THRESHOLDS.taxaLimit,
+	useTn93 = false,
+	tn93Engine = 'auto',
+	tn93Wasm = null,
+	tn93Options = null
+}) {
+	const text = String(alignmentText ?? '');
+	const treeArg = treeArgument(treeText);
+	const policy = decideTreePolicy(text, treeArg, { useTn93 });
+
+	/** @type {object|null} */
+	let loaded = null;
+	/** @type {string|null} */
+	let engine = null;
+	/** @type {string|null} */
+	let engineError = null;
+	/** @type {string|null} */
+	let engineReason = null;
+
+	if (policy.useTn93) {
+		let taxaCount = 0;
+		try {
+			taxaCount = parseAlignmentSequences(text).size;
+		} catch {
+			taxaCount = 0; // unparseable: `diagnose` says so, and there is nothing to load
+		}
+		if (taxaCount > 0 && taxaCount <= taxaLimit) {
+			// The number of unordered pairs the load will actually compute, which is what decides
+			// whether the compiled engine can earn its ~90 ms of load and warm-up back
+			// (TN93_WASM_BREAK_EVEN_PAIRS, tn93-wasm.js). A diagnose is the whole of its request — there
+			// is no model inference after it to hide the fixed cost in — so the size is passed here
+			// where the pipeline's own resolution does not pass it.
+			const n = Math.min(taxaCount, maxSpecies ?? taxaCount);
+			const resolved = await resolveTn93Options({
+				engine: tn93Engine ?? 'auto',
+				wasm: tn93Wasm ?? {},
+				options: tn93Options ?? null,
+				pairs: (n * (n - 1)) / 2
+			});
+			engineError = resolved.error ? String(resolved.error.message ?? resolved.error) : null;
+			engineReason = resolved.tn93EngineReason ?? null;
+			try {
+				// diagnostics.js:654, verbatim but for `tn93Options`.
+				loaded = loadAlignmentAndTree(text, treeText === null || treeText === undefined ? null : String(treeText), {
+					maxSpecies,
+					pruneDuplicates: true,
+					useTn93,
+					tn93Options: resolved.tn93Options
+				});
+				engine = resolved.tn93Engine;
+			} catch {
+				loaded = null;
+				engine = null;
+			}
+		}
+	}
+
+	const d = diagnose({ alignmentText: text, treeText, parsed: loaded, maxSpecies, taxaLimit, useTn93 });
+	return { ...d, tn93_engine: engine, tn93_engine_reason: engine === null ? null : engineReason, tn93_engine_error: engineError };
 }
 
 /** Everything in `options` that can be serialised, for the provenance block. */

@@ -16,8 +16,19 @@ record: `PLAN.md` (draft v5).
   lockfiles were removed at Phase 0 integration and must not come back.
 - `npm test` — `vitest run` in every workspace with a test script (`npm -ws run test --if-present`).
   Nothing shells out any more (the Python bridge is deleted, Phase 3): the MCP and server suites
-  need only `HYPHAEON_MODELS_DIR=../HyphAeon/models`. Measured at Phase 6 integration on this
-  machine: runtime 28 files / 592 tests in 49.9 s, web 24 / 309 in 2.8 s, mcp 13 / 154 in 42.3 s,
+  need only `HYPHAEON_MODELS_DIR=../../HyphAeon/models`. **Two dots and then two more**: `npm -ws`
+  runs each workspace's script with the cwd set to THAT WORKSPACE, not to the repository root, so a
+  relative value here is resolved from `runtime/`, `web/`, `mcp/` or `server/` and needs to climb
+  twice — which is what the server's own line below already does. This line said `../HyphAeon/models`
+  until 2026-09-13 and that path does not exist (it names `hyphaeon-app/HyphAeon/models`); most
+  suites fall back to a checkout they find for themselves and pass anyway, which is why it stood,
+  but two do not — MEASURED with the old value on this machine, 2026-09-13:
+  `server/test/validate.test.js` "serves the models manifest" gets 503 instead of 200 (1 failed /
+  110 passed for the whole server suite, which is green with the corrected value), and
+  `runtime/test/dating-model.test.js` fails to collect at all with "manifest: model_version is
+  missing" after printing its own SKIPPED warning. `$PWD/../HyphAeon/models` at the root is
+  the other spelling that works, since `$PWD` expands before npm changes directory. Measured at
+  Phase 6 integration on this machine: runtime 28 files / 592 tests in 49.9 s, web 24 / 309 in 2.8 s, mcp 13 / 154 in 42.3 s,
   server 6 / 91 in 42.5 s — 2 min 18 s in all.
 - `cd runtime && npx vitest run` — the runtime suite alone; `test/pipeline.test.js`,
   `test/parity-fixtures.test.js`, `test/tree-free.test.js` and `test/phenotype.test.js` score the
@@ -168,6 +179,39 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   `copy-assets.mjs` (the page's CSP already carries `'wasm-unsafe-eval'` for onnxruntime and no
   `'unsafe-eval'`; the glue has no `eval`). Options crossing into the worker must stay
   structured-cloneable, which is why the manifest is named by URL rather than handed over.
+- **`resolveTn93Options` is the ONE place that decides who computes a TN93 distance**, and until
+  2026-09-13 three call sites never asked it: `runDating`, `runDatingModelPass` and the library's
+  `diagnose()` all computed their matrices with the JavaScript port on every surface while the
+  provenance panel stood ready to name the compiled build. Nothing failed, because a missing hook is
+  not an error — it is a slower run with the same numbers. What reaches what now, VERIFIED by
+  instrumenting the library's own two matrix functions rather than by reading a provenance field
+  (which is written by the code under test): `prepareRun` (selection, temporal, the gallery prebake,
+  `parity-node.mjs`) `wasm`; `diagnoseUpload` (the browser's prep worker, `mcp/src/validate.js`,
+  `server/src/validate.js`) `auto` SIZED BY THE JOB; `runDating` on all three surfaces `wasm`;
+  the dating model pass `wasm` (its own resolution, reported separately as
+  `primaeon.model_pass.tn93_engine`). A tree with usable branch lengths computes no TN93 at all, and
+  neither do the root-to-tip preview, the clock preview or the prescreen.
+- **The engine is chosen by the SIZE of the job, not by the shape of the call.**
+  `TN93_WASM_BREAK_EVEN_PAIRS = 3500` unordered pairs is a measured crossover: the compiled build
+  costs about 90 ms of load and warm-up per process before its first matrix, which a small job never
+  earns back. `resolveTn93Options({pairs})` applies it to `'auto'` only and only when a size is
+  given, which today is `diagnoseUpload` alone — a diagnosis IS its whole request, with no model
+  inference after it to hide the fixed cost in. Measured warm, same process, port against compiled,
+  every entry identical either way (worst |Δ| exactly 0 at every size): Smc6 20 taxa / 190 pairs
+  3.5 ms against 5.2, camelid 212 / 22,366 38.4 against 22.9, korber 143 / 10,153 211.9 against
+  68.3, HIV1_RT 476 / 113,050 835.4 against 177.8. On the RECTANGULAR hook the port wins outright —
+  korber 142 × 1 is 4.6 ms ported against 7.2 compiled — because a 142-pair job is all per-call
+  overhead; the whole model-free clock is 36.5 ms ported against 40.1 compiled there, and dating
+  still takes the compiled engine because case 3 can select the SQUARE hook at runtime on a cohort
+  of more than ten, where the same object must answer an N² job.
+- **One TN93 call site in the app cannot be given the hook, and it is the report's FILTER section.**
+  `runAlignmentFilter` re-loads the cleaned alignment when it masks a patch, and the library
+  destructures its options at `filter.js:453-465` with no `tn93Options` among them — so a tree-free
+  report that finds an artifact computes a SECOND full N × N matrix on the port (measured: camelid's
+  `runEverything` makes exactly two 212-taxon square calls, the first hooked, the second not). The
+  numbers are unaffected; the time is not (HIV1_RT 835 ms against 178, warm). Flagged in
+  `runtime/src/tn93-wasm.js`'s header and at the call site; the fix is a parameter upstream in
+  `@veg/hyphaeon-js`. This predates the hook work on both sides.
 - **There is no tree tool and no HyPhy (D22, Phase 3).** A tree with usable branch lengths is used
   as given; no tree, or a tree without them, takes the library's tree-free path — pairwise TN93
   distances straight into the MDS, the reference's own `--use-tn93` — and the report gets a tree
