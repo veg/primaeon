@@ -143,7 +143,7 @@
 	);
 </script>
 
-<article class="report">
+<article class="report numbered">
 	<header class="head">
 		<p class="eyebrow">Report · {SOURCE_LABEL[source]}</p>
 		<h1>{record.name}</h1>
@@ -242,18 +242,8 @@
 {/if}
 
 <style>
-	.report {
-		counter-reset: section figure table;
-	}
-	/* Figures and tables number continuously through the report, in DOM order (DESIGN.md §3). */
-	.report :global(figcaption b::before) {
-		counter-increment: figure;
-		content: 'Figure ' counter(figure) '. ';
-	}
-	.report :global(caption b::before) {
-		counter-increment: table;
-		content: 'Table ' counter(table) '. ';
-	}
+	/* The three counter rules moved to app.css's `.numbered` at PrimAeon phase 2, so /time numbers
+	   its sections, figures and tables the same way. `.report` keeps its name and its own layout. */
 	.head {
 		border-bottom: 1px solid var(--text);
 		padding-bottom: var(--space-4);

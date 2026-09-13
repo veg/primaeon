@@ -477,6 +477,24 @@ figcaption b {
 	max-width: var(--measure);
 }
 
+/* Continuous numbering (DESIGN.md §3, "Section headings, numbering, figure and table captions").
+   Lifted out of ReportView.svelte at PrimAeon phase 2 so /time can number its sections, figures and
+   tables by the same counters: the report is `class="report numbered"` and /time is
+   `class="timepage numbered"`, so `.report` keeps its name and no report assertion moves. The number
+   is generated content on `h2::before` and never markup, because the e2e matches `h2` text exactly
+   and generated content is not in textContent. */
+.numbered {
+	counter-reset: section figure table;
+}
+.numbered figcaption b::before {
+	counter-increment: figure;
+	content: 'Figure ' counter(figure) '. ';
+}
+.numbered caption b::before {
+	counter-increment: table;
+	content: 'Table ' counter(table) '. ';
+}
+
 /* Running-state square (DESIGN.md §3, Progress). */
 .mark--wait,
 .mark--run {

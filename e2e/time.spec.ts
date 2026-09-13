@@ -1,0 +1,216 @@
+/**
+ * time.spec.ts — the /time route against the built site: the date review, the three ways of
+ * supplying dates, and the claim that none of it costs a model byte.
+ *
+ * WHY THIS FILE EXISTS. Three flows, each proving something no unit test can:
+ *
+ *   1. THE FLAGSHIP, `korber_env_gp160.fasta`. 143 LANL names that `temporal.extract_date_from_string`
+ *      reads NONE of and `dating.parse_header_timestamp` reads 142 of. The page takes the union —
+ *      which is D31's whole point — and must show it, name the rule, open the span at 1959.5, offer
+ *      the hard-coded archival anchor without applying it, and do all of that having requested no
+ *      `*.onnx`, no ORT WASM and nothing off-origin. The date stage is supposed to cost nothing.
+ *   2. THE CONTROL, `H5N1_HA_geo.fasta` + `H5N1_HA_metadata.csv`. The table's names and the
+ *      alignment's names are identical, so the page must discover the two columns, report 98 of 98,
+ *      and agree with the headers. MEASURED: they do.
+ *   3. THE TRAP, and the reason this page exists. The same alignment with the table rewritten
+ *      accession-style. The reference would match zero rows and say nothing; the page must show
+ *      both name sets side by side and say plainly that the dates came from the headers instead.
+ *
+ * The trap table is built in the test as a buffer (`setInputFiles({name, mimeType, buffer})`), so
+ * nothing is written to disk.
+ */
+
+import { expect, test } from '@playwright/test';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ENGINE_DIR, HEAVY_ASSET, trackRequests } from './helpers';
+
+const EXAMPLES = resolve(ENGINE_DIR, 'examples');
+const KORBER = resolve(EXAMPLES, 'korber_env_gp160.fasta');
+const H5N1 = resolve(EXAMPLES, 'H5N1_HA_geo.fasta');
+const H5N1_META = resolve(EXAMPLES, 'H5N1_HA_metadata.csv');
+const H5N1_TREE = resolve(EXAMPLES, 'H5N1_HA.nwk');
+
+const haveExamples = existsSync(KORBER) && existsSync(H5N1) && existsSync(H5N1_META) && existsSync(H5N1_TREE);
+
+test.describe('the /time route', () => {
+	test('is cross-origin isolated and requests nothing off-origin', async ({ page, baseURL }) => {
+		const requests = trackRequests(page);
+		const response = await page.goto('/time/');
+		expect(response!.status()).toBe(200);
+		expect(response!.headers()['cross-origin-opener-policy']).toBe('same-origin');
+		expect(response!.headers()['cross-origin-embedder-policy']).toBe('require-corp');
+		expect(await page.evaluate(() => globalThis.crossOriginIsolated)).toBe(true);
+		await page.waitForLoadState('networkidle');
+		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
+		const heavy = requests.matching(HEAVY_ASSET);
+		expect(heavy, `heavy assets on /time/: ${heavy.join(', ')}`).toEqual([]);
+	});
+
+	test('does not join the primary navigation, and is reachable from the landing page', async ({ page }) => {
+		await page.goto('/');
+		const labels = (await page.locator('nav[aria-label="Primary"] a').allInnerTexts()).map((s) => s.trim());
+		expect(labels).toEqual(['Methods', 'Evaluate', 'MCP']);
+		await expect(page.locator('p.examples a.chip')).toHaveCount(5);
+		const link = page.getByRole('link', { name: /Review the dates on the time page/i });
+		await expect(link).toBeVisible();
+		await link.click();
+		await expect(page).toHaveURL(/\/time\/$/);
+	});
+
+	test('starts empty, with the drop zone and nothing claimed', async ({ page }) => {
+		await page.goto('/time/');
+		await expect(page.getByRole('heading', { level: 1, name: 'Dates' })).toBeVisible();
+		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'empty');
+		await expect(page.getByText(/drop dated sequences here/i)).toBeVisible();
+		const body = await page.locator('body').innerText();
+		expect(body).not.toMatch(/to be written|TODO|coming soon|lorem ipsum/i);
+	});
+});
+
+test.describe.configure({ mode: 'serial' });
+
+test.describe('flow 1 — korber_env_gp160.fasta, the flagship', () => {
+	test.skip(!haveExamples, 'the engine examples are not checked out beside this repository');
+
+	test('dates 142 of 143, names the rule, opens at 1959.5, and costs no model byte', async ({ page, baseURL }) => {
+		const requests = trackRequests(page);
+		await page.goto('/time/');
+		await page.locator('#dates input[type="file"]').first().setInputFiles(KORBER);
+
+		const review = page.locator('#dates .review');
+		await expect(review).toHaveAttribute('data-state', /review|ready/, { timeout: 20_000 });
+
+		// The count line, and the word is sequences, never sites.
+		const count = page.locator('.table .count');
+		await expect(count).toHaveCount(1);
+		await expect(count).toHaveText('143 of 143 sequences');
+
+		// 142 dated, the one miss named. Review order puts it first.
+		const strip = page.locator('details.strip summary');
+		await expect(strip).toContainText('What we read from your files.');
+		await expect(strip).toContainText('143 sequences, 142 dated');
+		const firstRow = page.locator('#dates .table table tbody tr').first();
+		await expect(firstRow).toContainText('CONSENSUS');
+		await expect(firstRow).toContainText('no pattern matched');
+
+		// The rule column names the LANL two-digit-year rule.
+		await page.locator('input[aria-label="Search sequences"]').fill('Z59ZR');
+		await expect(page.locator('#dates .table table tbody tr')).toHaveCount(1);
+		await expect(page.locator('#dates .table table tbody tr').first()).toContainText('LANL two-digit year');
+		await expect(page.locator('#dates .table table tbody tr').first()).toContainText('1959.5000');
+		await page.locator('input[aria-label="Search sequences"]').fill('');
+
+		// The archival anchor is offered, off, and named — and on THIS file it changes nothing,
+		// which is measured, not claimed (runtime and web unit tests pin the same fact).
+		const disclosure = page.locator('details.supply');
+		await disclosure.locator('summary').click();
+		const anchor = page.getByRole('checkbox', { name: /Z59.*ZR59.*1959.*mid-1959/is });
+		await expect(anchor).not.toBeChecked();
+		const before = await page.locator('#dates .table table tbody tr').allInnerTexts();
+		await anchor.check();
+		await expect(page.locator('.table .count')).toHaveText('143 of 143 sequences');
+		expect(await page.locator('#dates .table table tbody tr').allInnerTexts()).toEqual(before);
+		await anchor.uncheck();
+
+		// The span opens at 1959.5 and section 2 says so.
+		await expect(page.locator('#coverage figcaption').first()).toContainText('1959.50');
+
+		// The gate: 1 undated sequence, so the page is not ready until the reader says to drop it.
+		await expect(review).toHaveAttribute('data-state', 'review');
+		await page.getByRole('checkbox', { name: /Continue without the 1 undated sequence/i }).check();
+		await expect(review).toHaveAttribute('data-state', 'ready');
+
+		// The download, and its columns.
+		const download = page.waitForEvent('download');
+		await page.getByRole('button', { name: 'Dates (CSV)' }).click();
+		const file = await download;
+		const text = readFileSync(await file.path(), 'utf8');
+		const lines = text.trimEnd().split('\n');
+		expect(lines[0]).toBe('sequence,date,reads_as,source,rule,read_from,imputed,name_match');
+		expect(lines.length).toBe(144); // header + 143 sequences, the undated one included
+		const dataLines = lines.slice(1);
+		expect(dataLines.filter((l) => l.split(',')[1] !== '').length).toBe(142);
+		expect(dataLines.filter((l) => l.split(',')[1] === '').length).toBe(1);
+		expect(text).not.toMatch(/NaN/);
+
+		// Nothing heavy, on the whole flow.
+		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
+		const heavy = requests.matching(HEAVY_ASSET);
+		expect(heavy, `heavy assets during the korber flow: ${heavy.join(', ')}`).toEqual([]);
+	});
+});
+
+test.describe('flow 2 — a metadata table that agrees with the headers', () => {
+	test.skip(!haveExamples, 'the engine examples are not checked out beside this repository');
+
+	test('names the two columns it discovered and reports 98 of 98', async ({ page }) => {
+		await page.goto('/time/');
+		await page.locator('#dates input[type="file"]').first().setInputFiles([H5N1, H5N1_META, H5N1_TREE]);
+
+		const review = page.locator('#dates .review');
+		await expect(review).toHaveAttribute('data-state', /review|ready/, { timeout: 20_000 });
+		await expect(page.locator('.table .count')).toHaveText('98 of 98 sequences');
+		await expect(page.locator('details.strip summary')).toContainText('98 dated');
+		await expect(page.locator('details.strip summary')).toContainText('from the metadata table');
+
+		await page.locator('details.supply summary').click();
+		await expect(page.locator('#id-column')).toHaveValue('taxon');
+		await expect(page.locator('#date-column')).toHaveValue('date');
+
+		// Every row matched exactly, so nothing in the Name match column is a warning.
+		await expect(page.locator('#dates .table table tbody tr').first()).toContainText('exact');
+		await expect(review).toHaveAttribute('data-state', 'ready');
+
+		// The clock preview, off the tree that was dropped with them. MEASURED on this dataset: its
+		// sampling dates span barely a year, so the fit slopes DOWN and the preview must say so
+		// rather than print a rate — which is the honest answer and the one worth asserting.
+		const coverage = page.locator('#coverage');
+		await expect(coverage.getByRole('heading', { name: 'Clock signal' })).toBeVisible();
+		await expect(coverage).toContainText('This is a diagnostic of the dates, not a dating analysis.');
+		await expect(coverage).toContainText('carries no clock signal in this direction');
+		await expect(coverage.locator('svg[aria-label="Root-to-tip divergence against sampling date"]')).toBeVisible();
+		await expect(coverage).toContainText('the rate is per tree unit');
+		// The words reserved for the analysis appear nowhere on the page.
+		const body = await page.locator('body').innerText();
+		for (const word of [/TMRCA/i, /calibrated/i, /confidence interval/i, /molecular clock estimate/i]) {
+			expect(body, `the page said ${word}`).not.toMatch(word);
+		}
+	});
+});
+
+test.describe('flow 3 — the trap: a table that names no sequence', () => {
+	test.skip(!haveExamples, 'the engine examples are not checked out beside this repository');
+
+	test('shows both name sets and says the dates came from the headers instead', async ({ page }) => {
+		// The same table, keyed on accessions nothing in the alignment carries.
+		const rewritten = readFileSync(H5N1_META, 'utf8')
+			.split('\n')
+			.map((line, i) => (i === 0 || line.trim() === '' ? line : line.replace(/^[^,]+/, `EPI_ISL_${400000 + i}`)))
+			.join('\n');
+
+		await page.goto('/time/');
+		await page.locator('#dates input[type="file"]').first().setInputFiles(H5N1);
+		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', /review|ready/, { timeout: 20_000 });
+
+		await page.locator('details.supply summary').click();
+		await page.locator('#metadata-file').setInputFiles({
+			name: 'accessions.csv',
+			mimeType: 'text/csv',
+			buffer: Buffer.from(rewritten, 'utf8')
+		});
+
+		// The sentence the reference never prints.
+		const line = page.locator('#dates .note--warn').first();
+		await expect(line).toContainText(/rows in accessions\.csv name no sequence in this alignment/, { timeout: 20_000 });
+		await expect(line).toContainText('EPI_ISL_');
+
+		// The table contributed nothing; the per-taxon header fallback did, and every row says so.
+		await expect(page.locator('.table .count')).toHaveText('98 of 98 sequences');
+		await expect(page.locator('#dates .table table tbody tr').first()).toContainText('header (fallback)');
+
+		// Turning the fallback off leaves every sequence undated — what the command line would do.
+		await page.getByRole('checkbox', { name: /Fill sequences the table missed from their own headers/i }).uncheck();
+		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'undated');
+	});
+});
