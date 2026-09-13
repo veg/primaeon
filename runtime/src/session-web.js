@@ -47,9 +47,9 @@
 
 import { BUSTED_HEAD_INPUT_NAMES, BUSTED_HEAD_OUTPUT_NAMES } from '@veg/hyphaeon-js';
 
-import { DEFAULT_INPUT_NAMES, REQUIRED_OUTPUT_NAMES, isSha256Hex, sha256Hex, hashMismatchError } from './manifest.js';
+import { DEFAULT_INPUT_NAMES, REQUIRED_OUTPUT_NAMES, TAXA_OUTPUT_NAMES, isSha256Hex, sha256Hex, hashMismatchError } from './manifest.js';
 
-export { runSites, buildFeeds, runBustedHead, buildBustedHeadFeeds } from './feeds.js';
+export { runSites, runTaxaSites, buildFeeds, runBustedHead, buildBustedHeadFeeds } from './feeds.js';
 
 /** Where the vendored ORT WASM lives when the caller does not say (DM3's default). */
 export const DEFAULT_ORT_WASM_PATH = '/ort/';
@@ -195,6 +195,30 @@ export function loadBustedHead(options = {}) {
 		expectedInputs: BUSTED_HEAD_INPUT_NAMES,
 		expectedOutputs: BUSTED_HEAD_OUTPUT_NAMES,
 		kind: 'busted_head'
+	});
+}
+
+/**
+ * Load `<variant>_taxa.onnx`: the same policy as `loadSession` with the dating graph's contract —
+ * the backbone's four inputs, outputs `cross_attn_sum` [N, N] and `taxa_repr_sum` [N, embed_dim]
+ * (export.py TAXA_OUTPUT_NAMES via manifest.js's own list). The hash comes from the manifest's
+ * `taxa_onnx_sha256`, which is optional: a manifest without it declares no dating graph and the
+ * caller must refuse the model-based estimators rather than load the backbone in its place.
+ *
+ * BOTH OUTPUTS ARE `expectedOutputs`, so a backbone handed to this function is rejected at load
+ * rather than at the first run — the memo is keyed on modelUrl + expectedSha256 + ortWasmPath + numThreads so the two graphs cannot collide, and
+ * `releaseSessions()` already drains every memoised handle, which matters because this makes a
+ * third live ORT session in a process that SIGABRTs at exit with one still alive.
+ *
+ * @param {{modelUrl: string, expectedSha256?: string, ortWasmPath?: string, numThreads?: number,
+ *   verifyHash?: boolean, ort?: any, fetchImpl?: typeof fetch}} options
+ */
+export function loadTaxaGraph(options = {}) {
+	return loadSession({
+		...options,
+		expectedInputs: DEFAULT_INPUT_NAMES,
+		expectedOutputs: TAXA_OUTPUT_NAMES,
+		kind: 'taxa'
 	});
 }
 

@@ -39,6 +39,7 @@
 
 import rateLimit from "express-rate-limit";
 import { mountHttp } from "@veg/hyphaeon-mcp/http";
+import { loadRuntime } from "@veg/hyphaeon-mcp/engine";
 import { createLogger as createMcpLogger } from "@veg/hyphaeon-mcp";
 
 /**
@@ -50,6 +51,7 @@ import { createLogger as createMcpLogger } from "@veg/hyphaeon-mcp";
  */
 export function poolEngine(pool, opts = {}) {
   let statusCache = null;
+  let bagCache = null;
   const status = async () => {
     if (!statusCache) {
       statusCache = pool.status().catch((err) => {
@@ -63,7 +65,13 @@ export function poolEngine(pool, opts = {}) {
   return {
     threads: opts.threads,
     /**
-     * @param {object} req  {analysis, alignment?, tree?, prediction?, meme_result?, phenotype_file?, options?, names?, signal?, surface?, progress?}
+     * EVERY INPUT KEY THE ENGINE READS MUST BE LISTED HERE. The task is copied by hand rather than
+     * spread, so that nothing a tool call carries reaches a worker by accident — and the cost of
+     * that choice is that an input added to the REST schema and forgotten here is INVISIBLE: REST
+     * jobs carry the file and /mcp tool calls silently run without it, on the same server, with no
+     * error on either path. `dates_file` (Phase 6) is the third such key after `phenotype_file`.
+     *
+     * @param {object} req  {analysis, alignment?, tree?, prediction?, meme_result?, phenotype_file?, dates_file?, options?, names?, signal?, surface?, progress?}
      * @returns {Promise<{result: object, provenance: object}>}
      */
     async run(req) {
@@ -74,6 +82,7 @@ export function poolEngine(pool, opts = {}) {
         prediction: req.prediction,
         meme_result: req.meme_result,
         phenotype_file: req.phenotype_file,
+        dates_file: req.dates_file,
         options: Object.assign({}, req.options || {}),
         names: Object.assign({}, req.names || {}),
         surface: req.surface || "mcp-http"
@@ -88,6 +97,30 @@ export function poolEngine(pool, opts = {}) {
       return { result, provenance };
     },
     status,
+    /**
+     * The runtime's pure helpers, for the tools that SHAPE a finished result rather than compute
+     * one. `hyphaeon_temporal`'s `section=sites|curves` builds its rows with `siteRow` and
+     * `candidateSiteIndices`, and its honesty block with `temporalReferenceCommand` and
+     * `temporalDownloadNotes` — all pure functions over a JSON-safe record, none of which needs a
+     * worker or a graph.
+     *
+     * WITHOUT THIS THE HTTP MCP LOSES HALF THE TEMPORAL TOOL, SILENTLY-ISH: the tool asks
+     * `typeof engine.runtimeBag === "function" ? await engine.runtimeBag() : {}` and falls back to
+     * an EMPTY bag, so `section=sites` reaches `rt.siteRow(...)` on `undefined`. The stdio server's
+     * own engine has the bag; a pool-backed engine that omitted it would serve the same tool two
+     * different ways on two transports. Resolved through the MCP's own `loadRuntime` rather than
+     * assembled here, so the bag cannot drift from the one the stdio surface uses; memoised because
+     * it is an import, and it loads no onnxruntime module (MEASURED: 97 ms, zero ORT modules).
+     */
+    runtimeBag() {
+      if (!bagCache) {
+        bagCache = loadRuntime().catch((err) => {
+          bagCache = null;
+          throw err;
+        });
+      }
+      return bagCache;
+    },
     async close() {
       // The pool is the server's; src/app.js closes it.
     }

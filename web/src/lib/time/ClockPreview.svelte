@@ -24,8 +24,18 @@
 	interface Props {
 		preview: ClockPreview;
 		treeName: string | null;
+		/**
+		 * Set once section 3 has an estimate. THE TILE BELOW THEN STOPS PRINTING A SECOND ANCESTOR
+		 * NUMBER and this line takes its place, naming both and the gap between them. Two ancestor
+		 * estimates on one page with nothing connecting them is exactly the failure this page exists
+		 * to break, and the two measure different things — root-to-tip divergence on the reader's
+		 * tree in tree units here, TN93 divergence to a chosen root in substitutions per site there —
+		 * so they are reconciled in words rather than made to agree. web/DESIGN.md §8 records the
+		 * same fix for the filter section's duplicated lede.
+		 */
+		crossCheck?: { text: string; wide: boolean } | null;
 	}
-	let { preview, treeName }: Props = $props();
+	let { preview, treeName, crossCheck = null }: Props = $props();
 
 	const W = 900;
 	const H = 320;
@@ -116,13 +126,15 @@
 			<dt>Rate</dt>
 			<dd><strong>{sig(fit.mu)}</strong> <span class="qual">{rateSentence(preview)}, ± {sig(fit.seMu, 2)}</span></dd>
 		</div>
-		<div>
-			<dt>{ancestorWord[0].toUpperCase() + ancestorWord.slice(1)}</dt>
-			<dd>
-				<strong>{Number.isFinite(fit.tMrca) ? num(fit.tMrca, 2) : '—'}</strong>
-				<span class="qual">{Number.isFinite(fit.seMrca) ? `± ${num(fit.seMrca, 2)}` : 'not shown; see the line above'}</span>
-			</dd>
-		</div>
+		{#if !crossCheck}
+			<div>
+				<dt>{ancestorWord[0].toUpperCase() + ancestorWord.slice(1)}</dt>
+				<dd>
+					<strong>{Number.isFinite(fit.tMrca) ? num(fit.tMrca, 2) : '—'}</strong>
+					<span class="qual">{Number.isFinite(fit.seMrca) ? `± ${num(fit.seMrca, 2)}` : 'not shown; see the line above'}</span>
+				</dd>
+			</div>
+		{/if}
 		<div>
 			<dt>R²</dt>
 			<dd><strong>{num(fit.r2)}</strong> <span class="qual">over {fit.n} dated tips</span></dd>
@@ -141,10 +153,17 @@
 		</div>
 	</dl>
 
+	{#if crossCheck}
+		<p class="note" class:note--warn={crossCheck.wide}>
+			{#if crossCheck.wide}<strong>The two estimates disagree by more than the interval.</strong>{/if}
+			{crossCheck.text}
+		</p>
+	{/if}
 	<p class="note">
 		Branch lengths are taken from your tree. We cannot verify what they are in, so the rate is per
-		tree unit per {timeWord}. Where the root sits is the largest single influence on the {ancestorWord}:
-		the analysis searches for the root, this preview does not.
+		tree unit per {timeWord}. Where the root sits is the largest single influence on the {ancestorWord},
+		and NEITHER this preview nor the estimate below searches for one: both use the root they were
+		given, because a wrong re-rooting moves the answer by years without announcing itself.
 	</p>
 	{#if preview.sensitivity}
 		<p class="note" class:note--warn={preview.sensitivity.wide}>
@@ -154,9 +173,9 @@
 		</p>
 	{/if}
 	<p class="note">
-		Standard errors only, by the delta method. The analysis reports an exact interval, which is
-		wider — and these standard errors themselves understate the real sampling error, because
-		root-to-tip residuals share branches and least squares assumes they do not.
+		Standard errors only, by the delta method. The estimate below reports a Fieller interval off its
+		own fit, which is wider — and these standard errors themselves understate the real sampling
+		error, because root-to-tip residuals share branches and least squares assumes they do not.
 	</p>
 
 	{#if outliers.length > 0}

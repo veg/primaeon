@@ -87,23 +87,27 @@ on:
 
 env:
   # The engine commit these tests run against. Bump together with the library the app consumes.
-  # phase-5d carries the date layer, the dating estimators and the temporal pillar. The runtime's
-  # date, dating and temporal modules import those by name, so an older ref does not degrade
-  # gracefully: it fails at module link and takes the whole workspace with it. The pin and the code
-  # move together, which is why this branch pins a tag carrying more than it needs.
+  # The runtime's date, dating and temporal modules import the engine's estimators BY NAME, so an
+  # older ref does not degrade gracefully: it fails at module link and takes the whole workspace
+  # with it. The pin and the code move together.
   #
-  # phase-5d is also the first tag since the reconcile that carries model.safetensors. The
-  # reconcile onto the engine's main brought main's .gitignore, whose blanket *.safetensors rule
-  # silently untracked the suite weights that had been tracked since phase-4b. Nothing in this
-  # repository's suites loads them, so every check stayed green while the parity job below — which
-  # runs the Python reference with HYPHAEON_WEIGHTS and HF_HUB_OFFLINE=1 — lost all 23 of its
-  # reference runs at startup (measured on run 34714101215).
+  # phase-5e is the whole line: the date layer and the model-free estimators (phase-5b), the two the
+  # model feeds - computeNeuralCovarianceKernel, estimateRemlPagelLambda, runPglsDating,
+  # optimizeLatentConvexHullRoot, pairwiseAcgtHammingMatrix and a covariance arm on
+  # runRestrictedSplineClockDating - plus models/{general,viral}_taxa.onnx, the manifest's
+  # taxa_onnx_sha256 / taxa_row_layers / embed_dim and fixtures/dating/* (phase-5c), and the
+  # temporal pillar (phase-5d). The stack merges upward, so it is pinned once at the base.
   #
-  # phase-5e adds one more thing the parity job needs: the harness used to assume a missing .nwk
-  # meant "the CLI will extract the embedded tree", which is true of RHO and of nothing else. The
-  # dated examples have no tree at all, so the reference command formed for them could not run and
-  # the job exited 2 on six failed reference runs (34729264726). Those examples now get only their
-  # --use-tn93 reference, which is the only run this app's surfaces make for them under D22.
+  # Two things in it are the parity job's, not the app's. phase-5d is the first tag since the
+  # reconcile that carries model.safetensors: the reconcile onto the engine's main brought main's
+  # .gitignore, whose blanket *.safetensors rule silently untracked the suite weights that had been
+  # tracked since phase-4b, and since nothing in this repository's suites loads them every check
+  # stayed green while the parity job lost all 23 of its reference runs at startup (run
+  # 34714101215). phase-5e then stopped the harness assuming a missing .nwk means "the CLI will
+  # extract the embedded tree", which is true of RHO and of nothing else: the dated examples have no
+  # tree at all, so the reference command formed for them could not run and the job exited 2 on six
+  # failed reference runs (34729264726). Those examples now get only their --use-tn93 reference,
+  # which is the only run this app's surfaces make for them under D22.
   #
   # phase-5f is the comparator, not the library: `git diff phase-5d..phase-5f -- js/` is empty. It
   # derives two parity classes that had never been derived. The edge-order check was asserting

@@ -28,6 +28,10 @@ describe.skipIf(!root)('/mcp against the mcp/ workspace', () => {
 		expect(facts.toolNames.length).toBeGreaterThan(0);
 		expect(facts.toolNames).toContain('hyphaeon_analyze');
 		expect(facts.toolNames).toContain('hyphaeon_phenotype');
+		// Phase 6: the three time tools reach the page from the workspace, not from this file's copy.
+		expect(facts.toolNames).toContain('hyphaeon_dates');
+		expect(facts.toolNames).toContain('hyphaeon_dating');
+		expect(facts.toolNames).toContain('hyphaeon_temporal');
 	});
 
 	it('has one row of copy per registered tool and no row for a tool the server dropped', async () => {
@@ -66,6 +70,9 @@ describe('/mcp copy', () => {
 			'hyphaeon_epistasis',
 			'hyphaeon_dms',
 			'hyphaeon_phenotype',
+			'hyphaeon_dates',
+			'hyphaeon_dating',
+			'hyphaeon_temporal',
 			'hyphaeon_evaluate'
 		]);
 	});

@@ -142,8 +142,11 @@ declare module '@veg/hyphaeon-runtime' {
 		name: string;
 		onnxSha256: string;
 		bustedHeadSha256: string | null;
+		/** Phase 4: null when this manifest declares no dating graph for the variant. */
+		taxaOnnxSha256: string | null;
 		onnxFile: string;
 		bustedHeadFile: string | null;
+		taxaOnnxFile: string | null;
 		trainedOn?: string;
 		regime?: string;
 		raw: Record<string, unknown>;
@@ -155,6 +158,24 @@ declare module '@veg/hyphaeon-runtime' {
 	export function modelLocation(base: string, manifest: Manifest, variantName?: string): string;
 	export function sha256Hex(bytes: ArrayBuffer | Uint8Array): Promise<string | null>;
 	export const DEFAULT_VARIANT: string;
+
+	/**
+	 * runtime/src/datingNeural.js — the forward pass the dating pillar's two model-based estimators
+	 * are fed from. It runs `<variant>_taxa.onnx` over EVERY codon (not the variable ones), with no
+	 * taxon cap and no duplicate pruning, and divides the accumulated sums once.
+	 */
+	export function runDatingModelPass(args: {
+		alignmentText?: string | null;
+		sequences?: Map<string, string> | null;
+		session: RuntimeSessionHandle;
+		manifest?: Manifest | null;
+		batchSize?: number;
+		progress?: RuntimeProgress;
+		signal?: AbortSignal;
+	}): Promise<import('@veg/hyphaeon-runtime/dating').DatingModelPass>;
+	export const TAXA_OUTPUT_NAMES: readonly string[];
+	export function taxaOutputNames(manifest?: Manifest | null): string[];
+	export function taxaGraphArch(manifest?: Manifest | null): { rowLayers: number; embedDim: number };
 }
 
 declare module '@veg/hyphaeon-runtime/web' {
@@ -167,6 +188,16 @@ declare module '@veg/hyphaeon-runtime/web' {
 		expectedInputs?: readonly string[];
 	}): Promise<RuntimeSessionHandle>;
 	export function loadBustedHead(options: {
+		modelUrl: string;
+		expectedSha256?: string;
+		ortWasmPath?: string;
+		numThreads?: number;
+	}): Promise<RuntimeSessionHandle>;
+	/**
+	 * Phase 4: `<variant>_taxa.onnx`, verified against `taxa_onnx_sha256` before it is created, and
+	 * memoised on the same key as every other session so the two graphs cannot collide.
+	 */
+	export function loadTaxaGraph(options: {
 		modelUrl: string;
 		expectedSha256?: string;
 		ortWasmPath?: string;

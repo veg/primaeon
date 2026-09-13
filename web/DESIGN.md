@@ -806,6 +806,96 @@ Two further notes:
 - Purple appears on `/time` on links and on exactly two marks: the fit line and the flagged points
   in the clock figure, where it carries a fact about the data. Nothing in the date table borrows it.
 
+**The `/time` route, phase 3: the ancestor date (sections 3 and 4)**
+
+Six further resolutions, each a place the specification above had no pattern or where phase 3
+changed a rule phase 2 recorded. Nothing in §6 moved and no spec was edited.
+
+- **The purple budget grows from two marks to four, plus the page's first primary button.** The note
+  above is amended rather than quietly broken: section 3's figure adds the dating fit line, the
+  ancestor mark on the time axis and its interval bracket, and `Estimate the ancestor date` is
+  `/time`'s one primary (`--brand` fill, `--on-brand` label, never labelled exactly "Run"). Every
+  one of those marks carries a fact about the data, which is the rule §2 states; nothing decorative
+  gained a hue, and both tables are still colourless apart from the orange word in the Status
+  column.
+- **Orange now also marks a dating warning, not only a date problem.** Phase 2 reserved it for
+  problems with the dates because nothing else on the page could change an answer. Section 3 can:
+  a reserved holdout, a flagged sequence, a predicted date that came from a different model, a
+  degenerate interval. Those take §3's warning treatment (the 0.5 em `--warn-mark` square, the rest
+  in `--text-muted`) inside the "What this estimate rests on" disclosure; the runtime's own
+  `severity` decides which, and its `note` severity stays a plain `.note`. The clock-model finding
+  is a plain `.note` as the surface specification asked, because it is a fact about the fit rather
+  than a problem with it.
+- **The counter instability §3 flagged is fixed by dropping one `<b>`.** The warnings table's
+  `<caption>` inside the *closed* `details.strip` is `display: none` and increments nothing, so the
+  review table was "Table 1" closed and "Table 2" open. That caption's bold opening is now a
+  `<span class="capname">` with the same look and no `::before`, so the table counter runs over the
+  tables a reader can actually see. The alternative — moving the table out of the disclosure — would
+  have put nine diagnostics permanently on the page.
+- **A table row that states an absence.** The estimator table lists the four estimators this build
+  does not run. Their rows carry an em dash in the date column and their reason spanning the
+  remaining three, in `--text-faint`: no badge, no pill, no "coming soon" (§4, §5). A table that
+  omitted them would let a reader think this is the whole pillar, which is the claim §5 forbids.
+- **Two controls the phase-2 `/time` rule did not anticipate.** Section 3 has a `<select>` for the
+  root (the input rule, square, `1px var(--rule)`) and section 4 has a checkbox per row for
+  excluding a sequence from the fit (`accent-color: var(--brand)`). The checkbox is the control; the
+  ROW is still not one — no pointer cursor and no `--surface-2` hover — so §8's phase-2 rule stands
+  as written.
+- **The clock preview stops printing a second ancestor number.** Once section 3 has an estimate,
+  `ClockPreview`'s "Ancestor date" stat tile is replaced by one line naming both numbers and the gap
+  between them (`crossCheckSentence`), taking the warning treatment when the gap exceeds the
+  interval section 3 quotes. Two ancestor estimates on one page with nothing connecting them is the
+  same defect §8 records for the filter section's duplicated lede, and the same fix.
+
+**The `/time` route, phase 5: temporal selection (section 5)**
+
+Seven further resolutions. Nothing in §6 moved, no spec was edited, and the two existing `/time`
+tables and three figures are untouched — the section was added and `Data and provenance` renumbered
+from 5 to 6 (which also corrected `DATING_DOWNLOAD_NOTE`, whose last clause named section 5).
+
+- **A `<figcaption>` may hold exactly ONE `<b>`, and this is now a rule rather than an accident.**
+  `app.css`'s `.numbered figcaption b::before` increments the FIGURE counter, so every `<b>` in a
+  caption is a new figure number. Three of the four new captions open with a name and then emphasise
+  a phrase inside the prose ("The y axis is not a frequency", "positive part", "The third gate
+  cannot be drawn") — which silently renumbered every figure after them, measured while the e2e was
+  being written. Inline emphasis inside a caption is now `<strong>`, with a scoped
+  `figcaption strong { color: var(--text); font-weight: 700 }` so it looks identical, and
+  `e2e/time.spec.ts` asserts `figcaption b` has exactly one element per figure. The same rule applies
+  to `caption b` and the table counter. (The number itself cannot be asserted any other way: it is
+  generated content, absent from `textContent`, and `getComputedStyle` returns the unresolved
+  `counter(figure)`.)
+- **A figure that would have nothing to draw draws the fallback instead of disappearing.** Figure 5
+  is one ridge per confirmed sweep; when nothing is confirmed it draws the strongest candidates and
+  the caption says which it is drawing. Rendering a `.note` in place of the figure would move every
+  figure number after it between two runs of the same page, and the counter is DOM order. In that
+  fallback the ridges, peaks and labels are `--plot-uncalled` / `--plot-tick`, never purple: a
+  candidate set is not a called set (§4).
+- **Four small multiples rather than four coloured lines.** Figure 6 draws the wave modes as four
+  stacked panels on one shared axis, each labelled with its share of the variance, all in `--text`.
+  Four hues and a legend would be the `SECTOR_PALETTE` mistake again, and NOTHING in that figure is
+  a call, so no purple appears in it at all.
+- **A fourth row-state vocabulary, and still no mark in the table body.** §8's phase-2 rule stands:
+  `/time` tables carry words, not glyphs — except that section 5's table has a genuine Call column in
+  the report's own sense, so it takes §3's treatment exactly (a 0.5 em `--brand` square then the
+  grade in `--text` at 400, an em dash where nothing was called). The states it adds are "not
+  scored" and "not tested" in `--text-faint`; a candidate whose null never ran never reads "not a
+  sweep", because that would be a claim the run did not make.
+- **This table's rows ARE controls, unlike section 4's.** Clicking a row selects the codon in all
+  four figures and clicking a mark in a figure pages the table to its row, so the rows take
+  `cursor: pointer` and a `--surface-2` hover, which §8's phase-2 note explicitly withheld from the
+  date table because nothing happened there. `.table .count` stays a page singleton owned by section
+  1; this table's line is `.table__foot`.
+- **The four downloads are the reference's bytes, with no `primaeon` key added.** The surface
+  specification asked for `temporal_summary.json` to carry the reference's eighteen keys plus one of
+  ours. The runtime's writers are byte-equal to `hyphaeon temporal`'s own output and that is the
+  stronger claim: a reader who takes all four files can `diff` them. PrimAeon's provenance is on the
+  record and in the reproduction line printed under the buttons instead, and the note says the files
+  are the reference's own.
+- **The record is not persisted with the review.** A finished record carries two `[L, T]` float64
+  curve blocks — 17.5 MB on a 4,384-codon alignment at the default grid — and the `/time` IndexedDB
+  row is meant to be the small thing that survives a reload. Re-running costs the model pass again;
+  the graph is in the browser cache by then. This is said where the section says what it cost.
+
 **Measured at integration** (`scratchpad/design/final/contrast.py` over the tokens in `app.css`)
 
 | Scheme | Token | Hex | on `--bg` | on `--surface-2` |

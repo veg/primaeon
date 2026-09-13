@@ -33,6 +33,7 @@ const env = Object.assign({}, process.env, (workerData && workerData.env) || {})
 const runner = createRunner({
   env,
   threads: workerData && workerData.threads,
+  temporalPermBudget: workerData && workerData.temporalPermBudget,
   logger: {
     debug: (m) => post({ type: "log", level: "debug", message: m }),
     info: (m) => post({ type: "log", level: "info", message: m }),
@@ -79,10 +80,15 @@ async function handleRun(msg) {
       type: "error",
       id,
       error: {
-        kind: controller.signal.aborted ? "cancelled" : err.kind || "server",
+        // An INPUT refusal keeps its class even when a cancel raced it: "your metadata file has no
+        // date column" does not become "cancelled" because the caller hung up a moment later.
+        kind: controller.signal.aborted && err.kind !== "input" ? "cancelled" : err.kind || "server",
         message: err.message || String(err),
         hint: err.hint,
-        code: err.code
+        code: err.code,
+        // Bounded structured detail (today: the date layer's review). `plain` because an error
+        // travels by structured clone and a stray class instance would kill the message.
+        details: err.details ? plain(err.details) : undefined
       }
     });
   } finally {

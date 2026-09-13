@@ -29,6 +29,36 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export const DEFAULT_PORT = 7040;
 
+/**
+ * The work cap on the temporal pillar's date-shuffling null, on THIS surface.
+ *
+ * THE BROWSER'S NUMBER IS NOT THIS SURFACE'S NUMBER, and this is the one place Phase 6 raises a
+ * limit rather than inheriting one. `TEMPORAL_PERM_BUDGET_DEFAULT` (runtime/src/temporal/null.js)
+ * is 5.0e10 units, chosen so a tab stays responsive: about 91 s at that file's own measured
+ * throughput anchor of 5.5e8 units/s, and 139 s at the slowest dense measurement it records
+ * (3.59e8 on a loaded machine). A server has no tab to keep responsive, runs the null in a worker
+ * thread, and — the load-bearing part — a null the clock stops STILL RETURNS A VALID RECORD at the
+ * achieved draw count, because `runTemporalNull` catches its own abort and draw `b` is seeded from
+ * `splitmix64(seed, b)`, so a run stopped at 313 draws is bit-identical to one configured at 313.
+ *
+ * So this server's real bound on a long null is HYPHAEON_JOB_TIMEOUT_MS (600 s by default), not a
+ * work cap, and the work cap's job is only to refuse a null that could never finish inside any
+ * timeout. 1.0e12 units is about 30 min at the anchor rate and about 46 min at the slowest rate
+ * that file measured — deliberately above the default job timeout in both cases, so at the shipped
+ * settings the TIMEOUT is what stops a long null (leaving a usable record) and this number never
+ * fires. An operator who raises HYPHAEON_JOB_TIMEOUT_MS past half an hour gets the runtime's own
+ * decline (TEMPORAL_NULL_SKIPPED, which withholds the null and computes everything else) instead of
+ * a job that runs for hours.
+ *
+ * Those throughput figures are ANCHORS, not floors: null.js's own header forbids quoting either as
+ * a bound, and four of six dense measurements on a loaded machine came in below the anchor. The
+ * conversion above is a sanity check on the ordering of two numbers, not a promise about seconds.
+ *
+ * Set HYPHAEON_TEMPORAL_PERM_BUDGET to override; a caller may lower or raise it per job with the
+ * `perm_work_budget` option.
+ */
+export const TEMPORAL_PERM_BUDGET = 1.0e12;
+
 /** Where the models directory is looked for when HYPHAEON_MODELS_DIR is not set. */
 export function defaultModelsCandidates() {
   return [
@@ -44,6 +74,13 @@ function intEnv(env, key, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } =
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+function floatEnv(env, key, fallback) {
+  const raw = env[key];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function parseTrustProxy(raw) {
@@ -92,6 +129,8 @@ export function loadConfig(env = process.env, overrides = {}) {
     threads: intEnv(env, "HYPHAEON_SERVER_THREADS", intEnv(env, "HYPHAEON_MCP_THREADS", 2), { min: 1, max: 32 }),
     /** How long a cancelled run may take to acknowledge before its worker is terminated and replaced. */
     cancelGraceMs: intEnv(env, "HYPHAEON_CANCEL_GRACE_MS", 5000, { min: 100 }),
+    /** Work cap on the temporal null; see TEMPORAL_PERM_BUDGET above for why it is not the browser's. */
+    temporalPermBudget: floatEnv(env, "HYPHAEON_TEMPORAL_PERM_BUDGET", TEMPORAL_PERM_BUDGET),
     /** Per-IP rate limits (requests per minute). */
     rateLimit: {
       windowMs: 60 * 1000,

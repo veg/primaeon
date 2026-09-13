@@ -7,10 +7,15 @@
  * strict build emits it from the default `*` entry and no `entries()` is needed; a stored review is
  * addressed `/time/?id=<uuid>`, exactly as a local report is `/report/local/?id=<id>`.
  *
- * WHAT THIS ROUTE MUST NOT FETCH. No `*.onnx`, no `ort-*.wasm`, nothing off-origin. It reviews
- * dates and never loads a model, and that is enforced by the import boundary rather than by
- * intention: the page imports `@veg/hyphaeon-runtime/dates` and `@veg/hyphaeon-runtime/clock`, the
- * two subpaths that reach no ONNX session, and `e2e/time.spec.ts` asserts the request log.
+ * WHAT THIS ROUTE FETCHES, AND WHEN. Nothing off-origin, ever. Nothing heavy either — no `*.onnx`
+ * and no `ort-*.wasm` — UNTIL a reader presses the one control that says it will load a graph.
+ * Phase 3's claim was "this route loads no model"; phase 4's is narrower and has to be, because the
+ * two model-based estimators cannot exist without one. The page imports
+ * `@veg/hyphaeon-runtime/dates` and `@veg/hyphaeon-runtime/clock` and its default estimate runs in
+ * a worker whose import graph is `@veg/hyphaeon-runtime/dating` alone; the model pass lives in a
+ * SEPARATE worker that nothing constructs until it is asked for. `e2e/time.spec.ts` asserts both
+ * halves against the request log: the date review and the model-free estimate fetch no heavy asset,
+ * and the model estimate fetches exactly one graph and the ORT runtime.
  */
 
 import { base } from '$app/paths';

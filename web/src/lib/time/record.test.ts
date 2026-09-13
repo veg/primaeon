@@ -23,7 +23,14 @@ const OPTIONS: TimeSetOptions = {
 	delimiter: null,
 	dropUndated: true,
 	rootMode: 'midpoint',
-	outgroup: null
+	outgroup: null,
+	datingRoot: 'consensus',
+	rootTaxon: null,
+	clockModel: 'auto',
+	ciMethod: 'fieller',
+	excludedTaxa: [],
+	useModel: false,
+	distanceMode: 'auto'
 };
 
 function record(id = 'abc') {
@@ -114,6 +121,73 @@ describe('reading a record back', () => {
 		const back = fromStored(r);
 		expect(back?.options.rootMode).toBe('midpoint');
 		expect((back as unknown as { futureField: string }).futureField).toBe('from a later build');
+	});
+
+	/**
+	 * Schema 3. A v2 record was written by a build whose `/time` route could not load a graph at all,
+	 * so `useModel: false` and `distanceMode: 'auto'` are not guesses about what the reader wanted —
+	 * they are what that build did. `dating.model` stays undefined for the same reason: absent is a
+	 * fact about the run, not a missing field.
+	 */
+	it('reads a v2 record as the model-free review it was', () => {
+		const r = record() as unknown as Record<string, unknown>;
+		r.schemaVersion = 2;
+		delete (r.options as Record<string, unknown>).useModel;
+		delete (r.options as Record<string, unknown>).distanceMode;
+		const back = fromStored(r);
+		expect(back?.options.useModel).toBe(false);
+		expect(back?.options.distanceMode).toBe('auto');
+		expect(back?.dating).toBeNull();
+		// The version itself is NOT rewritten: what was stored is what is reported.
+		expect(back?.schemaVersion).toBe(2);
+	});
+
+	it('keeps a model run’s graph identity across a round trip', () => {
+		const r = record();
+		const stored = structuredClone({
+			...r,
+			options: { ...r.options, useModel: true, distanceMode: 'tn93' as const },
+			dating: {
+				ok: true,
+				refusal: null,
+				warnings: [],
+				record: {},
+				rows: [],
+				activeName: 'pgls',
+				selectedClock: 'Linear PGLS',
+				ensemble: { t_mrca: null, ci_mrca: null, weights: {} },
+				rootDescription: 'explicit_root_CONSENSUS',
+				rootCase: 1,
+				elapsedMs: 10,
+				ranAtIso: '2026-01-01T00:00:00.000Z',
+				options: {
+					root: 'taxon' as const,
+					rootTaxon: 'CONSENSUS',
+					clockModel: 'auto' as const,
+					ciMethod: 'fieller' as const,
+					excludedTaxa: [],
+					units: 'years' as const,
+					useModel: true,
+					distanceMode: 'tn93' as const
+				},
+				model: {
+					variant: 'general',
+					sha256: 'eb44892de607',
+					file: 'general_taxa.onnx',
+					numThreads: 4,
+					crossOriginIsolated: true,
+					firstLoad: true,
+					taxa: 143,
+					codons: 981,
+					passSeconds: 7.3
+				}
+			}
+		});
+		const back = fromStored(stored);
+		expect(back?.options.useModel).toBe(true);
+		expect(back?.options.distanceMode).toBe('tn93');
+		expect(back?.dating?.model?.file).toBe('general_taxa.onnx');
+		expect(back?.dating?.model?.codons).toBe(981);
 	});
 
 	it('fills in a missing warnings array and a missing unmatched list', () => {

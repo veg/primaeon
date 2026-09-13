@@ -267,7 +267,7 @@ export interface ReadyGate {
 /**
  * A date read by the bare-number rule is the weakest claim this page can make.
  *
- * Under any non-calendar unit the last header pattern (temporal.py:210) takes the first
+ * Under any non-calendar unit the last header pattern (temporal.py:209) takes the first
  * delimiter-bound number in a name, whatever that number means. On a surveillance file it will
  * happily read an accession, an isolate index or a patient code as a generation. Measured on the
  * shipped H1N1 set, whose names carry a decimal year in their last pipe field: choosing

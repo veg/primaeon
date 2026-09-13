@@ -43,6 +43,7 @@ export const DATE_DIAGNOSTIC_CODES = Object.freeze([
 	'DATES_AUSPICE_TIP_NAME_FALLBACK',
 	'DATE_REGEX_INVALID',
 	'DATE_REGEX_NO_GROUP',
+	'DATE_REGEX_EXTRA_GROUPS',
 	'DATE_REGEX_NO_MATCH',
 	'DATES_HEADER_FALLBACK',
 	'DATES_PARTIAL_COVERAGE',
@@ -157,6 +158,17 @@ export const DATE_MESSAGES = Object.freeze({
 	REGEX_NO_GROUP:
 		'The pattern has no capturing group. The date is taken from the first group, so the part of ' +
 		'the name that is the date must be in parentheses: for example `_(\\d{4}-\\d{2}-\\d{2})$`.',
+	/**
+	 * A pattern with more than one capturing group is USABLE — `dating.py:478` reads `m.group(1)` and
+	 * so does `applyDateRegex` — but only the first group is a date, and a reader who wrote two
+	 * groups almost always meant the second one to matter. Accepting it silently and reporting
+	 * `valid: true, groups: 2` told them nothing. This is a note, not a refusal: the pattern runs,
+	 * and it runs exactly as the reference would run it.
+	 */
+	REGEX_EXTRA_GROUPS:
+		'The pattern has {groups} capturing groups and only the FIRST is read as the date ' +
+		'(dating.py:478, `m.group(1)`); every other group is matched and then discarded. If the date is ' +
+		'in a later group, move it to the front, or make the earlier ones non-capturing with `(?:…)`.',
 	REGEX_TOO_LONG:
 		'The pattern is {length} characters long; the limit is {max}. A pattern that large is almost ' +
 		'always a paste accident, and running it against every name risks hanging the page.',

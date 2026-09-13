@@ -243,6 +243,202 @@ export const GUIDES = {
       "scale is compressed, so fixed p-value gates disagree while the ordering agrees\n" +
       "- Pooling genes of very different regimes into one correlation\n"
   },
+  dates: {
+    title: "Interpret hyphaeon_dates results",
+    text:
+      "# Reading a HyphAeon date review\n\n" +
+      "## Read this first\n" +
+      "This tool runs NO MODEL. It answers one question — which of these sequences carries a sampling " +
+      "date, and how do we know — and its answer is what makes `hyphaeon_dating` and " +
+      "`hyphaeon_temporal` safe to run. Call it before either of them, every time.\n\n" +
+      "## Key fields\n" +
+      "- `headline` — one sentence: how many dated, from which source, by which rules, over what span, " +
+      "in what units\n" +
+      "- `date_review.coverage` — `taxa_total`, `dated`, `undated`, and the per-source counts. **The " +
+      "difference between `taxa_total` and `dated` is the number of sequences the analyses will drop " +
+      "without saying so.** Measured on the bundled examples: H1N1 dates 95 of 100 from headers, " +
+      "korber 142 of 143, H5N1 98 of 98\n" +
+      "- `date_review.by_rule` — which parser read each date. This is the column that tells you whether " +
+      "a date is a date. `header_bare_number` means \"the first delimiter-bound number in the name\", " +
+      "which claims an accession or an isolate index just as happily as a generation\n" +
+      "- `date_review.rows[]` — one entry per sequence: `raw`, `value`, `rule`, `source`, `matched_name`, " +
+      "`match_tier`, `imputed` and which components were imputed. A sequence is never omitted\n" +
+      "- `date_review.time_units` and `time_units_source` — `inferred` means a calendar-majority rule " +
+      "decided; `supplied` means you named it and that check was BYPASSED\n" +
+      "- `date_review.unmatched_metadata` — metadata rows that named no sequence. **The most important " +
+      "line in the output when you supplied a table**: with `header_fallback` on (the default), a table " +
+      "that matched nothing still produces a dated run, from different dates than you supplied\n" +
+      "- `date_review.match_tiers` — how many names matched exactly and how many needed quote-stripping, " +
+      "case folding, first-token or field containment. Substring matching is deliberately not a tier: " +
+      "`EPI_ISL_4021` must never match `EPI_ISL_402124`\n" +
+      "- `clock` — whether this set can carry a clock at all, and separately whether it clears " +
+      "temporal surveillance's higher bar (5 dated sequences, counted AFTER the taxon cap and the " +
+      "duplicate collapse, which this tool has not applied)\n" +
+      "- `gate.blocking[]` — what the two analyses will refuse on until you override it\n\n" +
+      "## The two gates, and why they exist\n" +
+      "The browser asks a human these two questions and waits for an answer. A tool call has nobody to " +
+      "ask, so the analyses REFUSE and name the override rather than pick the interpretation that " +
+      "produces the prettier answer.\n" +
+      "- **`DATES_BARE_NUMBER_MAJORITY`** — half or more of the dates came from the bare-number rule. " +
+      "Measured on the bundled H1N1 set: with the units inferred, 95 of 100 sequences date by " +
+      "`header_decimal_year` over 2009.25-2009.91; forced to `generations`, 100 of 100 date, 75 of them " +
+      "by `header_bare_number`, and the axis runs **from 1 to 46,241,654** with no error anywhere. " +
+      "Override with `accept_bare_numbers: true` only after reading `by_rule` and the `span`\n" +
+      "- **`DATES_UNDATED_PRESENT`** — some sequences carry no date. Override with `drop_undated: true` " +
+      "and the run is then on the dated subset, which the provenance records\n\n" +
+      "## Common misinterpretations\n" +
+      "- Reading `dated: 95` as \"95 of my sequences\" when you submitted 100 — the analysis is about 95\n" +
+      "- Trusting a span whose dates came from `header_bare_number`\n" +
+      "- Passing `time_units` to \"be explicit\": it bypasses the calendar-majority check that is the " +
+      "only thing standing between a surveillance file and a 46-million-unit axis\n" +
+      "- Assuming a supplied metadata table was used: check `coverage.from_table` and " +
+      "`unmatched_metadata`, because the header fallback fills in silently\n" +
+      "- Treating an imputed date as measured: `DATES_IMPUTED` means a missing month or day was invented\n"
+  },
+  dating: {
+    title: "Interpret hyphaeon_dating results",
+    text:
+      "# Interpreting a HyphAeon molecular clock\n\n" +
+      "## Read this first\n" +
+      "This is a root-to-tip regression of sequence divergence against sampling time. It is NOT a " +
+      "Bayesian phylodynamic analysis and its intervals are not posterior intervals; it is the same " +
+      "estimator TempEst and the reference's `hyphaeon dating` compute, with one addition and several " +
+      "named absences.\n" +
+      "**Quote the distance mode with the date, never the date alone.** `distance_mode` is `tn93` " +
+      "(model-free, the default) or `latent` (`use_model: true`, which runs a second ONNX graph over " +
+      "every codon). They are different answers on the same data: measured on the korber example, " +
+      "`t_mrca` 1938.77 model-free against 1926.81 with the graph — twelve years apart, with the whole " +
+      "warning set changing. `distance_mode_reason` says why this run got the mode it got.\n\n" +
+      "## Key fields\n" +
+      "- `record.t_mrca` and `record.ci_mrca` — the ancestor date and its interval, by " +
+      "`record.ci_method` (fieller is the default and is an exact ratio-test inversion)\n" +
+      "- `record.mu` — substitutions per site per unit time; `record.active_model` says whether the " +
+      "line or the spline was selected, and `record.selected_clock` how\n" +
+      "- `record.ols`, `record.pgls`, `record.spline`, `record.ensemble` — the individual fits. " +
+      "`pgls` and `latent_root` are null unless `use_model` ran\n" +
+      "- `taxa_summary[]` — per sequence: `sampling_date`, `root_divergence`, `fitted_divergence`, " +
+      "`predicted_date`, `temporal_residual`, `z_score`, `is_outlier`, `is_holdout`, and " +
+      "`prediction_method` — **a column the reference does not emit at all**, and it matters: on the " +
+      "korber example 12 of 142 rows come from an ancestral linear inverse, 12 from the spline's linear " +
+      "arm and 118 from the root find. Three models in one column, unmarked upstream\n" +
+      "- `honesty.estimators_not_built` — what this build does not estimate and why. Without the dating " +
+      "graph that includes the attention PGLS and the latent-root search; always it includes the " +
+      "power-law clock and leave-one-out\n" +
+      "- `date_review` — the dated set this clock was fitted to. Read it\n\n" +
+      "## Significance\n" +
+      "- A clock is a SLOPE. Check `record.timespan` and the residual spread before believing " +
+      "`t_mrca`: a set sampled over months cannot date an ancestor centuries back, whatever the " +
+      "interval says\n" +
+      "- `DATING_SPLINE_NO_INTERVAL` is load-bearing: upstream, every bootstrap replicate of the spline " +
+      "dies in a bare `except` (dating.py:1912 passes numpy's `rcond=` to scipy's `cond=`) and all four " +
+      "intervals collapse to their point estimates. **A zero-width 95% interval must never be drawn as " +
+      "one**\n" +
+      "- `DATING_MRCA_AFTER_EARLIEST_SAMPLE`, `DATING_NON_POSITIVE_RATE` and " +
+      "`DATING_UNBOUNDED_ANTIQUITY` each mean the regression produced something that is arithmetically " +
+      "fine and biologically not\n" +
+      "- Outliers are flagged at |z| > 2.5 by a NON-ROBUST rule: a single badly dated sequence moves " +
+      "the line and can flag its neighbours instead of itself\n\n" +
+      "## Reproduction\n" +
+      "`provenance.reference_command` is a `{command, reproduces, caveats}` OBJECT, not the argv array " +
+      "the other pillars carry. `reproduces` is **false whenever the dates came from sequence headers**: " +
+      "this build's date layer is the union of all three upstream parsers and reads names " +
+      "`hyphaeon dating` cannot (measured on korber, 142 of 143 by a rule the reference does not have), " +
+      "so a different dated set is a different regression. Export the dates as a two-column CSV and pass " +
+      "it with `-d` to reproduce the run. Read `caveats` before quoting `command`.\n\n" +
+      "## Common misinterpretations\n" +
+      "- Quoting `t_mrca` without `distance_mode`\n" +
+      "- Reading a zero-width interval as precision\n" +
+      "- Treating `predicted_date` as a measurement rather than an inverse of the fitted clock\n" +
+      "- Assuming `use_model: true` is a better version of the same estimate: it is a different one\n" +
+      "- Reporting the clock without the date review that produced its time axis\n"
+  },
+  temporal: {
+    title: "Interpret hyphaeon_temporal results",
+    text:
+      "# Interpreting HyphAeon temporal selection surveillance\n\n" +
+      SURROGATE_PREAMBLE +
+      "## What this pillar computes\n" +
+      "For every codon: a smoothed prevalence trajectory through calendar time, a sweep velocity, a peak " +
+      "date and intensity, half-rise and half-fall times, FWHM and area. Then a two-stage filter — an " +
+      "energy floor (stage one, the `candidates`), then a date-shuffling permutation null with BH q " +
+      "(stage two) — an fPCA decomposition of the confirmed set into four dynamic wave modes, and a " +
+      "four-way classification of each codon against the static MEME-surrogate call.\n" +
+      "**The record is never returned inline.** It is megabytes (measured: 2.1 MB on a 98 x 566 example " +
+      "at the reference's own 250 time points, 7.2 MB on a 4,384-codon run, 92% of it the trajectory " +
+      "store). The tool answers with the summary and a `job_id`; `get_results section=` pages it.\n\n" +
+      "## THE NULL HAS FOUR STATES, AND ONLY ONE OF THEM IS A RESULT\n" +
+      "`honesty.null_state`:\n" +
+      "- `not-started` — no shuffle drawn yet; the run may still reach one\n" +
+      "- `running` — draws are arriving and **nothing downstream of them exists**\n" +
+      "- `finished` — the calls, the three sweep counts and the wave modes are final. A run STOPPED by " +
+      "the caller that kept at least one draw is here too: the runtime catches its own abort, classifies " +
+      "at the achieved count and returns a complete record, so those labels ARE results, at a coarser " +
+      "p-grid\n" +
+      "- `stopped` — the null ended and produced nothing usable (declined over budget, or stopped before " +
+      "a draw finished). Saying \"has not finished\" here is false: nothing is coming\n\n" +
+      "**Do not read `permutations.tested` instead.** It flips true after the first chunk, while " +
+      "`classification`, `is_confirmed_sweep` and the sweep counts are still the scored payload's zeros, " +
+      "so it prints a completed negative finding one second into a run — and prints it every time, " +
+      "because p at draw k is (1 + exceedances)/(k + 1) and starts near 1 for every codon. " +
+      "`honesty.uncalled_because` is the clause to quote when nothing is called; do not invent your own.\n" +
+      "`honesty.wave_columns_pending` marks a record whose wave loadings and R2 are still interim ZERO " +
+      "arrays rather than measured zeros.\n" +
+      "`honesty.null_truncated` is set when the run was STOPPED mid-null: it carries `completed` of " +
+      "`requested` draws and the p-grid that count bought (1/(completed + 1)). Quote the ACHIEVED count " +
+      "whenever you quote a sweep count from such a run, never the requested one — the numbers are real " +
+      "at that B and the reply says `status: \"cancelled\"`, `partial_result: true` beside them.\n\n" +
+      "## `p_perm = 1.0` IS OFTEN NOT A MEASUREMENT\n" +
+      "`p_perm` and `q_perm` are 1.0 at every codon that never reached stage two — 4,138 of 4,384 on the " +
+      "engine's acceptance run — which is a p-value printed for a test that was not run. That is the " +
+      "reference's own fill (temporal.py:620-621), replicated on purpose so the CSVs diff clean, and " +
+      "`sites.stage1` is the mask that separates a measured 1.0 from an assumed one. Read those two " +
+      "columns **only at the candidates**. A CANDIDATE whose null did not run carries NaN, never 1.0.\n" +
+      "Never count \"sites with p_perm <= 0.05\" over all codons.\n\n" +
+      "## THE WAVE SHARES MOVE WITH THE NULL\n" +
+      "`fpca_wave_variance_pct` is computed over the CONFIRMED-SWEEP set, which is thresholded on the " +
+      "permutation p, which comes from a different generator than the reference's (xoshiro256** " +
+      "per-draw substreams here, numpy MT19937 at a hard-coded `RandomState(42)` upstream). The " +
+      "arithmetic is identical and the answer still differs: measured on H1N1 at B = 100, **32 confirmed " +
+      "sweeps here against the reference's 18**, and shares 33.84/28.26/17.81/11.11 % against " +
+      "39.67/32.37/13.92/9.31 — 5.8 points on the leading mode. Compare shapes and ordering, not digits.\n" +
+      "There is a SECOND branch: with fewer than four confirmed codons the modes are extracted from the " +
+      "strongest candidates by peak intensity, read off the trajectories BEFORE the null was drawn. " +
+      "`waves.source` and `honesty.wave_variance.conditioned_on` say which sentence applies; the null " +
+      "still decided which branch was taken.\n" +
+      "Wave signs follow this build's `canonical` convention (D28); the reference has none, so a mode " +
+      "and its negative are the same mode.\n\n" +
+      "## `escape_hatch_used`\n" +
+      "When nothing clears confirmation the reference silently falls back to calling candidates at " +
+      "`p_perm <= 0.10 OR static LRT >= 3.84` and records that in NO output file. A run that confirmed " +
+      "nothing and one that confirmed thirty through the hatch look identical in the reference's CSV. " +
+      "This flag is the only place the difference is visible — check it before quoting a sweep count.\n\n" +
+      "## The dates decide the analysis\n" +
+      "`record.dates.beyond_reference` counts the dates read by a rule `hyphaeon temporal` does not " +
+      "have. A different dated set is a different time axis, kernel, candidate set and null — the two " +
+      "runs are not comparable sequence by sequence. `TEMPORAL_DUPLICATES_COLLAPSED` matters on " +
+      "surveillance data specifically: identical haplotypes sampled on different days collapse to one " +
+      "date, deleting time points. `primaeon.taxon_cap` is `applied` when Faith's-PD subsampling ran, " +
+      "and that subsampling is TIME-BLIND (D27): it can remove the early part of an epidemic, which is " +
+      "the part a sweep is measured against.\n\n" +
+      "## Reproduction\n" +
+      "`provenance.reference_command` is a `{command, reproduces, caveats}` OBJECT. `reproduces` is " +
+      "**false on every run whose null drew at all**, and its caveat zero — emitted whether or not it is " +
+      "false — says the four CSVs will not diff clean: measured on H1N1, 1 of 4,384 site rows " +
+      "byte-identical and 0 of 60 wave rows matching, because the model columns agree at ~1e-6 rather " +
+      "than digit for digit. Compare numerically. Never print `command` without `reproduces` and " +
+      "`caveats`.\n\n" +
+      "## Common misinterpretations\n" +
+      "- Reporting a negative finding from a running or stopped null\n" +
+      "- Counting p_perm <= 0.05 over all codons instead of over the candidates\n" +
+      "- Quoting wave variance shares to two decimals as if they were reproducible\n" +
+      "- Reading `selection_intensity` and `sweep_velocity` in the CSV as two quantities (they are one " +
+      "array written twice, temporal.py:807-808)\n" +
+      "- Reading a peak date of `t_min` at an invariable codon as an early sweep (`argmax` of a zero " +
+      "row is 0; `sites.peak_at_first_grid_point` marks it)\n" +
+      "- Calling a sweep confirmed without checking `escape_hatch_used`\n" +
+      "- Treating a trajectory as an allele-frequency time series: it is the model's attention-weighted " +
+      "prevalence of a non-root residue, a surrogate quantity\n"
+  },
   report: {
     title: "Interpret a hyphaeon_analyze report",
     text:
@@ -370,7 +566,16 @@ export function registerPrompts(server) {
               "| Which sites are co-selected / form sectors? | `hyphaeon_epistasis` | same; permutations cost time | structural or experimental evidence |\n" +
               "| Which substitutions would change the selection signal at a site? | `hyphaeon_dms` | same; 19 x sites passes, <= 3,000 sites | laboratory DMS |\n" +
               "| Which sites associate with a trait across the tree? | `hyphaeon_phenotype` | same + a trait definition (preset, foreground or CSV) | permulations (they need a tree), then an independent panel |\n" +
+              "| Which sequences carry a sampling date, and how do we know? | `hyphaeon_dates` | codon alignment (+ metadata, optional) | nothing: it runs no model and is the pre-flight for the two below |\n" +
+              "| When did these sequences last share an ancestor, and how fast do they evolve? | `hyphaeon_dating` | dated alignment (no tree; D34) | BEAST / TreeTime; quote `distance_mode` with the date |\n" +
+              "| Which sites swept, and when? | `hyphaeon_temporal` | dated alignment, 5+ dated sequences | the null\'s `null_state` before quoting anything; then HyPhy on the called sites |\n" +
               "| How well does the surrogate match MEME on my gene? | `hyphaeon_evaluate` | a hyphaeon meme CSV + HyPhy MEME JSON | — |\n\n" +
+              "## Before a TIME-AWARE run\n" +
+              "`hyphaeon_dates` first, always. It runs no model, costs milliseconds, and is the only place that says " +
+              "which sequences got a date and by what rule. Both time pillars REFUSE two date sets a human would be " +
+              "asked about in the browser: one whose dates are mostly bare numbers read out of sequence names " +
+              "(`accept_bare_numbers`), and one that leaves sequences undated and would drop them silently " +
+              "(`drop_undated`). Neither override should be passed before reading `date_review.by_rule`.\n\n" +
               "## Before any run\n" +
               "1. `hyphaeon_validate` — format, frame, stops, name matching, tree regime, cost. Refusals must be fixed; warnings decide the variant and how much to trust p-values. A missing tree is NOT a refusal: `TREE_FREE_TN93` (info) says the run will use pairwise TN93 distances instead (PLAN.md D22). (`hyphaeon_analyze` runs the same diagnostics itself and records them.)\n" +
               "2. Pick the variant: `general` for deep cross-species trees, `viral` for shallow viral trees (SHALLOW_TREE suggests it).\n" +

@@ -212,6 +212,236 @@ declare module '@veg/hyphaeon-runtime/clock' {
 	): { values: Array<{ label: string; tMrca: number }>; spread: number; wide: boolean } | null;
 }
 
+/**
+ * The dating pillar (runtime/src/dating/), Phase 3. Its own subpath for the same reason `/dates`
+ * has one: nothing under it imports a manifest, a session or `predict.js`, so the `/time` route and
+ * its worker reach the estimators without reaching ORT — which is what keeps the route's "no
+ * `*.onnx`, no `ort-*.wasm`" assertion true by construction rather than by care.
+ */
+declare module '@veg/hyphaeon-runtime/dating' {
+	export const DATING_SCHEMA_VERSION: number;
+	export const DATING_DIAGNOSTIC_CODES: readonly string[];
+	export const DATING_REFUSALS: Readonly<Record<string, string>>;
+	export const DATING_THRESHOLDS: Readonly<Record<string, number>>;
+	export const DATING_MESSAGES: Readonly<Record<string, string>>;
+	export const DATING_CI_METHODS: readonly string[];
+	export const PREDICTION_METHODS: readonly string[];
+	/** `dating.py:3052-3062`'s ten columns, in its order; the CSV download's contract. */
+	export const TAXON_COLUMNS: readonly string[];
+	/** `dating.py:3150-3181`'s 22 top-level keys, in its order. */
+	export const RECORD_KEYS: readonly string[];
+	/** What this build declines to estimate, and why, carried in the record so a page can say it. */
+	export const NOT_BUILT: ReadonlyArray<{ name: string; reason: string }>;
+	/** Phase 4: the two entries that appear ONLY when the dating graph did not run. */
+	export const NOT_BUILT_WITHOUT_MODEL: ReadonlyArray<{ name: string; reason: string }>;
+	export const DATING_DISTANCE_MODES: readonly string[];
+	/** `dating.py:2745`'s 1,500. Above it a model-based run is refused rather than downgraded. */
+	export const DATING_NEURAL_MAX_TAXA: number;
+	export function resolveDistanceMode(
+		requested: 'auto' | 'tn93' | 'latent',
+		hasModel: boolean
+	): { mode: 'tn93' | 'latent'; reason: string };
+
+	/**
+	 * What `runDatingModelPass` returns: the two matrices `splits.py:152-153` produces, over ALL
+	 * alignment taxa in alignment order and already divided. Declared here rather than in the main
+	 * module because the estimators that consume it live here.
+	 */
+	export interface DatingModelPass {
+		crossAttn: Float64Array;
+		taxaRepr: Float64Array;
+		taxa: string[];
+		N: number;
+		L: number;
+		embedDim: number;
+		rowLayers: number;
+		batchSize: number;
+		calls: number;
+		starsRewritten: number;
+		elapsedSeconds: number;
+	}
+	export interface DatingWarning {
+		code: string;
+		severity: string;
+		message: string;
+		data?: unknown;
+	}
+	export interface DatingTaxonRow {
+		taxon: string;
+		sampling_date: number;
+		root_divergence: number;
+		fitted_divergence: number;
+		predicted_date: number;
+		divergence_residual: number;
+		temporal_residual: number;
+		z_score: number;
+		is_outlier: boolean;
+		is_holdout: boolean;
+		prediction_method: string;
+	}
+	export interface DatingRun {
+		ok: boolean;
+		refusal: string | null;
+		warnings: DatingWarning[];
+		record: Record<string, unknown>;
+		rows: DatingTaxonRow[];
+		taxa: string[];
+		times: Float64Array;
+		divergences: Float64Array;
+		coverage: Float64Array;
+		trainIndices: number[];
+		ols: Record<string, unknown>;
+		/** Phase 4: null unless the dating graph ran. */
+		pgls: Record<string, unknown> | null;
+		latent: Record<string, unknown> | null;
+		spline: Record<string, unknown> | null;
+		distanceMode: 'tn93' | 'latent';
+		distanceModeReason: string;
+		pagelLambda: number | null;
+		printedRidge: number | null;
+		active: Record<string, unknown>;
+		activeName: 'ols' | 'pgls' | 'spline';
+		selectedClock: string;
+		ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+		methods: string[];
+		rootDescription: string;
+		rootCase: 1 | 2 | 3 | 4 | null;
+		rootSequence: string | null;
+	}
+	/**
+	 * `hyphaeon dating -a <alignment> --no-tree --method ols`, in process. Never throws except on an
+	 * unported `ciMethod` (a RangeError) and on abort (`err.name === 'AbortError'`).
+	 */
+	export function runDating(args: {
+		alignmentText?: string | null;
+		sequences?: Map<string, string> | Record<string, string> | null;
+		alignmentName?: string | null;
+		dates: Map<string, number> | Record<string, number> | { rows: Array<{ taxon: string; value: number | null }> };
+		rootTaxon?: string | null;
+		decayGamma?: number | null;
+		decayHalfLife?: number | null;
+		excludedTaxa?: readonly string[];
+		clockModel?: 'auto' | 'linear' | 'spline';
+		ciMethod?: 'fieller' | 'delta' | 'linear';
+		/**
+		 * Phase 4. `auto` — the reference's default — resolves to `latent` when `neural` is supplied
+		 * and to `tn93` when it is not; `latent` without `neural` is a RangeError, because the latent
+		 * root is a position in the MODEL'S space and there is nothing to approximate it with.
+		 */
+		distanceMode?: 'auto' | 'tn93' | 'latent';
+		/** What `runDatingModelPass` returned, or null. Its absence is a fact, not an error. */
+		neural?: DatingModelPass | null;
+		/** Why `neural` is absent, when the caller knows; reported as DATING_MODEL_GRAPH_ABSENT. */
+		modelUnavailableReason?: string | null;
+		timeUnits?: string;
+		allowStopCodons?: boolean;
+		autoTrimTrailing?: boolean;
+		progress?: (phase: string, done: number, total: number, message: string) => void;
+		signal?: AbortSignal;
+		provenance?: Record<string, unknown>;
+	}): DatingRun;
+	export function rankTaxonRows(rows: DatingTaxonRow[]): DatingTaxonRow[];
+	/**
+	 * The adjudication (`dating.py:2943-2996`) and the admission rule (`:2894-2941`), pure and
+	 * exported separately so a caller can replay them on a record it did not produce — which is how
+	 * `datingModel.test.ts` checks this build's `selected_clock` sentence against the reference's own
+	 * bytes without running a model.
+	 */
+	export function selectClockModel(args: {
+		ols: Record<string, unknown> | null;
+		pgls?: Record<string, unknown> | null;
+		spline: Record<string, unknown> | null;
+		clockModel?: 'auto' | 'linear' | 'spline';
+	}): {
+		name: 'ols' | 'pgls' | 'spline';
+		model: Record<string, unknown>;
+		selectedClock: string;
+		cladeAttenuated: boolean;
+		attenuation: number;
+		warnings: DatingWarning[];
+	};
+	export function admitEnsembleCandidates(args: {
+		ols: Record<string, unknown> | null;
+		pgls?: Record<string, unknown> | null;
+		spline: Record<string, unknown> | null;
+		minSampleTime: number;
+		selected?: string | null;
+		cladeAttenuated?: boolean;
+	}): {
+		ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+		admitted: string[];
+		warnings: DatingWarning[];
+	};
+	export function sortDatingWarnings<W extends { code: string }>(warnings: W[]): W[];
+	export function datingJsonText(
+		record: Record<string, unknown>,
+		options?: { includeProvenance?: boolean; predictionMethod?: boolean }
+	): string;
+	export function datingCsvText(rows: DatingTaxonRow[], options?: { predictionMethod?: boolean }): string;
+	export function datingDownloads(
+		run: DatingRun,
+		options?: { stem?: string }
+	): Array<{ name: string; type: string; text: string }>;
+
+	/** Phase 6 review X2/X4: which ancestor date a surface quotes, and whether it may quote it flatly. */
+	export interface DatingHeadline {
+		key: 'ols' | 'pgls' | 'spline';
+		model: Record<string, unknown>;
+		activeKey: string;
+		/** True when this differs from the reference's own top-level `t_mrca`. */
+		departed: boolean;
+		/** False when the date must be rendered with `refutation` in the same breath. */
+		quotable: boolean;
+		refutation: string | null;
+		signal: { hasSignal: boolean; p: number; r2: number; g: number | null; alpha: number } | null;
+	}
+	export const DATING_SIGNAL_ALPHA: number;
+	export const DATING_MODEL_KEYS: readonly string[];
+	export function isDegenerateInterval(ci: readonly number[] | null | undefined): boolean;
+	export function isUnboundedInterval(ci: readonly number[] | null | undefined): boolean;
+	export function datingClockSignal(
+		record: Record<string, unknown>
+	): { hasSignal: boolean; p: number; r2: number; g: number | null; alpha: number } | null;
+	export function datingHeadline(record: Record<string, unknown> | null | undefined): DatingHeadline | null;
+
+	/** Phase 6 review X6: `temporalReferenceCommand`'s counterpart, and the notes that travel with the files. */
+	export function datingReferenceCommand(
+		run: DatingRun,
+		options?: Record<string, unknown>,
+		names?: { alignment?: string; dates?: string | null },
+		ingest?: unknown
+	): {
+		command: string;
+		reproduces: boolean;
+		caveats: string[];
+		headline: { key: string; activeKey: string; departed: boolean; quotable: boolean } | null;
+	};
+	export function datingDownloadNotes(
+		run: DatingRun,
+		options?: { predictionMethod?: boolean; includeProvenance?: boolean }
+	): string[];
+}
+
+/**
+ * The temporal pillar's VOCABULARY ONLY — codes, thresholds and the sentences a surface renders.
+ * A separate subpath from `@veg/hyphaeon-runtime/temporal` because that one reaches `predict.js`
+ * and therefore onnxruntime; this one imports nothing but the date layer's own import-free codes,
+ * so the `/time` route can print what the pillar means before any button is pressed.
+ */
+declare module '@veg/hyphaeon-runtime/temporal/codes' {
+	export const TEMPORAL_SCHEMA_VERSION: number;
+	export const TEMPORAL_DIAGNOSTIC_CODES: readonly string[];
+	export const TEMPORAL_REFUSALS: Readonly<Record<string, string>>;
+	export const TEMPORAL_THRESHOLDS: Readonly<Record<string, number>>;
+	export const TEMPORAL_MESSAGES: Readonly<Record<string, string>>;
+	export const TEMPORAL_REFERENCE_RULES: readonly string[];
+	export const TEMPORAL_BEYOND_REFERENCE_RULES: readonly string[];
+	/** Phase 6 review X1: what the date-shuffling null assumes, in one place all three surfaces read. */
+	export const TEMPORAL_NULL_ASSUMPTION: Readonly<{ lead: string; rest: string }>;
+	export function fillMessage(template: string, values: Record<string, unknown>): string;
+	export function nameSample(names: readonly string[]): string;
+}
+
 declare module '@veg/hyphaeon-js' {
 	/** js/src/dates.js: the 21 rule ids every DateParse reports; the /time page maps them to words. */
 	export const DATE_RULES: Readonly<Record<string, string>>;

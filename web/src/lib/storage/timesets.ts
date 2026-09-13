@@ -70,7 +70,7 @@ export async function listTimeSets(): Promise<TimeSetListing[]> {
 		cursor.onsuccess = () => {
 			const c = cursor.result;
 			if (!c) return resolve();
-			const { dates, inputs, ...envelope } = c.value as TimeSetRecord;
+			const { dates, inputs, dating, ...envelope } = c.value as TimeSetRecord;
 			rows.push({
 				...envelope,
 				dated: dates?.summary?.dated ?? 0,

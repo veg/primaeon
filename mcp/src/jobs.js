@@ -32,6 +32,34 @@
  * section=sites` answers before DMS has finished and `job_status` lists `sections_ready`. The
  * final `result` replaces the partial when the run resolves; a partial is never returned for a
  * completed job.
+ *
+ * A CANCELLED RUN MAY STILL HAVE AN ANSWER, AND THE STORE KEEPS IT (Phase 6). Every pillar before
+ * this one answered a cancel by throwing, so "cancelled" and "nothing to show" were the same fact
+ * and the pump could drop whatever the runner settled with. `runTemporal` is built the other way
+ * round: `runTemporalNull` CATCHES its own abort, classifies at the draw count it reached and
+ * `runTemporal` resolves with a COMPLETE record (`stage: 'complete'`, `permutations.cancelled`
+ * true, `completed < requested`, and a TEMPORAL_NULL_TRUNCATED warning), because per-draw
+ * substreams make a stopped run bit-identical to one configured at that B — the whole reason the
+ * runtime is written that way. MEASURED through the running tool in this session (H5N1_HA_geo,
+ * 98 x 566, time_points 60, -B 10,000, cancelled 1.5 s into the null): the run resolved with a
+ * `stage: "complete"` record at 4,364 of 10,000 draws, 168 stage-one candidates, 16 confirmed
+ * sweeps and a p-grid of 2.29e-4. Dropping that value threw away an answer the machine had already
+ * paid for, so the pump now KEEPS a value that arrives after a cancel:
+ *
+ *   - `job.result` is set and `result_partial` is true (never `status: "completed"`: the run did
+ *     not do what it was asked, and the surface must say so at what count — src/time.js
+ *     `temporalPartialNote` supplies the sentence, the store only carries the flag);
+ *   - `publicView` exposes `result_available` / `partial_result` / `result_pending`, the last of
+ *     these for the window between the cancel and the runner unwinding (measured at 75-78 ms on
+ *     that run, which is why `wait` keeps waiting for a cancelled job to settle rather than
+ *     answering "cancelled, nothing here" while the record is still on its way);
+ *   - a runner that REJECTS after a cancel (the abort reached one of `runTemporal`'s
+ *     `throwIfAborted` calls before the null began — measured by cancelling 30 ms in) keeps
+ *     nothing, `result_pending` goes false and the surface says so plainly instead of offering a
+ *     result that does not exist.
+ *
+ * The server's job store keeps a cancelled record too (server/src/jobs.js); this is the same rule
+ * on the process-local map.
  */
 
 import { randomBytes } from "node:crypto";
@@ -92,7 +120,15 @@ export function createJobStore(opts = {}) {
     if (job.status === "queued") out.queue_position = queue.indexOf(job.id) + 1;
     if (job.progress) out.progress = job.progress;
     if (job.error) out.error = job.error;
-    out.result_available = job.status === "completed";
+    out.result_available = job.status === "completed" || (job.status === "cancelled" && job.result !== undefined);
+    if (job.status === "cancelled") {
+      // Three facts, not one: whether a record survived the cancel, whether one may still arrive,
+      // and — when it did — that it is PARTIAL. A `result_available: true` with no `partial_result`
+      // beside it would let a client read a stopped run as a finished one.
+      out.partial_result = job.result !== undefined;
+      out.result_pending = job.result === undefined && !job._settled;
+      if (job.cancelled_at) out.cancelled_at = job.cancelled_at;
+    }
     if (job.status === "running" && job.partial && Array.isArray(job.partial.sections_ready)) {
       out.sections_ready = [...job.partial.sections_ready];
     }
@@ -138,12 +174,28 @@ export function createJobStore(opts = {}) {
         .then(() => job._run(job._controller.signal, report, publish))
         .then(
           (value) => {
-            if (job.status === "cancelled") return; // cancelled while running; already finished
+            if (job.status === "cancelled") {
+              // THE ANSWER THE RUNTIME FINISHED ANYWAY. See the header: a cancelled temporal run
+              // resolves with a complete record at the achieved draw count, and dropping it threw
+              // away work that had already been done. Kept, flagged partial, never "completed".
+              job.partial = null;
+              job.result = value;
+              job.result_partial = true;
+              job.result_at = nowIso();
+              job._settled = true;
+              return;
+            }
             job.partial = null;
             finish(job, "completed", { result: value });
           },
           (err) => {
-            if (job.status === "cancelled") return;
+            if (job.status === "cancelled") {
+              // The abort reached a `throwIfAborted` instead: nothing usable was produced, and the
+              // surface must not offer a result that does not exist.
+              job._settled = true;
+              job.cancel_error = { kind: (err && err.kind) || "server", message: (err && err.message) || String(err) };
+              return;
+            }
             finish(job, "failed", {
               error: {
                 kind: (err && err.kind) || "server",
@@ -174,11 +226,17 @@ export function createJobStore(opts = {}) {
         started_at: null,
         finished_at: null,
         result: undefined,
+        result_partial: false,
+        result_at: null,
         partial: null,
         error: undefined,
+        cancelled_at: null,
+        cancel_error: null,
         _run: spec.run,
         _controller: new AbortController(),
-        _terminalAt: null
+        _terminalAt: null,
+        // Only meaningful once `status` is "cancelled": whether the runner's promise has settled.
+        _settled: false
       };
       jobs.set(id, job);
       queue.push(id);
@@ -192,6 +250,24 @@ export function createJobStore(opts = {}) {
     result(id) {
       const job = jobs.get(id);
       return job && job.status === "completed" ? job.result : undefined;
+    },
+    /**
+     * The value a CANCELLED job's runner resolved with after the cancel, or undefined when it
+     * rejected, has not unwound yet, or the job was never cancelled. Deliberately a separate call
+     * from `result(id)`: every existing caller of that one means "the finished answer", and a
+     * partial record must never reach one of them by accident.
+     *
+     * @returns {{value: any, at: string, settled: boolean, error: object|null}|undefined}
+     */
+    kept(id) {
+      const job = jobs.get(id);
+      if (!job || job.status !== "cancelled" || job.result === undefined) return undefined;
+      return { value: job.result, at: job.result_at, settled: !!job._settled, error: job.cancel_error || null };
+    },
+    /** Has a cancelled job's runner finished unwinding (so `kept` is final)? */
+    settled(id) {
+      const job = jobs.get(id);
+      return job ? !!job._settled : false;
     },
     /** The latest published partial of a RUNNING job (`{value, sections_ready, at}`), else undefined. */
     partial(id) {
@@ -208,7 +284,12 @@ export function createJobStore(opts = {}) {
       for (;;) {
         const job = jobs.get(id);
         if (!job) return null;
-        if (job.status !== "queued" && job.status !== "running") return publicView(job);
+        // A CANCELLED JOB IS NOT DONE UNTIL ITS RUNNER HAS UNWOUND. `cancel` marks the job the
+        // instant it is asked to, so a caller waiting inside the tool call would otherwise return
+        // "cancelled, nothing here" in the 75-78 ms the record measured to arrive in on the H5N1
+        // run. Bounded by the same timeout as everything else.
+        const settling = job.status === "cancelled" && !job._settled;
+        if (job.status !== "queued" && job.status !== "running" && !settling) return publicView(job);
         if (Date.now() - t0 >= timeoutMs) return publicView(job);
         await new Promise((r) => setTimeout(r, Math.min(stepMs, Math.max(1, timeoutMs - (Date.now() - t0)))));
       }
@@ -224,6 +305,10 @@ export function createJobStore(opts = {}) {
       if (qi !== -1) queue.splice(qi, 1);
       job._controller.abort();
       job.status = "cancelled";
+      job.cancelled_at = nowIso();
+      // A job that never started has no runner to settle, so nothing is pending and nothing can
+      // arrive; one that WAS running settles when its promise does (see `pump`).
+      job._settled = !wasRunning;
       job.finished_at = nowIso();
       job._terminalAt = Date.now();
       if (wasRunning) running--;

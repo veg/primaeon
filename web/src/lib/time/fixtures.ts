@@ -27,3 +27,34 @@ export function available(): boolean {
 export function example(name: string): string {
 	return readFileSync(resolve(EXAMPLES, name), 'utf8');
 }
+
+export const FIXTURES = resolve(ENGINE, 'fixtures');
+
+/** True when the engine's per-function fixture directory is checked out beside this repository. */
+export function fixturesAvailable(): boolean {
+	return existsSync(resolve(FIXTURES, 'dating'));
+}
+
+/**
+ * One of the engine's `fixtures/<module>/<function>.json` documents, with `±Infinity` and `NaN`
+ * revived. `gen_fixtures.py` writes them as the STRINGS `"-Infinity"`, `"Infinity"` and `"NaN"`
+ * because JSON has no literal for them, and a view model that received the string would render it
+ * verbatim — which on this pillar means printing `-Infinity` as an interval bound, exactly the
+ * thing `intervalText` exists to prevent. Reviving at the boundary keeps every consumer honest.
+ */
+export function fixtureJson<T = unknown>(relative: string): T {
+	return revive(JSON.parse(readFileSync(resolve(FIXTURES, relative), 'utf8'))) as T;
+}
+
+function revive(value: unknown): unknown {
+	if (value === '-Infinity') return Number.NEGATIVE_INFINITY;
+	if (value === 'Infinity') return Number.POSITIVE_INFINITY;
+	if (value === 'NaN') return Number.NaN;
+	if (Array.isArray(value)) return value.map(revive);
+	if (value && typeof value === 'object') {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value)) out[k] = revive(v);
+		return out;
+	}
+	return value;
+}

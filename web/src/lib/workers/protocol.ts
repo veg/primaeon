@@ -32,6 +32,10 @@
  *           one worker and not one per phase. Phase 1's third worker fitted branch lengths in a
  *           vendored WebAssembly engine; D22 replaced it with the library's tree-free TN93 path,
  *           so there is no tree worker any more and no second WASM heap to keep apart from ORT's.
+ *   dating  the model-free ancestor-date run (Phase 3). Its own worker precisely BECAUSE it loads
+ *           nothing: its import graph is `@veg/hyphaeon-runtime/dating` alone, so the `/time`
+ *           route's "no `*.onnx`, no `ort-*.wasm`" assertion holds by construction. See
+ *           dating.worker.ts.
  *   infer   the whole `runMeme` — session load, prepare, inference, post-processing — in ONE
  *           worker, with the ORT session created there. This is the simpler of the two designs
  *           the plan allowed (per-phase workers behind an adapter, or one worker running the
@@ -53,6 +57,7 @@ import type {
 	TreeSource
 } from '$lib/api';
 import type { PhenotypeSection } from '$lib/report/types';
+import type { TaxonDatingRow } from '$lib/time/types';
 import type { PrescreenResult } from '$lib/diagnostics/panel';
 
 // ---- envelope ---------------------------------------------------------------------------------
@@ -233,6 +238,94 @@ export interface PhenotypeResponse {
 	elapsedMs: number;
 }
 
+// ---- dating worker (Phase 3: the ancestor date, with no model at all) -------------------------
+
+/**
+ * One `hyphaeon dating --no-tree --method ols` run. The dates are sent as rows rather than as the
+ * whole `DateIngest`, because the run reads exactly two fields off each and the ingest carries a
+ * per-taxon provenance block the estimator has no use for.
+ *
+ * There is NO seed and NO bootstrap count here, and that is the contract rather than an omission:
+ * this pillar draws no random numbers (the reference's spline bootstrap raises on every replicate
+ * upstream, and the three interval methods that would need a generator are not ported), so a
+ * request that offered either would be advertising something the build does not do.
+ */
+export interface DatingRequest {
+	alignmentText: string;
+	alignmentName: string | null;
+	/** One per dated sequence, in alignment order; an undated one is simply absent. */
+	dates: Array<{ taxon: string; value: number }>;
+	/** A sequence name, one of the reference's magic root strings, or null for the consensus. */
+	rootTaxon: string | null;
+	excludedTaxa: string[];
+	clockModel: 'auto' | 'linear' | 'spline';
+	ciMethod: 'fieller' | 'delta';
+	timeUnits: string;
+}
+
+/** `runDating`'s result minus its typed arrays; see dating.worker.ts for why they are dropped. */
+export interface DatingResponse {
+	ok: boolean;
+	refusal: string | null;
+	warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
+	/** The reference-shaped record: its 22 keys in its order, plus `primaeon`. */
+	record: Record<string, unknown>;
+	rows: TaxonDatingRow[];
+	activeName: string;
+	selectedClock: string;
+	ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
+	rootDescription: string;
+	/** Null under `--distance-mode latent`: the latent root is not one of the four root cases. */
+	rootCase: number | null;
+	elapsedMs: number;
+	/** Null on a model-free run; the dating graph's identity when the model half ran. */
+	model: DatingModelProvenance | null;
+}
+
+// ---- dating-model worker (Phase 4: the two estimators the model feeds) ------------------------
+
+/**
+ * One `hyphaeon dating --method all` run WITH the model: a full forward pass over every codon
+ * through `<variant>_taxa.onnx`, then the same `runDating` the model-free worker calls, with the
+ * two matrices handed in.
+ *
+ * IT IS A SUPERSET OF `DatingRequest` ON PURPOSE. The model half does not replace the model-free
+ * estimate, it re-runs the whole record with two more estimators and (under `auto`) a different
+ * divergence vector, so every field that decides the model-free answer has to travel again or the
+ * two runs would not be comparable. `distanceMode` is the one addition a reader controls: `auto` is
+ * the reference's own default and resolves to `latent` the moment a dating graph is present
+ * (dating.py:2520-2523), which is why the page names the divergence source and not just the
+ * estimator.
+ */
+export interface DatingModelRequest extends DatingRequest {
+	/** Absolute URL of `models/manifest.json` and the directory the graphs are served from. */
+	manifestUrl: string;
+	modelsBase: string;
+	/** Absolute URL prefix of the vendored ORT WASM (`.../ort/`). */
+	ortBase: string;
+	/** Threads to ask ORT for; honoured only when the worker is cross-origin isolated. */
+	numThreads: number;
+	/** `auto` (the reference's default), or a mode the reader pinned. */
+	distanceMode: 'auto' | 'tn93' | 'latent';
+	/** The manifest variant to date with; the manifest's own default when absent. */
+	variant?: string | null;
+}
+
+/** Which graph produced the two matrices, for the provenance line and the record. */
+export interface DatingModelProvenance {
+	variant: string;
+	/** The graph the session verified, so a reader can diff it against `models/manifest.json`. */
+	sha256: string;
+	file: string;
+	numThreads: number;
+	crossOriginIsolated: boolean;
+	/** True when this run paid for the download rather than reusing a warm session. */
+	firstLoad: boolean;
+	taxa: number;
+	codons: number;
+	passSeconds: number;
+}
+
 /** Everything the analyze worker accepts, and everything it answers. */
 export type AnalyzeWorkerRequest = AnalyzeRequest | PhenotypeRequest;
 export type AnalyzeWorkerResponse = AnalyzeResponse | PhenotypeResponse;
@@ -240,4 +333,100 @@ export type AnalyzeWorkerResponse = AnalyzeResponse | PhenotypeResponse;
 /** Narrow a request on the wire (the worker's only dispatch). */
 export function isPhenotypeRequest(req: AnalyzeWorkerRequest): req is PhenotypeRequest {
 	return (req as PhenotypeRequest).kind === 'phenotype';
+}
+
+// ---- temporal worker (Phase 5: temporal selection) --------------------------------------------
+
+/**
+ * One `hyphaeon temporal` run: prepare the alignment, load the backbone graph, score every codon
+ * once, smooth the attention along the sampling dates, and test the candidates against a
+ * date-shuffling null.
+ *
+ * IT IS A SIXTH WORKER, not a request kind on `analyze.worker.ts` and not a branch of
+ * `dating.worker.ts`, for the two reasons those two are apart from each other. The dating worker's
+ * whole claim is its import graph — `@veg/hyphaeon-runtime/dating` reaches no session and no graph,
+ * which is why `/time` can review dates for nothing and `e2e/time.spec.ts` proves it by watching the
+ * network — and this pillar's first step is a forward pass, so putting it there would turn that
+ * proof into a promise. The analyze worker holds a warm backbone session for a REPORT: reaching it
+ * from `/time` would drag the whole `runEverything` orchestrator into this route's bundle to run a
+ * pillar the report does not have.
+ *
+ * THE DATES TRAVEL AS ROWS PLUS THEIR RULE TABLE. `runTemporal` counts how many of them were read
+ * by a rule `temporal.parse_temporal_metadata` does not have (D31) and puts the count on the record
+ * as `dates.beyond_reference`, so the page can say plainly that the reference would have refused
+ * this file. A bare vector would make that count unknowable, and the runtime deliberately reports
+ * `null` rather than `0` for an unknown provenance.
+ */
+export interface TemporalRequest {
+	alignmentText: string;
+	/** The tree AS SUPPLIED, or '' for the library's tree-free TN93 path (D22). */
+	treeText: string;
+	alignmentName: string | null;
+	treeName: string | null;
+	/** One per dated sequence; an undated one is simply absent. */
+	dates: Array<{ taxon: string; value: number }>;
+	/** The ingest's `by_rule` histogram, so `beyond_reference` is a count and not a shrug. */
+	datesByRule: Record<string, number> | null;
+	datesSource: string | null;
+	timeUnits: string;
+	options: {
+		numTimePoints: number;
+		/** An explicit `-B`, or null to walk the runtime's rounds (200 → 500 → 1,000). */
+		permutations: number | null;
+		bandwidth: number | null;
+		rootTaxon: string | null;
+		scoreInvariableSites: boolean;
+		seed: number;
+		maxSpecies: number;
+	};
+	manifestUrl: string;
+	modelsBase: string;
+	ortBase: string;
+	tn93Base?: string;
+	numThreads: number;
+	/** The manifest variant; the manifest's own default when absent. */
+	variant?: string | null;
+}
+
+/**
+ * What the worker posts as a `section` event, once per stage and once per null chunk.
+ *
+ * THE NULL CHUNKS CARRY THE TWO VECTORS AND NOTHING ELSE, deliberately. The runtime's own interim
+ * payload is a whole record — its arrays are shared references, so building it is free in the
+ * worker — but `postMessage` structured-clones it, and the curve block alone is `2 · L · T` float64
+ * (17.5 MB on the acceptance alignment at the default grid). Cloning that five times a second to
+ * deliver a few kilobytes of p-values would make the progress bar the most expensive thing on the
+ * page. The page merges these two columns into the record it already holds.
+ */
+export type TemporalStagePayload =
+	| { stage: 'scored' | 'complete'; record: Record<string, unknown> }
+	| {
+			stage: 'null';
+			p_perm: Float32Array;
+			q_perm: Float32Array;
+			permutations: Record<string, unknown>;
+	  };
+
+export interface TemporalResponse {
+	/** The `TemporalRecord`, or null when the run refused (never thrown; runtime `codes.js`). */
+	record: Record<string, unknown> | null;
+	refusal: { code: string; message: string; warnings: Array<{ code: string; severity: string; message: string }> } | null;
+	numThreads: number;
+	crossOriginIsolated: boolean;
+	firstLoad: boolean;
+	elapsedMs: number;
+	/** Which graph the session verified, for the provenance line. */
+	model: { variant: string; file: string; sha256: string } | null;
+	/**
+	 * The command line that would reproduce this run, and the reasons it would not — from the
+	 * runtime's own `temporalReferenceCommand`, computed HERE rather than on the page. The page must
+	 * print it without a run of its own, and importing `@veg/hyphaeon-runtime/temporal` on the main
+	 * thread to build one string would pull the pillar, `predict.js` and the whole library into the
+	 * route's initial bundle. The four download files are the other half of that argument and take
+	 * the other route: they are megabytes, so the page dynamic-imports the writers when a reader
+	 * actually clicks (see `+page.svelte`).
+	 */
+	reference: { command: string; reproduces: boolean; caveats: string[] } | null;
+	/** The three sentences that must travel with the downloads (runtime `temporalDownloadNotes`). */
+	downloadNotes: string[];
 }

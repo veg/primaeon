@@ -13,7 +13,8 @@
  *   POST   /api/v1/jobs                   {analysis, alignment, tree?, options?, seed?} -> 202 {id}
  *   GET    /api/v1/jobs/:id               status, progress, warnings, expiry, section states
  *   GET    /api/v1/jobs/:id/events        SSE: status / progress / section / done
- *   GET    /api/v1/jobs/:id/result        JSON + provenance; ?format=csv|graphml ?fields= ?top= ?section=
+ *   GET    /api/v1/jobs/:id/result        JSON + provenance; ?format=csv|graphml ?fields= ?top= ?section= ?file=
+ *   POST   /api/v1/jobs/:id/cancel        stop the run and KEEP what it produced (Phase 6)
  *   DELETE /api/v1/jobs/:id               early deletion (the default is the 7-day TTL)
  *   GET    /api/v1/models                 the weights manifest and the engine's status
  *   GET    /api/v1/health, /version       liveness; package versions
@@ -29,6 +30,42 @@
  * `provenance.preprocessing.tree_source` says which happened. `analysis: "phenotype"` (and the
  * report's `options.phenotype` block) runs in the worker like every other pillar since Phase 3 —
  * this server starts no subprocess and needs no Python.
+ *
+ * PHASE 6 ADDS THE TIME PILLARS, as first-class analyses beside the rest: `dates` (the date review
+ * — reads a sampling date for every sequence from the FASTA headers, an Auspice JSON, a JSON map
+ * or a CSV/TSV, runs NO model and needs no models directory), `dating` (the molecular clock and
+ * MRCA estimate; takes no tree, D34) and `temporal` (per-site selection through calendar time with
+ * a refining permutation null). The metadata document rides as `dates_file`, the phenotype table's
+ * precedent: TEXT in the body, never a server path, under the same 8 MiB field cap. Three rules
+ * follow from what those pillars are and are enforced here rather than discovered later:
+ *
+ *   - THE DATE LAYER IS CHECKED AT THE DOOR. An unreadable metadata file, a date set with no time
+ *     axis, and the two confirmation gates the browser puts to a human (dates read mostly as a
+ *     bare number in the name; undated sequences that would be dropped silently) are 422 with the
+ *     date layer's own code — `DATES_*`, `DATING_*`, `TEMPORAL_*`, all `kind: "input"`, each with
+ *     a hint naming the METADATA fix — before a worker is spent. src/validate.js `dateCheck`.
+ *   - A TEMPORAL NULL REFINES, AND THE STREAM SAYS SO. It walks 200 -> 500 -> 1,000 draws in
+ *     chunks, and the `permutations` section is re-emitted per chunk with the achieved count and
+ *     the p-values at the stage-one candidates. The count MEANS the number it says: draw b is
+ *     seeded from splitmix64(seed, b), so a run stopped at 313 is bit-identical to one configured
+ *     at 313.
+ *   - STOPPING IS NOT DELETING. `POST /jobs/:id/cancel` aborts the run and keeps what it produced;
+ *     the temporal pillar then completes with a truncated null and a `RUN_STOPPED_EARLY` warning,
+ *     and every other pillar is `cancelled` as before. DELETE still removes everything.
+ *   - THE GRID IS A COST AND IS SIZED LIKE ONE. `options.time_points` sets the size of the
+ *     [codons x T] store every stage after the model pass walks, and the caps' `L x N^2` work term
+ *     is blind to it, so a request whose every checked number was small could hold a worker past
+ *     the job timeout. `sizeCheck` now carries `temporalGridCheck` (src/time.js, with the
+ *     measurements): 422 `TEMPORAL_TIME_POINTS_EXCEEDED` above 2,000 points,
+ *     `TEMPORAL_TIME_POINTS_INVALID` below 2, `TEMPORAL_GRID_TOO_LARGE` above 1.2e6 cells.
+ *   - AN OPTION THIS SERVER CANNOT NAME IS REFUSED, NOT DROPPED. `options` used to be a free
+ *     record: a misspelled key bought a 202 and a run at the default the caller thought they had
+ *     changed. 422 `UNKNOWN_OPTION` with the keys and the nearest real one (src/options.js), over a
+ *     vocabulary DERIVED from the MCP tools' own input schemas.
+ *   - ONE ENVELOPE FOR `?section=`, WHATEVER THE JOB'S STATE, with `honesty` at the top level in
+ *     both (src/formats.js `sectionEnvelope`), and a temporal record above 4 MiB is answered 406
+ *     `TEMPORAL_RECORD_TOO_LARGE` naming `?section=` and `?file=` instead of being parsed and
+ *     re-serialised whole on the HTTP event loop.
  *
  * Boundaries, all from PLAN.md 3.5: JSON bodies up to 8 MiB (the alignment cap, so the limit and
  * the cap refuse the same files), per-IP rate limits (src/config.js), no accounts, 128-bit ids,
@@ -55,8 +92,11 @@ import { createPool } from "./pool.js";
 import { createJobManager } from "./jobs.js";
 import { createOAuth } from "./oauth.js";
 import { mountMcp } from "./mcp-mount.js";
-import { validate, sizeCheck, ANALYSES } from "./validate.js";
-import { shapeResponse, FormatError } from "./formats.js";
+import { validate, sizeCheck, dateCheck, ANALYSES } from "./validate.js";
+import { optionCheck } from "./options.js";
+import { TEMPORAL_RECORD_BYTES_MAX, TEMPORAL_SECTIONS, referenceFileNames } from "./time.js";
+import { LIVE_SECTIONS } from "./runner.js";
+import { shapeResponse, sectionEnvelope, FormatError } from "./formats.js";
 
 const require = createRequire(import.meta.url);
 const PKG = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -99,6 +139,14 @@ const JobRequest = z
     meme_result: textField("meme_result"),
     /** The phenotype table's TEXT (hyphaeon phenotype --phenotype-file), never a server path. */
     phenotype_file: textField("phenotype_file"),
+    /**
+     * The date metadata's TEXT (hyphaeon dating/temporal -d/--dates): a Nextstrain Auspice JSON, a
+     * name-to-date JSON object, or a CSV/TSV. Never a server path — the same rule as
+     * `phenotype_file`, and for the same reason: this process must not read a caller's disk over
+     * HTTP. Omit it and the dates are read from the FASTA headers, which is the reference's own
+     * fallback; `analysis: "dates"` says which rule read each one.
+     */
+    dates_file: textField("dates_file"),
     variant: z.string().max(64).optional(),
     options: z.record(z.string(), z.unknown()).optional(),
     seed: z.number().int().min(0).max(2 ** 32 - 1).optional(),
@@ -107,6 +155,8 @@ const JobRequest = z
         alignment: z.string().max(255).optional(),
         tree: z.string().max(255).optional(),
         phenotype_file: z.string().max(255).optional(),
+        /** Printed as `-d <name>` on the time pillars' reproduction line; recorded either way. */
+        dates_file: z.string().max(255).optional(),
         demo: z.string().max(64).optional()
       })
       .optional()
@@ -120,7 +170,11 @@ const ValidateRequest = z
     analysis: z.enum(ANALYSES).optional(),
     /** D22: force the tree-free TN93 path even when a usable tree was supplied. */
     use_tn93: z.boolean().optional(),
-    max_species: z.number().int().min(2).optional()
+    max_species: z.number().int().min(2).optional(),
+    /** The date metadata's TEXT, for a rehearsal of the time pillars' door checks. */
+    dates_file: textField("dates_file"),
+    /** The job's options, so a validate answers the caps and the gates the job would meet. */
+    options: z.record(z.string(), z.unknown()).optional()
   })
   .strict();
 
@@ -180,7 +234,14 @@ export function createApp(config = loadConfig(), deps = {}) {
   const logger = deps.logger || createLogger({ level: config.logLevel });
   const startedAt = Date.now();
 
-  const pool = createPool({ size: config.workers, env: config.env, threads: config.threads, cancelGraceMs: config.cancelGraceMs, logger: logger.child("[pool]") });
+  const pool = createPool({
+    size: config.workers,
+    env: config.env,
+    threads: config.threads,
+    cancelGraceMs: config.cancelGraceMs,
+    temporalPermBudget: config.temporalPermBudget,
+    logger: logger.child("[pool]")
+  });
   const jobs = createJobManager({ config, pool, logger: logger.child("[jobs]") });
 
   const app = express();
@@ -299,14 +360,23 @@ export function createApp(config = loadConfig(), deps = {}) {
         const options = Object.assign({}, body.options || {});
         if (body.variant) options[body.analysis === "analyze" ? "variant" : "model_variant"] = body.variant;
 
+        // AN OPTION THIS SERVER CANNOT NAME IS REFUSED, NOT DROPPED. `JobRequest` is `.strict()`,
+        // so a misspelled top-level field was already a 400; `options` was the hole in that, and a
+        // typo in it bought a 202, an echo of the option in the job view, and a run at the default
+        // the caller thought they had changed. This is the same check on the same body and it is
+        // first, because it is about the request's SHAPE rather than its size: a caller who
+        // misspelled an option should be told that, not told about their alignment. src/options.js.
+        const opts = optionCheck(body.analysis, options);
+        if (!opts.ok) throw new HttpError(422, "input", opts.message, { code: opts.code, hint: opts.hint, details: opts.details });
+
         if (body.analysis === "evaluate") {
           if (!body.prediction || !body.meme_result) {
             throw new HttpError(422, "input", "evaluate needs `prediction` (hyphaeon meme CSV) and `meme_result` (HyPhy MEME JSON).", { code: "MISSING_INPUT" });
           }
         } else {
           if (!body.alignment || !body.alignment.trim()) throw new HttpError(422, "input", "An alignment is required.", { code: "MISSING_INPUT" });
-          const check = sizeCheck(body.analysis, body.alignment);
-          if (!check.ok) throw new HttpError(422, "input", check.reason, { code: "CAPS_EXCEEDED", hint: check.hint, details: check.size });
+          const check = sizeCheck(body.analysis, body.alignment, options);
+          if (!check.ok) throw new HttpError(422, "input", check.reason, { code: check.code || "CAPS_EXCEEDED", hint: check.hint, details: check.size });
           const perms = options.permutations ?? options.n_permutations;
           if (perms !== undefined && (!Number.isInteger(perms) || perms < 0 || perms > MAX_PERMUTATIONS)) {
             throw new HttpError(422, "input", "`permutations` must be an integer between 0 and " + MAX_PERMUTATIONS + ".", { code: "CAPS_EXCEEDED" });
@@ -314,6 +384,19 @@ export function createApp(config = loadConfig(), deps = {}) {
           const permul = options.permulations ?? options.n_permulations;
           if (permul !== undefined && (!Number.isInteger(permul) || permul < 0 || permul > MAX_PERMULATIONS)) {
             throw new HttpError(422, "input", "`permulations` must be an integer between 0 and " + MAX_PERMULATIONS + ".", { code: "CAPS_EXCEEDED" });
+          }
+          // THE DATE LAYER IS CHECKED BEFORE A WORKER IS SPENT ON IT, exactly as the caps are, and
+          // AFTER them: a request whose own numbers are out of range is refused for that, not for
+          // its metadata, so a caller fixing one thing at a time is told about the thing they can
+          // see. The date layer reads sequence NAMES and a metadata document, loads no model and is
+          // 3-24 ms on the bundled examples, so an unreadable metadata file, a date set with no
+          // time axis, or either of the two confirmation gates the browser puts to a human is a
+          // synchronous 422 with the date layer's own code — not a 202 followed by a failed job a
+          // minute later. The worker checks again (the engine ingests the dates itself); this is
+          // the door, not the only lock.
+          if (body.analysis === "dating" || body.analysis === "temporal") {
+            const dates = dateCheck(body.analysis, body.alignment, body.dates_file, options, body.names || {});
+            if (!dates.ok) throw new HttpError(422, "input", dates.message, { code: dates.code, hint: dates.hint, details: dates.details });
           }
           body.size = check.size;
         }
@@ -325,6 +408,7 @@ export function createApp(config = loadConfig(), deps = {}) {
           prediction: body.prediction,
           meme_result: body.meme_result,
           phenotype_file: body.phenotype_file,
+          dates_file: body.dates_file,
           options,
           seed: body.seed,
           names: body.names || {},
@@ -383,23 +467,83 @@ export function createApp(config = loadConfig(), deps = {}) {
     req.on("close", cleanup);
   });
 
+  /**
+   * Stop a running job and KEEP what it produced.
+   *
+   * DELETE has always cancelled, but it also removes the row and the directory, which is exactly
+   * wrong for the temporal pillar: `runTemporalNull` catches its own abort and `runTemporal` then
+   * resolves with a VALID record at the achieved draw count, so a caller who stops a refining null
+   * at draw 313 has an answer that means 313 — and DELETE would throw it away. This route aborts
+   * the run and lets the worker land wherever it lands: a pillar that cannot answer partially
+   * rejects and the job is `cancelled`; the temporal pillar resolves and the job is `completed`
+   * with a `RUN_STOPPED_EARLY` warning naming what stopped it and at which draw. Idempotent: a
+   * job already in a terminal state is returned unchanged.
+   */
+  api.post("/jobs/:id/cancel", (req, res) => {
+    const view = jobs.cancel(req.params.id, "cancelled by client");
+    if (!view) return res.status(404).json(errorBody(new HttpError(404, "input", "No such job.", { code: "NOT_FOUND" })));
+    res.status(200).json(view);
+  });
+
   api.get("/jobs/:id/result", (req, res, next) => {
     try {
       const job = jobs.get(req.params.id);
       if (!job) throw new HttpError(404, "input", "No such job.", { code: "NOT_FOUND" });
       if (job.status !== "completed") {
         const section = req.query.section ? String(req.query.section) : null;
-        if (job.analysis === "analyze" && section && (req.query.format || "json") === "json") {
+        // A RUNNING job serves the sections it has already published. For `analyze` those are the
+        // report's; for `temporal` they are `summary` and `permutations`, the latter refining with
+        // every chunk of the null, so a client that never opened the SSE stream can still poll the
+        // draw count and the p-values at the candidates.
+        if (section && LIVE_SECTIONS[job.analysis] && (req.query.format || "json") === "json") {
           const s = jobs.section(job.id, section);
-          if (s) return res.json({ analysis: "analyze", section, final: s.final, status: job.status, payload: s.payload });
+          // ONE ENVELOPE, WHATEVER THE STATE. This used to nest the live payload under `payload`
+          // while the finished answer put the section body at the top level, so `body.honesty` was
+          // undefined exactly while a run was in flight. `sectionEnvelope` is the single shape both
+          // paths now go through (src/formats.js).
+          if (s) return res.json(sectionEnvelope({ analysis: job.analysis, section, status: job.status, final: s.final, body: s.payload }));
         }
         return res.status(job.status === "failed" || job.status === "cancelled" ? 410 : 409).json(Object.assign({ error: { kind: "input", code: "NOT_READY", message: "The job is " + job.status + "." } }, { job }));
+      }
+      // THE ONE ANSWER THIS ROUTE WILL NOT GIVE: A WHOLE TEMPORAL RECORD THAT IS MEGABYTES.
+      //
+      // The MCP refuses inline delivery of a temporal record outright (`caps.temporal.
+      // record_never_inline`, mcp/src/resources.js) because a tool result is spent in a model's
+      // CONTEXT WINDOW. That reason does not apply to an HTTP client, which asked for a file and
+      // which this API has answered with megabyte `analyze` reports since Phase 2 — so this route
+      // keeps serving the record, and the two surfaces differ for a reason each can state.
+      //
+      // What does apply here is THIS PROCESS. `jobs.result()` reads and parses the stored document
+      // and `res.json()` re-serialises it, both on the HTTP event loop that the worker pool exists
+      // to keep free, and the record is a caller-sized object: MEASURED 2,162,993 bytes at the
+      // reference's default grid on the bundled 566-codon example and 16,272,879 at
+      // `time_points: 2000`. Above TEMPORAL_RECORD_BYTES_MAX the answer is 406 naming the two doors
+      // that serve the same numbers without the parse — `?section=` (the MCP's own ten sections,
+      // the same implementation) and `?file=` (the reference's four output files as text) — which
+      // is exactly where `record_never_inline` points a caller. Checked on the stored byte count
+      // from the job row, BEFORE the parse, because a guard that has to read the file to decide
+      // whether reading the file is affordable is not a guard.
+      const whole = !req.query.section && !req.query.file && (req.query.format || "json") === "json";
+      if (job.analysis === "temporal" && whole && job.result_bytes > TEMPORAL_RECORD_BYTES_MAX) {
+        throw new HttpError(406, "input", "This temporal record is " + job.result_bytes + " bytes, above the " + TEMPORAL_RECORD_BYTES_MAX + "-byte cap this route serves whole.", {
+          code: "TEMPORAL_RECORD_TOO_LARGE",
+          hint:
+            "Ask for a section — ?section=" + TEMPORAL_SECTIONS.join("|") + " — or one of the reference's own files, " +
+            "?file=" + (referenceFileNames("temporal") || []).join("|") + ", which are streamed as text. `summary` is the " +
+            "whole record's eighteen reference keys plus the honesty block; `curves` is what makes the record large and is " +
+            "budgeted per call. A smaller `time_points` makes a smaller record: it is about 8 KB a grid point.",
+          details: { result_bytes: job.result_bytes, cap_bytes: TEMPORAL_RECORD_BYTES_MAX, sections: TEMPORAL_SECTIONS, files: referenceFileNames("temporal") }
+        });
       }
       const doc = jobs.result(job.id);
       if (!doc) throw new HttpError(410, "server", "The result file is gone.", { code: "RESULT_MISSING" });
       const shaped = shapeResponse(job, doc, req.query);
       if (shaped.type === "json") return res.json(shaped.body);
-      res.set("Content-Type", shaped.type === "csv" ? "text/csv; charset=utf-8" : "application/graphml+xml; charset=utf-8");
+      // `json-text` is a reference output FILE that happens to be JSON (temporal's `_summary.json`,
+      // dating's `-o out.json`). It is sent as the writer produced it, byte for byte, because the
+      // whole point of those writers is that the bytes match a CLI run's; re-serialising it through
+      // res.json() would reformat the numbers it went to trouble to format.
+      res.set("Content-Type", shaped.type === "csv" ? "text/csv; charset=utf-8" : shaped.type === "json-text" ? "application/json; charset=utf-8" : "application/graphml+xml; charset=utf-8");
       res.set("Content-Disposition", 'attachment; filename="' + shaped.filename + '"');
       res.send(shaped.body);
     } catch (err) {

@@ -198,7 +198,7 @@ export function dmsSkipped(dms: DmsSection | null | undefined): { reason: string
 // ---- phenotype (Phase 3) ------------------------------------------------------------------------
 
 /**
- * One site row of `hyphaeon phenotype`, in phenotype.py:1085's key order (the 16 keys the library's
+ * One site row of `hyphaeon phenotype`, in phenotype.py:527's key order (the 16 keys the library's
  * `runPhenotypeAssociation` pushes, plus the `q_value` Benjamini-Hochberg adds afterwards). Rows
  * arrive sorted by `score`, descending — NOT by site — because the reference sorts them that way
  * before the BH pass, and the PARS bracket reads the first 15 of that order.

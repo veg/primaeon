@@ -276,7 +276,7 @@ export function inferTimeUnits(values, context = {}) {
 	};
 	// A CALENDAR MAJORITY WINS OUTRIGHT, whatever the non-calendar pass scored. The two passes are
 	// not comparable as counts: the non-calendar name path ends in a bare-number rule
-	// (temporal.py:210) that claims the first delimited number in ANY name, so it scores near 100 %
+	// (temporal.py:209) that claims the first delimited number in ANY name, so it scores near 100 %
 	// on files that are plainly calendar. See `DATE_THRESHOLDS.calendarMajority` for the three
 	// measurements behind the number.
 	if (calendarShare >= DATE_THRESHOLDS.calendarMajority) {
@@ -633,6 +633,7 @@ export function ingestDates(args = {}) {
 			valid: compiled.valid,
 			groups: compiled.groups,
 			error: compiled.error,
+			warning: compiled.warning,
 			matched: 0,
 			dated: 0,
 			stopped: false
@@ -644,6 +645,15 @@ export function ingestDates(args = {}) {
 				})
 			);
 		} else {
+			// A valid pattern can still carry a note (`DATE_REGEX_EXTRA_GROUPS`): only group 1 is read.
+			if (compiled.warning) {
+				warnings.push(
+					warn(compiled.warning.code, 'warn', compiled.warning.message, {
+						pattern: compiled.pattern,
+						groups: compiled.groups
+					})
+				);
+			}
 			const pending = taxa.filter((t) => !resolved.has(t));
 			const sweep = applyDateRegexAll(pending.map(headerFor), compiled, { timeUnits });
 			regexBlock.matched = sweep.matched;

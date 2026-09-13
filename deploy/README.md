@@ -22,8 +22,9 @@ same-origin rule (`HYPHAEON_SERVER_ISSUER`) and the OAuth `resource` (`<issuer>/
 ## What the host needs: Node and the model files. Nothing else.
 
 **No Python and no HyPhy are installed anywhere in this deployment.** Every analysis — site
-selection, the omnibus, epistasis and sectors, the digital DMS, and phenotype association since
-Phase 3 — is JavaScript running under `onnxruntime-node` in the server's worker threads, over the
+selection, the omnibus, epistasis and sectors, the digital DMS, phenotype association since Phase 3,
+and the date review, the molecular clock and temporal selection since Phase 6 — is JavaScript
+running under `onnxruntime-node` in the server's worker threads, over the
 ported library (`@veg/hyphaeon-js`). The server starts no subprocess: there is no `hyphaeon` CLI
 to install, no interpreter path to point an environment variable at, no torch, no Hugging Face
 download, and no WebAssembly tree tool to vendor (PLAN.md 8 phase 3, D16, D22). If a runbook, a Dockerfile or a systemd unit anywhere in
@@ -138,7 +139,8 @@ through `urn:ietf:wg:oauth:2.0:oob`.
 - **Logs**: `pm2 logs hyphaeon-server`; lines are prefixed `[hyphaeon-server]`, `[hyphaeon-server][jobs]`,
   `[hyphaeon-server][oauth]`, `[hyphaeon-server][mcp]`. `HYPHAEON_SERVER_LOG=debug` for the worker's engine lines.
 - **Jobs on disk**: `HYPHAEON_DATA_DIR/jobs.sqlite` (metadata) and `HYPHAEON_DATA_DIR/jobs/<id>/`
-  (inputs as submitted, `result.json`, `sections/*.json`). The sweep runs every 10 minutes and removes
+  (inputs as submitted — `alignment.fasta`, `tree.nwk`, `prediction.csv`, `meme.json`, `phenotype.csv`,
+  `dates.txt` — `result.json`, `sections/*.json`). The sweep runs every 10 minutes and removes
   rows past the 7-day TTL together with their directories, and any directory without a row. Rows left
   `queued`/`running` by a crash are failed with `SERVER_RESTARTED` at the next start; the client resubmits.
 - **No interpreter to keep current**: the only third-party runtime on the host is Node and the
@@ -149,9 +151,69 @@ through `urn:ietf:wg:oauth:2.0:oob`.
   ORT intra-op thread count per worker; a laptop-class x64 core count of 4 makes bat_oas1's full report
   (with the 19·L DMS sweep) about 30 s and RHO's site pass about 20 s. Two workers only help when
   jobs arrive faster than they finish and memory allows.
+  **A `dating` job with `use_model: true` loads a SECOND graph** (`<variant>_taxa.onnx`, ~7 MB plus its
+  arena) into the worker that runs it, on top of the ~1 GB figure above; that figure was measured
+  before this pillar existed. The graph is memoised per worker like the backbone, so the cost is paid
+  once per process and not per job. `GET /api/v1/models` reports `dating_graph` per variant, so an
+  operator can see in advance whether a build can serve `use_model` at all.
 - **Caps** are the MCP's (`mcp/src/caps.js`): alignment ≤ 8 MiB, 3 ≤ taxa ≤ 1,000, codons ≤ 30,000
   (≤ 3,000 for `dms`), work `L·N²` ≤ 2.5e9, permutations ≤ 10,000, job timeout 10 min. A refused upload
-  is `422 {error:{kind:"input", code:"CAPS_EXCEEDED"}}` before any worker runs.
+  is `422 {error:{kind:"input", code:"CAPS_EXCEEDED"}}` before any worker runs. Two of those numbers
+  behave differently on the Phase 6 pillars, and both are deliberate: `dates` has **no work term at
+  all** (it reads sequence names and a metadata document — 3 to 24 ms on the bundled examples — and
+  its only real cap is the 8 MiB body), and `dating`'s work term is `L·N` on its default model-free
+  path, rising to `L·N²` only when `use_model: true` asks for the graph, which also brings its own
+  ceiling of 1,500 sequences (a refusal, never a silent fallback to the other estimator).
+- **`temporal` is capped on its GRID as well as on its work, because the caps' work term is
+  grid-blind.** `L·N²` sizes the forward pass, and the forward pass is the same size whatever
+  `--time-points` says; everything after it — the smoothing, the null and the wave decomposition —
+  is arithmetic over a `[codons × time_points]` trajectory store the caller sizes, and it grows
+  faster than the grid does. Measured on the bundled 566-codon × 98-sequence example, one job at a
+  time: the model pass is 5–9 s at every grid, while smoothing plus waves is **0.6 s at 60 points,
+  10.5 s at 1,000, 67.8 s at 2,000**, and a 5,000-point run never left `temporal-smooth` inside the
+  600 s job timeout. The stored record grows linearly at about **8 KB per grid point**
+  (2,162,993 bytes at the reference's default 250, 16,269,093 at 2,000). So a job request is refused
+  at the door — `422 {kind:"input"}`, before a worker is spent — when `time_points > 2000`
+  (`TEMPORAL_TIME_POINTS_EXCEEDED`; the same ceiling `hyphaeon_temporal`'s tool schema enforces, and
+  the browser's own control offers only 60/120/250), when `time_points < 2`
+  (`TEMPORAL_TIME_POINTS_INVALID`), or when `codons × time_points > 1.2e6`
+  (`TEMPORAL_GRID_TOO_LARGE` — 1.2e6 is the envelope of the two largest stores measured to
+  complete). `POST /api/v1/validate` rehearses all three and reports `summary.grid_cells` either
+  way. These are not operator-tunable: they are measurements of this code, not a policy.
+- **A temporal record above 4 MiB is not served whole.** `GET /api/v1/jobs/:id/result` with no
+  `?section=` / `?file=` reads, parses and re-serialises the stored document on the HTTP event loop,
+  and the record's size is the caller's choice. Above `TEMPORAL_RECORD_BYTES_MAX` the route answers
+  `406 {code:"TEMPORAL_RECORD_TOO_LARGE"}` naming the two doors that serve the same numbers without
+  the parse: `?section=` (the MCP's ten sections, the same implementation) and `?file=` (the
+  reference's four output files, streamed as text and never guarded). The MCP refuses whole-record
+  delivery outright (`caps.temporal.record_never_inline`) for a reason that does not apply here — a
+  tool result is spent in a model's context window — so the two surfaces differ on purpose, and each
+  states why in its own header.
+- **An option this server cannot name is refused, not dropped.** `POST /api/v1/jobs` used to accept
+  any key in `options`: a misspelled `n_permutation` bought a 202, an echo of the option in the job
+  view, and a run at the default the caller thought they had changed. It is now
+  `422 {code:"UNKNOWN_OPTION"}` with the offending keys in `details` and the nearest real key in the
+  hint. The vocabulary is DERIVED from the MCP tools' own input schemas (`server/src/options.js`),
+  so an option the runtime gains reaches this route in the same change that gives the tool its
+  schema entry.
+- **The time pillars' own limit is the CLOCK, not a work cap.** The temporal null's work budget on
+  this server is `HYPHAEON_TEMPORAL_PERM_BUDGET`, default **1.0e12** — twenty times the browser's
+  5.0e10, which was chosen so a tab stays responsive. The reasoning is in `server/src/config.js` and
+  is worth knowing before you tune it: a null the clock stops **still returns a valid record** at the
+  achieved draw count, because draw *b* is seeded from `splitmix64(seed, b)` and a run stopped at 313
+  draws is bit-identical to one configured at 313. So `HYPHAEON_JOB_TIMEOUT_MS` (600 s) is what
+  actually bounds a long null, and the work budget only refuses a null that could never finish inside
+  any timeout — 1.0e12 units is about 30 min at the runtime's own measured throughput anchor and
+  about 46 min at the slowest rate it recorded, both above the default timeout, so at the shipped
+  settings it never fires. Raise `HYPHAEON_JOB_TIMEOUT_MS` past half an hour and you will start
+  seeing the runtime's own `TEMPORAL_NULL_SKIPPED` instead (which withholds the null and computes
+  everything else) rather than jobs that run for hours. Those throughput figures are anchors, not
+  floors: do not quote them to a user as an ETA.
+- **Stopping a job is not deleting it.** `POST /api/v1/jobs/:id/cancel` aborts the run and keeps what
+  it produced. Every pillar but `temporal` then ends `cancelled`; `temporal` ends **completed** with a
+  truncated null and a `RUN_STOPPED_EARLY` warning naming the reason and the achieved draw count. The
+  same thing happens when the job timeout fires, which is why a temporal job that ran out of clock is
+  a result and not a loss. `DELETE` still removes the row and the directory.
 - **Rate limits** per IP per minute: 120 on `/api`, 20 job submissions, 120 on `/mcp`, 60 on the OAuth
   endpoints (`HYPHAEON_RATE_*`). Apache's `X-Forwarded-For` is trusted from loopback only
   (`HYPHAEON_TRUST_PROXY`).

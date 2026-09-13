@@ -69,6 +69,23 @@ import {
 } from "./caps.js";
 import { diagnose, parseAlignment, treeSourceFrom, hasEmbeddedTree, NATIVE_ANALYSES } from "./validate.js";
 import { EngineError, createEngine } from "./engine.js";
+import {
+  DATE_MATCH_TIERS,
+  DATING_CI_METHODS,
+  TEMPORAL_CURVES_MAX_POINTS,
+  TEMPORAL_SECTIONS,
+  TEMPORAL_SITES_MAX_ROWS,
+  DATING_LATENT_NEEDS_MODEL,
+  clockReadiness,
+  dateGate,
+  dateHeadline,
+  dateReview,
+  datingSummary,
+  ingestFor,
+  refusalHint as refusalHintFor,
+  temporalSection,
+  temporalSummary
+} from "./time.js";
 import { readManifest } from "./models.js";
 import { REPORT_SECTIONS } from "./resources.js";
 
@@ -80,6 +97,12 @@ export const TOOL_NAMES = Object.freeze([
   "hyphaeon_epistasis",
   "hyphaeon_dms",
   "hyphaeon_phenotype",
+  // Phase 6, in the order a client uses them: review the dates first (no model, milliseconds),
+  // then the clock, then temporal selection. `hyphaeon_dates`'s output is what makes the other two
+  // safe — it is the only place that says which sequences got a date and by what rule.
+  "hyphaeon_dates",
+  "hyphaeon_dating",
+  "hyphaeon_temporal",
   "hyphaeon_evaluate",
   "job_status",
   "get_results",
@@ -185,6 +208,83 @@ const mdsSignSchema = z
 
 const seedSchema = z.number().int().min(0).max(2 ** 53 - 1).optional().describe("--seed: seed of the Monte Carlo permutation null (default 42).");
 
+/**
+ * The date layer, as tool arguments. Shared by hyphaeon_dates, hyphaeon_dating and
+ * hyphaeon_temporal so the three can never read a date differently.
+ *
+ * `dates_file` is the metadata's TEXT and `dates_file_name` its basename — the phenotype_file
+ * precedent, and for the same two reasons: this process must never read a caller's disk over HTTP,
+ * and an option is copied into the job store and into `provenance.options`, where a caller's
+ * Auspice JSON has no business being. The NAME is an option because it is the only source of `-d`
+ * on the reproduction line.
+ */
+const dateSourceSchema = {
+  dates_file: z
+    .string()
+    .max(MAX_ALIGNMENT_CHARS)
+    .optional()
+    .describe(
+      "-d/--dates: the date metadata's TEXT (a `file://` URL over stdio) — a Nextstrain Auspice JSON, a " +
+        "name-to-date JSON object, or a CSV/TSV with a name column and a date column. OMIT IT and the dates are " +
+        "read from the FASTA headers, which is the reference's own fallback; hyphaeon_dates says which rule read each one. " +
+        "BEAST XML is refused (DATES_BEAST_XML_UNSUPPORTED): the reference reads one (dating.py:433-434) and this build does not."
+    ),
+  dates_file_name: z.string().max(255).optional().describe("The metadata file's basename, recorded and printed as `-d <name>` on the reproduction line."),
+  date_source_kind: z
+    .enum(["auto", "auspice", "json-map", "table"])
+    .optional()
+    .describe("How to read dates_file (default auto: the CONTENT is sniffed and the name is only a tie-break, because a metadata export named `.txt` is common and being wrong here costs a whole dataset)."),
+  strain_col: z.string().max(256).optional().describe("--strain-col: the metadata column holding sequence names (default: discovered; hyphaeon_dates reports which column and why)."),
+  date_col: z.string().max(256).optional().describe("--date-col: the metadata column holding dates (default: discovered)."),
+  delimiter: z.string().max(4).optional().describe("The table's column separator (default: sniffed from the file's own content over its first 20 lines)."),
+  date_pattern: z
+    .string()
+    .max(512)
+    .optional()
+    .describe("--date-regex: a regular expression with ONE capturing group, applied to the sequence names; the date is taken from group 1. Patterns over 512 characters are refused unrun (a ReDoS guard)."),
+  date_pattern_flags: z.string().max(8).optional().describe("Flags for date_pattern (e.g. \"i\")."),
+  time_units: z
+    .enum(["years", "generations", "days", "arbitrary"])
+    .optional()
+    .describe(
+      "--time-units: the time coordinate. DEFAULT IS TO INFER IT, and inferring is safer than naming it: the units " +
+        "probe requires a CALENDAR MAJORITY before it calls the axis calendar, and passing this explicitly BYPASSES that " +
+        "check. Measured on the bundled H1N1 set: inferred, 95 of 100 sequences date over 2009.25-2009.91; forced to " +
+        "`generations`, 100 of 100 date and the axis runs from 1 to 46,241,654, every number nonsense, with no error " +
+        "anywhere. If you pass a non-calendar unit, read `date_review.by_rule` before believing the span."
+    ),
+  archival_1959: z.boolean().optional().describe("Apply the archival-1959 offset to names that carry it (hyphaeon_dates reports DATES_ARCHIVAL_1959_AVAILABLE when any candidate exists)."),
+  header_fallback: z
+    .boolean()
+    .optional()
+    .describe(
+      "Read dates from the sequence headers for taxa the supplied dates_file did not name (default true, the reference's own behaviour). " +
+        "Set false to refuse rather than fill in: with it on, a table that matched nothing still produces a dated run, from DIFFERENT dates than you supplied."
+    )
+};
+
+/** The two confirmation gates the browser puts to a human. src/time.js, decisions 1 and 2. */
+const dateGateSchema = {
+  accept_bare_numbers: z
+    .boolean()
+    .optional()
+    .describe(
+      "Confirm that dates read as a BARE NUMBER in the sequence name are the time coordinate you mean. That rule claims any " +
+        "number it finds — an accession or an isolate index reads as a generation just as well — so when it accounts for " +
+        "half or more of the dated set the run is REFUSED (DATES_BARE_NUMBER_MAJORITY) until you say otherwise here. " +
+        "The browser asks a human this question; a tool call has nobody to ask, so it refuses rather than pick the " +
+        "interpretation that produces the prettier answer. Recorded in provenance."
+    ),
+  drop_undated: z
+    .boolean()
+    .optional()
+    .describe(
+      "Run on the dated sequences and drop the rest. Undated sequences are dropped SILENTLY by the pillars, so a run that " +
+        "did not say so answers about a different dataset than you submitted (measured: the bundled H1N1 set dates 95 of 100 " +
+        "from headers, korber 142 of 143). Refused as DATES_UNDATED_PRESENT until set. Recorded in provenance."
+    )
+};
+
 /** The trait, as `hyphaeon phenotype` defines it and as hyphaeon_analyze's `phenotype` block takes it. */
 const phenotypeTraitSchema = {
   preset: z
@@ -242,18 +342,103 @@ const shapingSchema = {
 };
 
 const sectionSchema = z
-  .enum(REPORT_SECTIONS)
+  .enum([...new Set([...REPORT_SECTIONS, ...TEMPORAL_SECTIONS])])
   .optional()
   .describe(
-    "Reports only (hyphaeon_analyze jobs): return one section — diagnostics, sites, gene, epistasis, attribution, " +
-      "filter, dms, phenotype, provenance or timings — with fields / top / summary_only applied to it. While the job " +
-      "is still running, a section that is already final is served with status \"running\"."
+    "One section of a job's result. For a hyphaeon_analyze REPORT: diagnostics, sites, gene, epistasis, attribution, " +
+      "filter, dms, phenotype, provenance or timings, with fields / top / summary_only applied to it; while the job is " +
+      "still running, a section that is already final is served with status \"running\". For a hyphaeon_temporal run — " +
+      "whose record is never returned whole, because its trajectory store alone is megabytes — one of " +
+      TEMPORAL_SECTIONS.join(", ") + "; `sites` and `curves` also take `sites` (1-indexed codons) and `top`."
   );
 
 const runAsyncSchema = z
   .boolean()
   .optional()
   .describe("Force the run into a background job and return a job id even under the synchronous caps.");
+
+/**
+ * THE NOT-YET-FINISHED REPLY IS A SHAPE OF ITS OWN, and it says so in `shape`.
+ *
+ * `hyphaeon_temporal` with `wait_seconds: 1` used to answer with the job store's public view plus
+ * a `next` that named `get_results job_id=... section=summary` — a call that cannot succeed on a
+ * job that is still running, because the temporal record has no section until the run ends (the
+ * calls, the counts and the wave modes are all computed after the null). A client following it
+ * got an input error telling it to poll, which is what the reply should have said in the first
+ * place. So a reply that is NOT the analysis carries:
+ *
+ *   - `shape: "pending"`, so a client can switch on one key instead of sniffing for `summary`;
+ *   - `analysis`, `job_id`, `status` (queued | running), `queue_position` / `progress` /
+ *     `elapsed_sec` from the store, and `reason`;
+ *   - `sections`, the vocabulary the record WILL be read through, and `sections_ready: []`, which
+ *     for this pillar is empty until the run completes and is not a placeholder for an empty list
+ *     that might fill in;
+ *   - `next`, naming the ONLY call that works now (`job_status`), then the one that works after.
+ *
+ * `hyphaeon_analyze`'s own still-running reply is not this shape: its report streams, so `next`
+ * naming `get_results section=` is true there the moment a section is final.
+ */
+function pendingBody(job, analysis, config, extra = {}) {
+  const sections = config.sections || [];
+  const vocab = sections.length ? " section=<" + sections.join("|") + ">" : "";
+  // WHY NOTHING CAN BE SERVED YET is the pillar's own fact, not a generic one, so it comes from
+  // the registration; a pillar that streams sections would say something different here and must
+  // not inherit temporal's sentence.
+  const why =
+    config.pendingBecause ||
+    "this run has produced nothing a client can read yet";
+  return Object.assign({}, job, {
+    shape: "pending",
+    analysis,
+    engine: "in-process",
+    result_available: false,
+    sections: [...sections],
+    sections_ready: [],
+    next:
+      "job_status job_id=" + job.job_id + " until status is completed — " + why + ". Then get_results job_id=" +
+      job.job_id + vocab + " (fields / top / summary_only / sites apply). The record is never returned inline: its " +
+      "trajectory store alone is megabytes. cancel_job stops it, and what the runtime has finished by then is KEPT " +
+      "and served as a partial run."
+  }, extra);
+}
+
+/** The hint on a cancel that kept nothing: never "poll until completed", which can never happen. */
+const CANCELLED_HINT =
+  "This job was cancelled and can never reach `completed`, so polling job_status will not change the answer. The " +
+  "runtime kept nothing from it: the cancel arrived before the first permutation chunk finished, and everything " +
+  "downstream of the null is computed at the end. Submit the run again — with a smaller n_permutations or a coarser " +
+  "time_points if it was stopped for taking too long.";
+
+/**
+ * A cancelled-but-kept run's envelope: the analysis body the shaper built, re-labelled so it can
+ * never be read as a full run, with the achieved count on it. See src/jobs.js's header and
+ * src/time.js `temporalPartialNote` for what the runtime actually kept.
+ */
+function partialBody(shaped, stored, jobId, next) {
+  const out = Object.assign({}, shaped, {
+    job_id: jobId,
+    status: "cancelled",
+    partial_result: true,
+    next
+  });
+  const honesty = (stored && stored.result && stored.result.honesty) || out.honesty || null;
+  const truncated = honesty && honesty.null_truncated ? honesty.null_truncated : null;
+  out.partial = truncated
+    ? Object.assign({ cancelled: true }, truncated, {
+        reason: "cancel_job was called while this run was in flight. The runtime caught its own abort, classified at " +
+          "the draws it had finished and returned a complete record; this surface keeps it rather than throwing the " +
+          "work away, and labels it."
+      })
+    : {
+        cancelled: true,
+        completed: null,
+        requested: null,
+        reason: "cancel_job was called while this run was in flight and the runtime returned what it had. Read " +
+          "`honesty` for what is final and what is not.",
+        note: "The run did not do what it was asked; nothing here may be quoted as a full run."
+      };
+  return out;
+}
 
 // ── result shaping ─────────────────────────────────────────────────────────
 
@@ -264,7 +449,19 @@ const RANKED = {
   epistasis: { edges: "cesi", sectors: "spectral_coherence", plasticity: "intrinsic_plasticity" },
   dms: { plasticity: "intrinsic_plasticity" },
   phenotype: { sites: "score", trait_sectors: "spectral_coherence", coselection_pairs: "cesi" },
-  evaluate: { per_gene: null }
+  evaluate: { per_gene: null },
+  // The clock's one collection is the per-taxon table, and its rank key is DELIBERATELY null so
+  // `top` slices it in ALIGNMENT order. The reader's order is outlier-first then |z| descending
+  // (runtime `rankTaxonRows`), which no single descending numeric key expresses — ranking by
+  // `z_score` would put the most positive residual first and bury the most negative, which is the
+  // same outlier. The record stays in the reference's own order so a download diffs against a CLI
+  // run, and the summary carries `top_outliers` for the rows a reader looks at first.
+  dating: { taxa_summary: null },
+  // TEMPORAL HAS NO ENTRY HERE ON PURPOSE. Its site columns are TYPED ARRAYS in a column store,
+  // not arrays of records, so `topBy` would slice one and drop the ranking silently — a plausible
+  // object that is not the analysis. Its record is paged through `get_results section=` instead
+  // (src/time.js TEMPORAL_SECTIONS), which is also why it is never answered inline.
+  temporal: {}
 };
 
 /** Ranked collections inside each report section. */
@@ -389,6 +586,20 @@ export function summarise(analysis, result) {
         pick(result, ["matched_genes", "total_sites", "evaluated_sites", "evaluation_scope", "pearson_r", "spearman_rho", "thresholds", "warnings"]),
         { per_gene: count(result.per_gene) }
       );
+    case "dating": {
+      const summary = datingSummary({ record: result.record, rows: result.taxa_summary, warnings: result.warnings });
+      // The honesty block travels with the numbers even in a summary: `t_mrca` is meaningless
+      // without the distance mode it came from (measured twelve years apart on the same file).
+      return Object.assign(summary, {
+        date_review: result.date_review ? pick(result.date_review, ["source", "time_units", "time_units_source", "coverage", "by_rule", "span"]) : null,
+        honesty: result.honesty || null
+      });
+    }
+    case "temporal":
+      // The record is never inline (src/time.js, decision 6), so a temporal "summary" is the
+      // reference's own eighteen summary keys plus the honesty block, and the sections are reached
+      // with get_results section=<summary|sites|curves|waves|permutations|dates|candidates|warnings|honesty|provenance>.
+      return Object.assign({ summary: temporalSummary(result.record), honesty: result.honesty || null }, result.date_review ? { date_review: pick(result.date_review, ["source", "time_units", "time_units_source", "coverage", "by_rule", "span"]) } : {});
     case "analyze":
       return summariseReport(result);
     default:
@@ -451,7 +662,18 @@ export function shapeResult(analysis, result, provenance, { fields, top, summary
   if (summary_only) {
     const collections = {};
     for (const k of Object.keys(ranked)) collections[k] = count(result[k]);
-    return { analysis, summary: summarise(analysis, result), collections, provenance };
+    // `ok` AND `honesty` SURVIVE SHAPING. Measured before this change: hyphaeon_dating with
+    // summary_only came back as [analysis, summary, collections, provenance] — 16,356 B against
+    // 85,899 — so a client that reads `body.ok` to decide whether the run happened found nothing,
+    // and one that reads `body.honesty` for the distance mode found it only if it knew to look
+    // inside `summary`. Both are at the same path in both envelopes now; `summary.honesty` stays
+    // where it was so a summary block is still readable on its own.
+    const out = { analysis, summary: summarise(analysis, result), collections, provenance };
+    if (result && typeof result === "object") {
+      if (result.ok !== undefined) out.ok = result.ok;
+      if (result.honesty !== undefined) out.honesty = result.honesty;
+    }
+    return out;
   }
   let out = Object.assign({ analysis }, result);
   if (top !== undefined) {
@@ -473,7 +695,99 @@ export function shapeResult(analysis, result, provenance, { fields, top, summary
     out = filtered;
   }
   out.provenance = provenance;
+  if (analysis === "dating") boundDatingBody(out);
   return out;
+}
+
+/**
+ * THE CLOCK'S INLINE BOUND, MEASURED. `hyphaeon_dating` had none: every other pillar either fits
+ * (meme, busted, evaluate), is ranked and truncated by `top` (epistasis, dms, phenotype) or is
+ * always a job (analyze, temporal), and the clock fell between the two — its result is O(taxa) and
+ * the taxon ceiling is MAX_TAXA = 1,000.
+ *
+ * MEASURED in this session, model-free, on synthetic dated sets of 300 codons (the table's width
+ * does not depend on the codon count):
+ *
+ *   taxa    whole body    top-level taxa_summary    record.taxa_summary    everything else
+ *   250     192,603 B     89,120 B (356 B a row)    the same 89,120 B      ~14,400 B
+ *   500     371,019 B     178,332 B (357 B)         the same               ~14,400 B
+ *   1000    750,846 B     366,524 B (367 B)         the same               ~17,800 B
+ *
+ * Two facts fall out of that table. THE TABLE IS IN THE BODY TWICE — `taxa_summary` at the top
+ * level is `record.taxa_summary`, the same rows — so `top`, which ranks and slices the top-level
+ * copy only, bounded nothing: measured, `top: 50` on the 1,000-taxon run still returned 402,728 B.
+ * And a row is 356-367 B, so the envelope decides the row count rather than the other way round.
+ *
+ * The bound is ANALYZE_INLINE_MAX_BYTES, the same 262,144-byte envelope every other tool result
+ * answers inside, and it is applied in two steps, each of them SAID rather than done quietly:
+ * the duplicate inside `record` is replaced by a marker naming where the rows are, and then the
+ * remaining table is cut to the rows that fit, in the reference's own alignment order, with
+ * `truncated.taxa_summary` naming the calls that get the rest. `summary.top_outliers` already
+ * carries the ten rows a reader looks at first (flagged, held out, then |z| descending), so the
+ * rows that matter most are never the ones the cut removes.
+ */
+function boundDatingBody(out) {
+  if (!out || typeof out !== "object") return;
+  const bytes = () => Buffer.byteLength(JSON.stringify(out));
+  const before = bytes();
+  if (before <= ANALYZE_INLINE_MAX_BYTES) return;
+  const notes = {};
+
+  const rec = out.record;
+  const dup = rec && Array.isArray(rec.taxa_summary) ? rec.taxa_summary : null;
+  if (dup && Array.isArray(out.taxa_summary)) {
+    // A COPY, NEVER THE STORED RECORD. `out` is a shallow copy of the engine's result, so
+    // `out.record` is the stored object itself and writing through it would edit the job store's
+    // own record — the next get_results on the same job would find the marker instead of the rows.
+    out.record = Object.assign({}, rec);
+    out.record.taxa_summary = {
+      omitted: true,
+      rows: dup.length,
+      reason:
+        "The per-taxon table is in this body twice (`taxa_summary` at the top level is `record.taxa_summary`, the same " +
+        "rows), which alone was " + Math.round((Buffer.byteLength(JSON.stringify(dup)) / 1024)) + " KB of a result over the " +
+        Math.round(ANALYZE_INLINE_MAX_BYTES / 1024) + " KB a tool result may carry. Read the top-level `taxa_summary`."
+    };
+    notes.record_taxa_summary = "omitted (duplicated at the top level)";
+  }
+
+  if (bytes() > ANALYZE_INLINE_MAX_BYTES && Array.isArray(out.taxa_summary) && out.taxa_summary.length) {
+    const rows = out.taxa_summary;
+    const total = rows.length;
+    const rowBytes = Math.max(1, Math.round(Buffer.byteLength(JSON.stringify(rows)) / total));
+    const overhead = bytes() - Buffer.byteLength(JSON.stringify(rows));
+    let fits = Math.max(1, Math.floor((ANALYZE_INLINE_MAX_BYTES - overhead) / rowBytes));
+    if (fits < total) {
+      // MEASURE, THEN CUT AGAIN IF THE MARKERS PUSHED IT BACK OVER. The `truncated` block and the
+      // `inline_bound` note are themselves ~600 B that the first estimate does not contain, and a
+      // row is not exactly the average row, so the count is checked against the real serialisation
+      // rather than trusted: measured, the first estimate landed at 262,460 B on the 1,000-taxon
+      // set, 316 B over, and the second pass at 261,720 B with 663 of the 1,000 rows.
+      const apply = (n) => {
+        out.taxa_summary = rows.slice(0, n);
+        out.truncated = Object.assign({}, out.truncated, {
+          taxa_summary: {
+            returned: n,
+            total,
+            ranked_by: "alignment order (the reference's own; `top` uses the same order)",
+            note:
+              "The whole result was " + before + " B, above the " + ANALYZE_INLINE_MAX_BYTES + " B a tool result may carry, and a " +
+              "row is about " + rowBytes + " B. The rows a reader looks at first are not in this cut's way: summary_only: true " +
+              "returns the headline plus `top_outliers` (flagged, then held out, then |z| descending), `fields` drops the table " +
+              "entirely, and `top: n` asks for n rows in this same order."
+          }
+        });
+        notes.taxa_summary = n + " of " + total + " rows";
+        out.inline_bound = { limit_bytes: ANALYZE_INLINE_MAX_BYTES, was_bytes: before, applied: Object.assign({}, notes) };
+      };
+      apply(fits);
+      for (let guard = 0; guard < 8 && bytes() > ANALYZE_INLINE_MAX_BYTES && fits > 1; guard++) {
+        fits = Math.max(1, fits - Math.ceil((bytes() - ANALYZE_INLINE_MAX_BYTES) / rowBytes) - 1);
+        apply(fits);
+      }
+    }
+  }
+  if (Object.keys(notes).length) out.inline_bound = { limit_bytes: ANALYZE_INLINE_MAX_BYTES, was_bytes: before, applied: notes };
 }
 
 /** `top` over one section's ranked collections; returns the shaped copy and what was cut. */
@@ -659,17 +973,26 @@ async function resolveText(value, label, allowFilePaths) {
   return { text: await readFile(p, "utf8"), name: path.basename(p) };
 }
 
-const INPUT_KEYS = ["alignment", "tree", "phenotype_file", "prediction", "meme_result"];
+const INPUT_KEYS = ["alignment", "tree", "phenotype_file", "dates_file", "prediction", "meme_result"];
 const NON_OPTION_KEYS = new Set([...INPUT_KEYS, "fields", "top", "summary_only", "section", "run_async", "wait_seconds"]);
 
-function optionsOf(args) {
+/**
+ * The tool's options: everything that is not an input document and not a shaping argument.
+ *
+ * `extra` exists for one case and is worth the parameter: `sites` is a real RUN option on
+ * hyphaeon_dms (which codons to sweep) and a pure SHAPING argument on hyphaeon_temporal (which
+ * codons a `sites` / `curves` section is about). Left in the generic set it would vanish from the
+ * DMS request; left out of it, a temporal run would record `options.sites` in provenance and claim
+ * the run had been restricted to those codons, which it was not.
+ */
+function optionsOf(args, extra = null) {
   const out = {};
-  for (const [k, v] of Object.entries(args)) if (!NON_OPTION_KEYS.has(k) && v !== undefined) out[k] = v;
+  for (const [k, v] of Object.entries(args)) if (!NON_OPTION_KEYS.has(k) && !(extra && extra.has(k)) && v !== undefined) out[k] = v;
   return out;
 }
 
 /** The pre-run sizing every analysis tool shares: parse once, probe, classify; null when refused. */
-function sizeRun(analysis, inputs, args) {
+function sizeRun(analysis, inputs, args, capOptions = {}) {
   const parsed = parseAlignment(inputs.alignment);
   if (!parsed.sequences.length) {
     return {
@@ -683,7 +1006,7 @@ function sizeRun(analysis, inputs, args) {
   }
   const probe = probeSequences(parsed.sequences);
   const size = { codons: probe.codons, sequences: parsed.sequences.length, format: parsed.format };
-  const cls = classifyRun(analysis, { codons: probe.codons, taxa: parsed.sequences.length });
+  const cls = classifyRun(analysis, { codons: probe.codons, taxa: parsed.sequences.length }, capOptions);
   if (!cls.ok) return { error: fail("input", cls.reason, cls.hint, size) };
   size.work = cls.work;
   return { size, mode: args.run_async ? "job" : cls.mode };
@@ -722,6 +1045,12 @@ export function registerTools(server, deps) {
         "at INFO level with the reason — a missing tree is NOT a refusal), negative lengths, the " +
         "max patristic > 10 rescale, TN93 saturation, depth regime (shallow, deep+large, " +
         "star-like), a cost estimate, and this server's caps and run mode. " +
+        "FOR `dates`, `dating` AND `temporal` IT ALSO READS THE DATES — the date layer's own refusals " +
+        "(DATES_NONE, DATES_TOO_FEW, DATE_REGEX_*, ...), the two override gates a tool call has nobody to ask " +
+        "(DATES_BARE_NUMBER_MAJORITY, DATES_UNDATED_PRESENT; INFO for `dates`, whose job is to report them, refuse " +
+        "for the two analyses), and whether the dated set carries a clock at that pillar's own threshold (three " +
+        "sequences to regress, five to survey, temporal.py:474) — with `summary.dates` saying what was read, by " +
+        "which rule, over what span. Pass the same date arguments you mean to run with. No model is loaded either way. " +
         "Returns {ok, warnings:[{code, severity, message, data}], summary}; severity is info | " +
         "warn | refuse, and ok is false when anything refuses. Codes are stable across surfaces. " +
         "hyphaeon_analyze runs these same checks itself and records them in the report.",
@@ -730,12 +1059,22 @@ export function registerTools(server, deps) {
           alignment: alignmentSchema,
           tree: treeSchema,
           analysis: z
-            .enum(["analyze", "meme", "busted", "epistasis", "dms", "phenotype"])
+            .enum(["analyze", "meme", "busted", "epistasis", "dms", "phenotype", "dates", "dating", "temporal"])
             .optional()
-            .describe("Which analysis the cost estimate and caps are for (default meme; `analyze` is the whole report)."),
+            .describe(
+              "Which analysis the cost estimate and caps are for (default meme; `analyze` is the whole report). " +
+                "`dates` reads sequence NAMES and no codon, so its work term is 0 and its cost is milliseconds; " +
+                "`dating`'s default path is model-free (O(taxa x codons), not a per-site forward pass) and is sized as such. " +
+                "`dates`, `dating` and `temporal` additionally run the DATE LAYER — pass the same date arguments you mean to " +
+                "run with, or this check answers about a different date set than the run will see."
+            ),
           max_species: maxSpeciesSchema
         },
-        { use_tn93: tn93Schema.use_tn93 }
+        { use_tn93: tn93Schema.use_tn93 },
+        // The date arguments, so a client can validate with the exact arguments it will run with.
+        // They are read only for the three analyses that have a date layer.
+        dateSourceSchema,
+        dateGateSchema
       ),
       annotations: { readOnlyHint: true, openWorldHint: false }
     },
@@ -743,12 +1082,17 @@ export function registerTools(server, deps) {
       try {
         const alignment = (await resolveText(args.alignment, "alignment", allowFilePaths)).text;
         const tree = (await resolveText(args.tree, "tree", allowFilePaths)).text;
+        const datesFile = await resolveText(args.dates_file, "dates_file", allowFilePaths);
         const out = diagnose({
           alignment,
           tree,
           analysis: args.analysis || "meme",
           use_tn93: !!args.use_tn93,
-          max_species: args.max_species
+          max_species: args.max_species,
+          dates: Object.assign(optionsOf(args, new Set(["alignment", "tree", "analysis", "use_tn93", "max_species"])), {
+            dates_file: datesFile.text,
+            dates_file_name: args.dates_file_name || datesFile.name || null
+          })
         });
         logger.info("hyphaeon_validate ok=" + out.ok + " sequences=" + out.summary.sequence_count + " codons=" + out.summary.codons);
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], isError: !out.ok };
@@ -946,6 +1290,92 @@ export function registerTools(server, deps) {
     }
   );
 
+  // ── hyphaeon_dates ──────────────────────────────────────────────────────
+  //
+  // THE CHEAPEST TOOL IN THE SERVER, AND THE ONE A CLIENT CALLS FIRST. It runs no model, loads no
+  // graph and never reaches src/engine.js: `ingestFor` (src/time.js) goes straight to the runtime's
+  // `./dates` subpath, which imports no manifest, no session and no predict.js — measured at 93 ms
+  // of module import with ZERO onnxruntime modules loaded, and 3-24 ms of work on the bundled
+  // examples. So it answers on a checkout with no models/ at all, which is the point: its output is
+  // what makes the other two safe.
+  server.registerTool(
+    "hyphaeon_dates",
+    {
+      title: "Read the dates off an alignment, and say how",
+      description:
+        "THE DATE REVIEW STAGE, as data. Reads a sampling date for every sequence — from the FASTA headers, a " +
+        "Nextstrain Auspice JSON, a name-to-date JSON object, a CSV/TSV table, or a pattern you supply — and reports " +
+        "WHICH RULE dated each sequence, which did not match, what was imputed (a missing month or day), which " +
+        "metadata rows named no sequence, and whether the set carries a clock at all. Runs NO MODEL and loads no " +
+        "graph: milliseconds, on any checkout. " +
+        "Returns {ok, headline, clock, date_review{coverage, by_rule, span, match_tiers, unmatched_metadata, " +
+        "unmatched_taxa, table, auspice, regex, rows[], warnings[]}, gate}. `rows[]` is one entry per sequence with " +
+        "its raw string, parsed value, rule, source, match tier and imputation flags — never a subset that hides an " +
+        "undated sequence. Warning codes are the date layer's own (DATES_* / DATE_*), stable across surfaces. " +
+        "`gate` is what hyphaeon_dating and hyphaeon_temporal will REFUSE on unless you override it: dates read " +
+        "mostly as bare numbers in the sequence name (DATES_BARE_NUMBER_MAJORITY -> accept_bare_numbers) and " +
+        "undated sequences that would be dropped silently (DATES_UNDATED_PRESENT -> drop_undated). This tool " +
+        "itself never refuses for either: reporting them is its job. " +
+        "Note the time units: they are INFERRED by default from a calendar-majority rule, and passing time_units " +
+        "explicitly bypasses that check — measured on the bundled H1N1 set, forcing `generations` dates 100 of 100 " +
+        "sequences on an axis running from 1 to 46,241,654 with no error anywhere.",
+      inputSchema: Object.assign(
+        {
+          alignment: alignmentSchema,
+          rows: z.boolean().optional().describe("Return the per-sequence rows (default true). With false, only the counts, the rule table and the warnings."),
+          top: z.number().int().min(1).max(100000).optional().describe("Cap the rows returned; undated, imputed and fuzzily matched sequences are kept first and the counts always cover every sequence.")
+        },
+        dateSourceSchema,
+        dateGateSchema
+      ),
+      annotations: { readOnlyHint: true, openWorldHint: false }
+    },
+    async (args) => {
+      try {
+        const inputs = {};
+        const names = {};
+        for (const k of ["alignment", "dates_file"]) {
+          if (args[k] !== undefined) {
+            const r = await resolveText(args[k], k, allowFilePaths);
+            inputs[k] = r.text;
+            if (r.name) names[k] = r.name;
+          }
+        }
+        const options = optionsOf(args);
+        const ingest = ingestFor({
+          alignment: inputs.alignment,
+          dates_file: inputs.dates_file,
+          dates_file_name: names.dates_file || options.dates_file_name || null,
+          options
+        });
+        const review = dateReview(ingest, { rows: args.rows !== false, rowsMax: args.top });
+        const gate = dateGate(ingest, options);
+        const clock = clockReadiness(ingest);
+        const body = {
+          analysis: "dates",
+          ok: ingest.ok,
+          headline: dateHeadline(ingest),
+          clock,
+          gate,
+          date_review: review,
+          match_tiers_available: DATE_MATCH_TIERS,
+          next: ingest.ok
+            ? (gate.ok
+                ? "hyphaeon_dating (the molecular clock; model-free by default) and, with 5+ dated sequences, hyphaeon_temporal (per-site selection through calendar time). Pass the same date arguments you passed here."
+                : "Read `gate.blocking`: hyphaeon_dating and hyphaeon_temporal refuse this date set until you pass the named override, or supply better metadata.")
+            : "Fix the refusal in date_review.warnings (severity `refuse`) before calling hyphaeon_dating or hyphaeon_temporal.",
+          engine: "in-process (no model, no graph)"
+        };
+        logger.info("hyphaeon_dates ok=" + ingest.ok + " dated=" + ingest.coverage.dated + "/" + ingest.coverage.taxa_total + " source=" + ingest.source + " units=" + ingest.time_units);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], isError: !ingest.ok };
+      } catch (err) {
+        if (err instanceof ToolInputError) return fail("input", err.message, err.hint);
+        logger.error("hyphaeon_dates failed: " + ((err && err.message) || err));
+        return fail("server", "The date layer could not run: " + ((err && err.message) || err));
+      }
+    }
+  );
+
   // ── per-pillar analysis tools ───────────────────────────────────────────
   function registerAnalysis(name, analysis, config) {
     server.registerTool(
@@ -967,13 +1397,15 @@ export function registerTools(server, deps) {
               if (r.name) names[k] = r.name;
             }
           }
-          const options = optionsOf(args);
+          const options = optionsOf(args, config.nonOptionKeys);
           let mode = args.run_async ? "job" : "sync";
           let size = null;
 
           let treeSource = null;
           if (analysis !== "evaluate") {
-            const sized = sizeRun(analysis, inputs, args);
+            // `dating` is sized differently with and without the model pass (src/caps.js workFor):
+            // model-free is O(taxa x codons), the taxa-graph pass is the ordinary per-site term.
+            const sized = sizeRun(analysis, inputs, args, { useModel: args.use_model === true });
             if (sized.error) return sized.error;
             size = sized.size;
             mode = sized.mode;
@@ -987,6 +1419,20 @@ export function registerTools(server, deps) {
               treeFree: !!(options.use_tn93 || options.no_tree)
             });
 
+            // M5 / decision 4: `distance_mode: "latent"` is the MODEL'S space, so without
+            // `use_model` there is no graph to take it from. The runtime throws a RangeError
+            // naming its own argument ("pass `neural`, the object runDatingModelPass returns",
+            // runtime/src/dating/run.js:282) — an internal API this caller cannot pass and a
+            // message with no code on it. Refused here instead, in the vocabulary the tool speaks.
+            if (analysis === "dating" && args.distance_mode === "latent" && args.use_model !== true) {
+              return fail(
+                "input",
+                "`distance_mode: \"latent\"` needs the model pass: the latent root is a position in the model's own representation space, and this run was not asked to make one (use_model is false).",
+                refusalHintFor(DATING_LATENT_NEEDS_MODEL),
+                { code: DATING_LATENT_NEEDS_MODEL, distance_mode: "latent", use_model: false }
+              );
+            }
+
             if (analysis === "phenotype") {
               const hasTrait = !!(options.preset || options.foreground || inputs.phenotype_file);
               if (!hasTrait) {
@@ -995,6 +1441,52 @@ export function registerTools(server, deps) {
                   "hyphaeon_phenotype needs a trait definition: preset, foreground, or phenotype_file.",
                   "Pass preset (e.g. \"marine\"), a comma-separated foreground list / regex, or a CSV mapping taxa to trait values."
                 );
+              }
+            }
+
+            // THE DATE GATE, BEFORE A MODEL LOADS (the phenotype trait gate's own place in this
+            // dispatcher, for the same reason). The engine applies it again on the real ingest —
+            // this is the cheap pass that keeps a refusable run from reaching a 7 MB graph, and it
+            // is also what puts the review block in the REFUSAL, so a client that got it wrong is
+            // handed the rule table rather than told to go and ask for it.
+            if (analysis === "dating" || analysis === "temporal") {
+              let ingest;
+              try {
+                ingest = ingestFor({ alignment: inputs.alignment, dates_file: inputs.dates_file, dates_file_name: names.dates_file || options.dates_file_name || null, options });
+              } catch (e) {
+                return fail("server", "The date layer could not run: " + ((e && e.message) || e));
+              }
+              if (!ingest.ok) {
+                const refuse = ingest.warnings.find((w) => w.severity === "refuse");
+                return fail("input", (refuse && refuse.message) || "No sequence could be dated.", refuse ? refusalHintFor(refuse.code) : undefined, {
+                  code: (refuse && refuse.code) || "DATES_NONE",
+                  date_review: dateReview(ingest, { rows: false })
+                });
+              }
+              const gate = dateGate(ingest, options);
+              if (!gate.ok) {
+                const first = gate.blocking[0];
+                return fail("input", first.message, first.hint, {
+                  code: first.code,
+                  blocking: gate.blocking,
+                  date_headline: dateHeadline(ingest),
+                  date_review: dateReview(ingest, { rows: false })
+                });
+              }
+              const clock = clockReadiness(ingest);
+              const reasons = analysis === "temporal" ? clock.temporal_reasons : clock.reasons;
+              if (reasons.length) {
+                // THE HINT IS THE CODE'S OWN, NOT A NEIGHBOUR'S. This branch used to hand every
+                // refusal `DATES_TOO_FEW`'s hint — "At least 3 sequences must carry a date" —
+                // under the code TEMPORAL_TOO_FEW_DATED, whose message says five (temporal.py:474
+                // raises at N < 5, verified in the reference). A caller who added a fourth date on
+                // that advice would be refused again.
+                const code = analysis === "temporal" ? "TEMPORAL_TOO_FEW_DATED" : "DATING_TOO_FEW_DATED";
+                return fail("input", "This date set carries no usable clock for hyphaeon_" + analysis + ": " + reasons.join("; ") + ".", refusalHintFor(code), {
+                  code,
+                  date_headline: dateHeadline(ingest),
+                  date_review: dateReview(ingest, { rows: false })
+                });
               }
             }
           }
@@ -1006,6 +1498,63 @@ export function registerTools(server, deps) {
 
           const request = Object.assign({ analysis, options, names }, inputs);
           const execute = (signal, report) => engine.run(Object.assign({ signal, surface, progress: report }, request));
+
+          // A pillar whose RESULT is never small enough to inline runs as a job whatever the caps
+          // said, and then WAITS inside the call so the common case still answers in one turn.
+          // Today that is temporal only: measured, its record is 2.1 MB on the smallest bundled
+          // example and 7.2 MB on the engine's own acceptance run, 8x and 27x the inline limit.
+          if (config.alwaysJob && mode !== "job") mode = "job";
+          if (mode === "job" && config.alwaysJob) {
+            const job = jobs.create({ analysis, options, run: (signal, report) => execute(signal, report) });
+            const jobId = job.job_id;
+            const waitSec = args.run_async ? 0 : args.wait_seconds !== undefined ? args.wait_seconds : ANALYZE_WAIT_DEFAULT_SEC;
+            const next =
+              "Poll job_status with this job_id; get_results job_id=... section=<" + (config.sections || []).join("|") +
+              "> pages the record (fields / top / summary_only / sites apply). The whole record is never returned inline: " +
+              "its trajectory store alone is megabytes.";
+            if (waitSec <= 0) {
+              logger.info(name + " queued job_id=" + jobId);
+              return ok(pendingBody(jobs.get(jobId) || job, analysis, config, { reason: args.run_async ? "run_async requested." : "wait_seconds is 0.", tree_source: treeSource }));
+            }
+            const done = await jobs.wait(jobId, waitSec * 1000);
+            if (done && done.status === "completed") {
+              const stored = jobs.result(jobId);
+              const shaped = await config.shape(stored.result, stored.provenance, args, { job_id: jobId, next });
+              logger.info(name + " done job_id=" + jobId + " in " + done.elapsed_sec + "s");
+              return ok(shaped);
+            }
+            if (done && done.status === "failed") {
+              return fail((done.error && done.error.kind) || "server", "The run failed: " + (done.error && done.error.message), done.error && done.error.hint, {
+                job_id: jobId,
+                status: "failed",
+                code: done.error && done.error.code
+              });
+            }
+            if (done && done.status === "cancelled") {
+              // THE CANCEL DID NOT NECESSARILY THROW THE ANSWER AWAY (src/jobs.js header): a
+              // temporal run stopped mid-null resolves with a complete record at the achieved draw
+              // count. `wait` waits for the runner to unwind, so by here the store knows which
+              // happened. Never a "completed" status and never without the count.
+              const kept = jobs.kept(jobId);
+              if (kept) {
+                const shaped = await config.shape(kept.value.result, kept.value.provenance, args, { job_id: jobId, next });
+                logger.info(name + " cancelled with a partial record job_id=" + jobId);
+                return ok(partialBody(shaped, kept.value, jobId, next));
+              }
+              return fail("input", "The run was cancelled before it produced anything.", CANCELLED_HINT, {
+                job_id: jobId,
+                status: "cancelled",
+                partial_result: false,
+                result_available: false
+              });
+            }
+            return ok(
+              pendingBody(jobs.get(jobId) || done, analysis, config, {
+                reason: "The run did not finish within wait_seconds (" + waitSec + " s).",
+                waited_seconds: waitSec
+              })
+            );
+          }
 
           if (mode === "job") {
             const job = jobs.create({
@@ -1197,6 +1746,203 @@ export function registerTools(server, deps) {
     )
   });
 
+
+  registerAnalysis("hyphaeon_dating", "dating", {
+    title: "HyphAeon molecular clock and MRCA dating (ChronAeon)",
+    description:
+      "Heterochronous molecular clock from dated sequences: a root-to-tip regression against sampling time, the " +
+      "substitution rate mu with its interval, the MRCA date t_mrca with a Fieller / delta / linear confidence " +
+      "interval, a restricted-cubic-spline alternative adjudicated against the line, an ensemble, and a per-taxon " +
+      "table with each sequence's divergence, predicted date, temporal residual, z-score and outlier flag. " +
+      "MODEL-FREE BY DEFAULT and that is a scientific choice, not a performance one: with `use_model: true` the " +
+      "run first makes one forward pass over every codon through a SECOND graph (<variant>_taxa.onnx) and the " +
+      "estimator becomes the latent-root one, which is a DIFFERENT ANSWER on the same data — measured upstream on " +
+      "the korber example, t_mrca 1938.77 model-free against 1926.81 with the graph, twelve years apart, with the " +
+      "whole warning set changing. `distance_mode` and `distance_mode_reason` are on every result; quote the mode " +
+      "with the date. If this build declares no dating graph, use_model: true fails with DATING_GRAPH_UNAVAILABLE " +
+      "naming that fact rather than quietly answering with the other estimator (list_models reports `dating_graph` " +
+      "per variant). " +
+      "TAKES NO TREE, on any surface (PLAN-TEMPORAL D34 declines the reference's --distance-mode tree), so the " +
+      "reproduction line always carries --no-tree. " +
+      "DATES: pass dates_file (an Auspice JSON or a CSV/TSV) or let the FASTA headers be read; call hyphaeon_dates " +
+      "FIRST to see which rule dated each sequence. The run REFUSES a date set whose dates are mostly bare numbers " +
+      "in the sequence name (accept_bare_numbers) or that leaves sequences undated (drop_undated), because both " +
+      "would otherwise change the answer silently. " +
+      "`provenance.reference_command` is a {command, reproduces, caveats} OBJECT, not the argv array the other " +
+      "pillars carry: `reproduces` is false whenever the dates came from headers, because this build's date layer " +
+      "is the union of all three upstream parsers and reads names `hyphaeon dating` cannot (measured on korber: 142 " +
+      "of 143 by a rule the reference does not have). `record.primaeon.estimators_not_built` names what this build " +
+      "does not estimate (the power-law clock, LOOCV/jackknife, and without the graph the attention PGLS and the " +
+      "latent root search) so no flag for them is ever printed. " +
+      "Answers inside the call: measured at 85 ms on the 143-sequence korber example model-free; with use_model the " +
+      "graph pass dominates (about 9 s on the same file).",
+    inputSchema: Object.assign(
+      { alignment: alignmentSchema },
+      dateSourceSchema,
+      dateGateSchema,
+      {
+        use_model: z
+          .boolean()
+          .optional()
+          .describe(
+            "Run the model-based estimators (attention PGLS and the latent-root search) as well, which needs the " +
+              "second ONNX artifact <variant>_taxa.onnx and one forward pass over EVERY codon. Default false. This is " +
+              "a different estimator, not a better-quality version of the same one: see the description."
+          ),
+        distance_mode: z
+          .enum(["auto", "tn93", "latent"])
+          .optional()
+          .describe(
+            "--distance-mode: `auto` (default) is `latent` when use_model is set and `tn93` when it is not; naming " +
+              "`latent` without use_model is refused rather than silently downgraded. The reference's `tree` mode is " +
+              "declined (D34: this pillar takes no tree)."
+          ),
+        clock_model: z.enum(["auto", "linear", "spline"]).optional().describe("--clock-model: `auto` (F-test/AIC against a 2-DF restricted natural cubic spline), `linear`, or `spline`. The reference's `power` is not ported (PLAN-TEMPORAL D33) and is refused by this enum rather than silently answered with `auto`."),
+        ci_method: z
+          .enum([...DATING_CI_METHODS])
+          .optional()
+          .describe(
+            "--ci-method for t_mrca: " + DATING_CI_METHODS.join(", ") + " (default fieller, exact analytical ratio-test inversion). " +
+              "The reference's poisson, residual-boot, site-boot and jackknife intervals each need a bit-compatible mirror of numpy's " +
+              "PCG64 and are refused here rather than silently substituted with Fieller, which is what the reference does for an " +
+              "unrecognised value (dating.py:1244-1258)."
+          ),
+        root_taxon: z
+          .string()
+          .max(256)
+          .optional()
+          .describe("--root-taxon: a sequence name, or one of the reference's magic strings (unweighted_consensus, flat_consensus, modal_consensus, earliest, earliest_taxon, earliest_cohort). Default: the time-decay weighted consensus."),
+        decay_gamma: z.number().optional().describe("--decay-gamma: exponential decay rate for the time-decay weighted consensus root (default 0.05 or auto-scaled)."),
+        excluded_taxa: z.array(z.string().max(256)).max(10000).optional().describe("App-side: sequences to leave out of the fit. Never silent — they are reported as DATING_TAXA_EXCLUDED."),
+        allow_stop_codons: z.boolean().optional().describe("Tolerate internal stop codons (default true, as upstream); false refuses the alignment instead."),
+        no_auto_trim: z.boolean().optional().describe("Do not trim a trailing partial codon (default: trim, and say so as DATING_ALIGNMENT_TRIMMED)."),
+        model_variant: variantSchema,
+        cpu: cpuSchema
+      }
+    )
+  });
+
+  registerAnalysis("hyphaeon_temporal", "temporal", {
+    title: "HyphAeon temporal selection surveillance",
+    description:
+      "Per-site selection through CALENDAR TIME: a smoothed prevalence trajectory and a sweep velocity per codon " +
+      "over a dense time grid, peak date and intensity, half-rise and half-fall times, FWHM and area, a two-stage " +
+      "filter (an energy floor, then a date-shuffling permutation null with BH q), an fPCA decomposition into four " +
+      "dynamic wave modes, and a four-way classification of each codon against the static MEME-surrogate call. " +
+      "ALWAYS RUNS AS A JOB and is NEVER returned inline: measured, the record is 2.1 MB on the smallest bundled " +
+      "example (98 taxa x 566 codons at the reference's own --time-points 250) and 7.2 MB on the engine's " +
+      "4,384-codon acceptance run, 8x and 27x the inline limit, of which the trajectory store alone is 92%. The " +
+      "call waits up to wait_seconds and answers with the SUMMARY plus the job id; get_results job_id=... " +
+      "section=<" + TEMPORAL_SECTIONS.join("|") + "> pages the rest (`sites` and `curves` take a `sites` list, " +
+      "default the stage-one candidates strongest first; `curves` is budgeted at " + TEMPORAL_CURVES_MAX_POINTS +
+      " numbers a call — 75 codons at time_points 60, 18 at 250, measured at 13.5 to 22.6 bytes a number depending on " +
+      "the trajectory — and `sites` at " + TEMPORAL_SITES_MAX_ROWS + " rows). " +
+      "A call that has not finished inside wait_seconds answers with a shape of its own — `shape: \"pending\"`, the job " +
+      "id, the status and a `next` naming job_status, which is the only call that works before the run ends, since " +
+      "every call, count and wave mode is computed after the null. cancel_job STOPS THE NULL WITHOUT THROWING THE " +
+      "RUN AWAY: the runtime classifies at the draws it finished and returns a complete record, which this server " +
+      "keeps and get_results then serves with `status: \"cancelled\"`, `partial_result: true` and the achieved count. " +
+      "HONESTY, on every result and every section, in `honesty`: `null_state` is one of not-started | running | " +
+      "finished | stopped and is the ONLY thing that says whether a negative finding is a result — " +
+      "`permutations.tested` flips true after the first chunk while the calls are still zeros, so reading it alone " +
+      "prints \"nothing is under selection\" a second into every run. `p_perm` and `q_perm` are 1.0 at every codon " +
+      "that never reached stage two, which is the reference's own fill (temporal.py:620-621) and NOT a measurement; " +
+      "read them only at the candidates `sites.stage1` marks. The wave variance shares are conditioned on the " +
+      "confirmed-sweep set, which is thresholded on a permutation p drawn from a different generator than the " +
+      "reference's, so they move with the null: measured upstream, 32 confirmed here against 18 there on H1N1 at " +
+      "B = 100, shares differing by 5.8 points on the leading mode. `escape_hatch_used` is the reference's silent " +
+      "fallback selection, recorded in no upstream file. " +
+      "`provenance.reference_command` is a {command, reproduces, caveats} OBJECT, not the argv array the other " +
+      "pillars carry, and `reproduces` is FALSE on every run whose null drew at all. " +
+      "DATES: pass dates_file or let the headers be read; call hyphaeon_dates first. The run refuses on the same " +
+      "two gates hyphaeon_dating does, and needs at least 5 dated sequences AFTER duplicate collapse and the " +
+      "taxon cap. A tree is optional (D22). No taxon cap is applied unless you ask for one: Faith's-PD subsampling " +
+      "is TIME-BLIND (D27) and can delete the early part of an epidemic, which is the part a sweep is measured " +
+      "against.",
+    alwaysJob: true,
+    sections: TEMPORAL_SECTIONS,
+    pendingBecause:
+      "nothing of a temporal run can be served before it ends, because the calls, the three sweep counts and the wave " +
+      "modes are all computed after the date-shuffling null finishes",
+    // `sites` shapes a SECTION here; it does not restrict the run (see optionsOf).
+    nonOptionKeys: new Set(["sites"]),
+    shape: async (result, provenance, args, meta) => {
+      const record = result.record;
+      const head = {
+        analysis: "temporal",
+        job_id: meta.job_id,
+        status: "completed",
+        stage: record.stage,
+        sections: TEMPORAL_SECTIONS,
+        next: meta.next
+      };
+      if (args.section) {
+        const rt = typeof engine.runtimeBag === "function" ? await engine.runtimeBag() : {};
+        return Object.assign(head, temporalSection(record, args.section, args, rt), { provenance });
+      }
+      return Object.assign(head, {
+        summary: temporalSummary(record),
+        honesty: result.honesty,
+        date_review: result.date_review,
+        provenance
+      });
+    },
+    inputSchema: Object.assign(
+      { alignment: alignmentSchema, tree: treeSchema },
+      tn93Schema,
+      dateSourceSchema,
+      dateGateSchema,
+      {
+        model_variant: variantSchema,
+        max_species: maxSpeciesSchema,
+        time_points: z.number().int().min(2).max(2000).optional().describe("--time-points: continuous temporal grid points (default 250, the reference's own). The trajectory store is [codons x time_points], so this is the single biggest term in the record's size."),
+        bandwidth: z.number().positive().optional().describe("-bw/--bandwidth: Gaussian kernel smoothing bandwidth in years (default: auto, about 5% of the timespan)."),
+        n_permutations: z
+          .number()
+          .int()
+          .min(0)
+          .max(MAX_PERMUTATIONS)
+          .optional()
+          .describe("-B/--n-permutations: date-shuffling permutations for the stage-two empirical p (default 1,000, the reference's own; cap " + MAX_PERMUTATIONS + "). Fewer draws do not bias p, they coarsen its grid to 1/(B+1) — and every q then sits at a floor of C/(B+1) the count cannot reach."),
+        perm_alpha: z.number().min(0).max(1).optional().describe("--perm-alpha: FDR cutoff for the stage-two permutation test (default 0.05)."),
+        min_r2: z.number().min(0).max(1).optional().describe("--min-r2: minimum dynamic-wave alignment R^2 for a confirmed sweep (default 0.35)."),
+        tau_peak: z.number().min(0).optional().describe("--tau-peak: stage-one peak sweep-intensity energy floor (default 1e-4). Note the upstream quirk this build replicates: the override tests the VALUE rather than whether a caller supplied one, and the record flags it as TEMPORAL_TAU_PEAK_OVERRIDDEN."),
+        tau_auc: z.number().min(0).optional().describe("--tau-auc: stage-one cumulative-area energy floor (default: derived from the timespan)."),
+        sweep_mode: z.enum(["auto", "episodic", "fixation"]).optional().describe("--sweep-mode: `episodic` (positive velocity; viral turnover), `fixation` (cumulative amplitude shift; experimental evolution), or `auto` (default: fixation when time_units is not years, else episodic)."),
+        keep_duplicates: z
+          .boolean()
+          .optional()
+          .describe("--keep-duplicates: do not collapse identical sequences. Worth considering on surveillance data: identical haplotypes sampled on DIFFERENT DAYS collapse to one date, which deletes time points (reported as TEMPORAL_DUPLICATES_COLLAPSED). Auto-enabled when time_units is not years, as upstream."),
+        root_taxon: z
+          .string()
+          .max(256)
+          .optional()
+          .describe("--root-taxon: the ancestral founder sequence (default: the consensus of the earliest 5% of sampled taxa). Setting it FORCES score_invariable_sites back on, because an explicit root with gaps makes invariable codons acquire nonzero trajectories (upstream bug TEMPORAL Q2)."),
+        score_invariable_sites: z
+          .boolean()
+          .optional()
+          .describe("Send every codon to the model, as `hyphaeon temporal` does (default true). False scores only the variable ones — measured at a 93% saving with the same candidate set and a bit-identical peak date under a consensus root — and is REPORTED: `primaeon.score_invariable_sites` false, `lrt` and `p_static` empty rather than scored at those codons, and the reproduction line gains a caveat."),
+        wave_sign: z
+          .enum(["canonical"])
+          .optional()
+          .describe("The fPCA wave sign convention (D28, WAVE_SIGN.md). Only `canonical` can run here: the reference has none and writes its solver's raw singular vectors, so accepting `lapack` would promise numbers this build does not compute. Recorded as waves.sign."),
+        perm_work_budget: z.number().positive().optional().describe("Lift or lower the null's own work budget (the runtime's default is 5.0e10). Over budget the null is DECLINED and everything else is still computed: trajectories, peaks, widths, areas, candidates and wave modes all exist, and the four-way classification degrades to three."),
+        batch_size: z.number().int().min(1).optional().describe("-b/--batch-size: sites per forward call (default adaptive)."),
+        seed: seedSchema,
+        sites: z.array(z.number().int().min(1)).max(5000).optional().describe("Only meaningful with `section`: the 1-indexed codons a `sites` or `curves` section is about (default: the stage-one candidates)."),
+        section: z.enum(TEMPORAL_SECTIONS).optional().describe("Return one section of the record instead of the summary. The whole record is never returned inline."),
+        wait_seconds: z
+          .number()
+          .min(0)
+          .max(ANALYZE_WAIT_MAX_SEC)
+          .optional()
+          .describe("How long to wait inside the call for the run (default " + ANALYZE_WAIT_DEFAULT_SEC + ", max " + ANALYZE_WAIT_MAX_SEC + "); 0 returns the job id at once."),
+        mds_sign: mdsSignSchema,
+        cpu: cpuSchema
+      }
+    )
+  });
+
   registerAnalysis("hyphaeon_evaluate", "evaluate", {
     title: "Evaluate HyphAeon predictions against HyPhy MEME",
     description:
@@ -1230,6 +1976,25 @@ export function registerTools(server, deps) {
       const job = jobs.get(job_id);
       if (!job) return ok({ job_id, status: "not_found" });
       if (job.analysis === "analyze") job.report_uri = "hyphaeon://report/" + job_id;
+      if (job.analysis === "temporal") {
+        job.sections = [...TEMPORAL_SECTIONS];
+        job.next = "get_results job_id=" + job_id + " section=<" + TEMPORAL_SECTIONS.join("|") + ">. The record is never returned whole.";
+      }
+      // A CANCELLED JOB NEVER BECOMES `completed`, so the advice must never be to wait for that.
+      // Three endings, and they are not the same: a record was kept (partial, readable now), one
+      // is still unwinding (milliseconds), or nothing survived.
+      if (job.status === "cancelled") {
+        if (job.partial_result) {
+          job.next =
+            "get_results job_id=" + job_id + (job.analysis === "temporal" ? " section=<" + TEMPORAL_SECTIONS.join("|") + ">" : "") +
+            ". This run was STOPPED: what the runtime had finished was kept and is served as a partial run (`partial` " +
+            "says at what count). It will never reach `completed`.";
+        } else if (job.result_pending) {
+          job.next = "Call job_status again in a moment: the runner is unwinding and may yet hand back what it finished before the cancel.";
+        } else {
+          job.next = CANCELLED_HINT;
+        }
+      }
       return ok(job);
     }
   );
@@ -1241,18 +2006,50 @@ export function registerTools(server, deps) {
       title: "Results of a HyphAeon job",
       description:
         "Fetch a completed job's result with the same fields / top / summary_only shaping the " +
-        "analysis tools accept. For a hyphaeon_analyze report, `section` returns one section of the " +
+        "analysis tools accept. For a hyphaeon_temporal run, `section` is not optional shaping but the " +
+        "way the record is read at all — it is never returned whole, because its trajectory store alone " +
+        "is megabytes: ask for " + TEMPORAL_SECTIONS.join(", ") + " (`sites` and `curves` also take a " +
+        "`sites` list of 1-indexed codons), and every one of them carries the `honesty` block. " +
+        "For a hyphaeon_analyze report, `section` returns one section of the " +
         "ReportRecord (diagnostics, sites, gene, epistasis, attribution, filter, dms, phenotype, " +
         "provenance, timings) — also while the report is still running, once that section is final. " +
         "Results carry a provenance block whose `surface` (mcp-stdio / mcp-http) names the process " +
         "that computed them and whose `preprocessing.tree_source` says whether the distances came " +
         "from the tree or from TN93.",
-      inputSchema: Object.assign({ job_id: z.string().regex(/^[0-9a-f]{32}$/).describe("The job_id to fetch.") }, shapingSchema, { section: sectionSchema }),
+      inputSchema: Object.assign({ job_id: z.string().regex(/^[0-9a-f]{32}$/).describe("The job_id to fetch.") }, shapingSchema, {
+        section: sectionSchema,
+        sites: z
+          .array(z.number().int().min(1))
+          .max(5000)
+          .optional()
+          .describe("Temporal jobs, sections `sites` and `curves` only: the 1-indexed codons to return (default: the stage-one candidates, strongest peak intensity first).")
+      }),
       annotations: { readOnlyHint: true }
     },
     async (args) => {
       const job = jobs.get(args.job_id);
       if (!job) return fail("input", "Job not found.", "Check the job_id; jobs expire after their TTL.", { job_id: args.job_id });
+
+      // `sites` NAMES CODONS IN A TEMPORAL RECORD AND NOTHING ELSE. Passed to any other job it used
+      // to be dropped in silence: measured, `get_results {section: "sites", sites: [1,2,3]}` on an
+      // analyze report answered with all 1,097 rows, 253,569 bytes, and said nothing about the
+      // three codons the caller had asked for. A refusal is the only reply that cannot be mistaken
+      // for the three rows.
+      if (Array.isArray(args.sites) && args.sites.length && job.analysis !== "temporal") {
+        return fail(
+          "input",
+          "`sites` selects codons from a hyphaeon_temporal record and this is a hyphaeon_" + job.analysis + " job, so it cannot be applied.",
+          job.analysis === "analyze"
+            ? "Drop `sites` and shape the section instead: `top` keeps the highest-ranked rows (sites are ranked by hyphaeon_lrt) and `fields` keeps named keys; `summary_only` returns the counts and the top ten."
+            : "Drop `sites`; `top`, `fields` and `summary_only` shape this result.",
+          { job_id: job.job_id, analysis: job.analysis, sites: args.sites.length }
+        );
+      }
+
+      // A cancel does not always throw the answer away (src/jobs.js): a temporal run stopped
+      // mid-null resolves with a complete record at the achieved draw count, and the store keeps
+      // it. `kept` is set only for a CANCELLED job that resolved; it is never a completed result.
+      const kept = jobs.kept(args.job_id);
 
       if (job.analysis === "analyze") {
         if (job.status === "completed") {
@@ -1277,23 +2074,100 @@ export function registerTools(server, deps) {
             progress: job.progress
           });
         }
+        if (job.status === "cancelled" && kept) {
+          // The report runner throws on abort today, so this branch is reached only if that ever
+          // changes; it is here so a kept report is never dropped the way a kept record was.
+          const shaped = shapeReport(kept.value, args, { job_id: job.job_id, status: "cancelled" });
+          return ok(Object.assign(shaped, { partial_result: true, partial: { cancelled: true, kept_at: kept.at, reason: "cancel_job was called while this report was running; these are the sections that were final when it stopped." } }));
+        }
         return fail(
           job.status === "failed" ? (job.error && job.error.kind) || "server" : "input",
-          job.status === "failed" ? "The report failed: " + (job.error && job.error.message) : "Report not completed yet.",
-          job.status === "failed" ? job.error && job.error.hint : "Poll job_status until status is completed, or ask for a section listed in sections_ready.",
+          job.status === "failed"
+            ? "The report failed: " + (job.error && job.error.message)
+            : job.status === "cancelled"
+              ? "The report was cancelled and kept nothing."
+              : "Report not completed yet.",
+          job.status === "failed"
+            ? job.error && job.error.hint
+            : job.status === "cancelled"
+              ? "This job can never reach `completed`. Sections that were final BEFORE the cancel are gone with it: read them with get_results section=... while a report is still running, and re-submit to get the rest."
+              : "Poll job_status until status is completed, or ask for a section listed in sections_ready.",
           { job_id: job.job_id, status: job.status, sections_ready: job.sections_ready || [] }
         );
       }
 
-      if (job.status !== "completed") {
+      if (job.status !== "completed" && !kept) {
+        // THREE ENDINGS, THREE ANSWERS. "Poll job_status until status is completed" is false advice
+        // on a cancelled job — it can never be completed — and it was what this branch used to say.
+        const cancelled = job.status === "cancelled";
         return fail(
           job.status === "failed" ? (job.error && job.error.kind) || "server" : "input",
-          job.status === "failed" ? "The job failed: " + (job.error && job.error.message) : "Job not completed yet.",
-          job.status === "failed" ? job.error && job.error.hint : "Poll job_status until status is completed.",
-          { job_id: job.job_id, status: job.status }
+          job.status === "failed"
+            ? "The job failed: " + (job.error && job.error.message)
+            : cancelled
+              ? job.result_pending
+                ? "The job was cancelled and its runner has not finished unwinding; whatever it kept is not readable yet."
+                : "The job was cancelled and kept nothing."
+              : "Job not completed yet.",
+          job.status === "failed"
+            ? job.error && job.error.hint
+            : cancelled
+              ? job.result_pending
+                ? "Call get_results again in a moment, or job_status, which says whether a partial record arrived."
+                : CANCELLED_HINT
+              : "Poll job_status until status is completed.",
+          { job_id: job.job_id, status: job.status, code: job.error && job.error.code, partial_result: false, result_pending: !!job.result_pending }
         );
       }
-      const stored = jobs.result(args.job_id);
+
+      if (job.analysis === "temporal") {
+        // The temporal record is never served whole (measured: 2.1 MB on the smallest bundled
+        // example, 7.2 MB on the engine's acceptance run), so `section` is not optional shaping
+        // here — it is how the record is read at all. `fields` / `top` / `summary_only` are
+        // deliberately NOT applied to the site columns: they are typed arrays in a column store,
+        // and `topBy` would slice one and drop the ranking silently.
+        const stored = kept ? kept.value : jobs.result(args.job_id);
+        const record = stored.result.record;
+        const provenance = Object.assign({}, stored.provenance, { job_id: job.job_id });
+        const head = { analysis: "temporal", job_id: job.job_id, status: kept ? "cancelled" : "completed", stage: record.stage, sections: TEMPORAL_SECTIONS };
+        // A KEPT RECORD SAYS SO IN EVERY SECTION IT SERVES. `honesty.null_truncated` carries the
+        // achieved count on the block every section already has; this repeats it at the top level
+        // because a client reading `status` must not have to read `honesty` to learn the run was
+        // stopped.
+        if (kept) {
+          head.partial_result = true;
+          head.partial = Object.assign(
+            { cancelled: true, kept_at: kept.at },
+            stored.result.honesty && stored.result.honesty.null_truncated ? stored.result.honesty.null_truncated : { completed: null, requested: null },
+            { reason: "cancel_job was called while this run was in flight; the runtime returned the record it had finished and this store kept it." }
+          );
+        }
+        if (!args.section) {
+          return ok(
+            Object.assign(head, {
+              summary: temporalSummary(record),
+              honesty: stored.result.honesty,
+              date_review: stored.result.date_review,
+              note: "The whole record is " + Math.round(JSON.stringify(record).length / 1024) + " KB and is never returned inline; ask for a section.",
+              next: "get_results job_id=" + job.job_id + " section=<" + TEMPORAL_SECTIONS.join("|") + ">; `sites` and `curves` take a `sites` list of 1-indexed codons.",
+              provenance
+            })
+          );
+        }
+        if (!TEMPORAL_SECTIONS.includes(args.section)) {
+          return fail("input", "Section '" + args.section + "' is not a temporal section.", "Temporal sections are: " + TEMPORAL_SECTIONS.join(", ") + ".", { job_id: job.job_id, sections: TEMPORAL_SECTIONS });
+        }
+        const rt = typeof engine.runtimeBag === "function" ? await engine.runtimeBag() : {};
+        try {
+          return ok(Object.assign(head, temporalSection(record, args.section, args, rt), { provenance }));
+        } catch (err) {
+          if (err && err.name === "TemporalSiteRangeError") {
+            return fail("input", err.message, "Codon sites are 1-indexed and at most codon_count (" + record.codons_total + ").", { job_id: job.job_id });
+          }
+          throw err;
+        }
+      }
+      const stored = kept ? kept.value : jobs.result(args.job_id);
       const storedSurface = stored.provenance && stored.provenance.surface;
       const provenance = Object.assign({}, stored.provenance, {
         surface: storedSurface || surface,
@@ -1301,6 +2175,11 @@ export function registerTools(server, deps) {
       });
       const shaped = shapeResult(job.analysis, stored.result, provenance, args);
       if (args.section) shaped.note = "`section` applies to hyphaeon_analyze reports only; this is a hyphaeon_" + job.analysis + " result.";
+      if (kept) {
+        return ok(
+          partialBody(shaped, stored, job.job_id, "The run was stopped; nothing more is coming. Re-submit it to get a full one.")
+        );
+      }
       return ok(shaped);
     }
   );
@@ -1310,16 +2189,35 @@ export function registerTools(server, deps) {
     "cancel_job",
     {
       title: "Cancel a queued or running HyphAeon job",
-      description: "Cancel a job. A completed job cannot be cancelled; the call reports its final status instead. Cancelling a report keeps nothing: read finished sections with get_results section=... BEFORE cancelling.",
+      description:
+        "Cancel a job. A completed job cannot be cancelled; the call reports its final status instead. What survives " +
+        "depends on the pillar: a hyphaeon_temporal run KEEPS what it had — the runtime catches its own abort, " +
+        "classifies at the draws it finished and returns a complete record, which get_results then serves as a " +
+        "PARTIAL run with the achieved count on it — while a hyphaeon_analyze report keeps nothing, so read finished " +
+        "sections with get_results section=... BEFORE cancelling one.",
       inputSchema: { job_id: z.string().regex(/^[0-9a-f]{32}$/).describe("The job_id to cancel.") },
       annotations: { destructiveHint: true }
     },
     async ({ job_id }) => {
+      const before = jobs.get(job_id);
       const job = jobs.cancel(job_id);
       if (!job) return fail("input", "Job not found.", undefined, { success: false, job_id });
       if (job.status === "completed") return ok({ success: true, message: "Job already completed", job_id });
       if (job.status === "failed") return ok({ success: true, message: "Job had already failed", job_id });
-      return ok({ success: true, job_id, status: job.status });
+      const wasRunning = !!(before && before.status === "running");
+      const keeps = wasRunning && job.analysis === "temporal";
+      return ok({
+        success: true,
+        job_id,
+        status: job.status,
+        analysis: job.analysis,
+        // NOT A PROMISE THAT A RECORD EXISTS — only that the runtime is asked for one and the store
+        // will keep it if it arrives. `job_status` says which happened, a few milliseconds later.
+        partial_result_expected: keeps,
+        next: keeps
+          ? "job_status job_id=" + job_id + ": if the runtime got past its first permutation chunk it hands back a complete record at the draw count it reached, and this store keeps it — `partial_result` says so and get_results serves it, labelled. If it did not, nothing was kept."
+          : "This job kept nothing; it can never reach `completed`. Submit it again for a full run."
+      });
     }
   );
 

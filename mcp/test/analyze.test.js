@@ -238,6 +238,23 @@ describe("hyphaeon_analyze on bat_oas1 in-process", () => {
     expect(sites.sites.every((s) => typeof s.call === "string")).toBe(true);
   });
 
+  it("`sites` on a report job is refused, not silently ignored", async () => {
+    // PHASE 6 REVIEW, M6b. `get_results {section: "sites", sites: [1,2,3]}` on a report used to
+    // drop the `sites` list without a word and return every row — measured at 1,097 rows and
+    // 253,569 bytes on a bigger example. `sites` names codons in a TEMPORAL record; on any other
+    // job the only reply that cannot be mistaken for the three rows asked for is a refusal.
+    const res = await ctx.client.callTool({ name: "get_results", arguments: { job_id: jobId, section: "sites", sites: [1, 2, 3] } });
+    expect(res.isError).toBe(true);
+    const body = parseText(res);
+    expect(body.kind).toBe("input");
+    expect(body.error).toMatch(/hyphaeon_temporal record/);
+    expect(body.analysis).toBe("analyze");
+    expect(body.hint).toMatch(/top|fields|summary_only/);
+    // Without it the same call is served as before: this is not a new restriction on the section.
+    const ok = parseText(await ctx.client.callTool({ name: "get_results", arguments: { job_id: jobId, section: "sites", top: 3 } }));
+    expect(ok.sites).toHaveLength(3);
+  });
+
   it("hyphaeon://report/{id} serves the finished record, lists it, and explains an unknown id", async () => {
     const res = await ctx.client.readResource({ uri: "hyphaeon://report/" + jobId });
     expect(res.contents[0].mimeType).toBe("application/json");

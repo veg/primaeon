@@ -14,14 +14,24 @@
 	`e2e/smoke.spec.ts` fixes that to Methods, Evaluate, MCP. It is reached by one sentence on the
 	landing page and one on /analyze.
 
-	IT RUNS NOTHING AND IT SAYS SO. Neither time-aware analysis is ported yet. Section 3 states that
-	in the present tense rather than promising a date — web/DESIGN.md §5 forbids "coming soon" — and
-	the page's one gate unlocks two downloads and a stored flag, not a run.
+	THE GATE IN SECTION 1 UNLOCKS TWO PILLARS, and they ask different questions of the same dates.
+	Section 3 estimates the ancestor date — TN93 divergence to a chosen root, a straight line through
+	it, a per-sequence table in section 4 — and its default estimate loads nothing at all. Section 5
+	(phase 5) is temporal selection: `hyphaeon temporal`, which scores every codon once through the
+	model, anchors its per-sequence attention to a root, smooths it along the sampling dates, and
+	tests the codons that move against a null that shuffles those dates. It is the second thing on
+	this route that loads a graph, it says so before it loads one, and it says plainly which of its
+	numbers cannot be reproduced digit for digit at the command line and why.
 
-	EVERYTHING IS SYNCHRONOUS AND ON THE MAIN THREAD. The ingest is string work over text already in
-	memory; at 143 sequences it is well under a millisecond and the reader sees the table re-sort
-	under the control they just changed, which is the whole point. No worker is started, no model is
-	loaded, nothing goes off-origin.
+	THE DATE REVIEW IS SYNCHRONOUS; THE TWO RUNS ARE NOT. The ingest is string work over text already
+	in memory — at 143 sequences it is well under a millisecond, and the reader sees the table
+	re-sort under the control they just changed, which is the whole point. The ancestor-date estimate
+	is N pairwise TN93 comparisons over the full alignment width and runs in its own cancellable
+	worker (`lib/workers/dating.worker.ts`), whose entire import graph is
+	`@veg/hyphaeon-runtime/dating`, so REVIEWING AND DATING COST NO MODEL BYTE and `e2e/time.spec.ts`
+	proves it by watching the network. The two runs that do load a graph — the model-based dating
+	estimate and temporal selection — are separate workers precisely so that proof stays a proof
+	rather than becoming a promise, and each names its graph before it fetches one.
 
 	LOOK. web/DESIGN.md: `--container` (an eight-column table needs the report's measure), three
 	sections numbered by the `.numbered` CSS counter in app.css, a `<figure>` with a numbered caption
@@ -35,9 +45,20 @@
 	import { goto, replaceState } from '$app/navigation';
 	import { archival1959Candidates, compileDateRegex, ingestDates, taxaForDates } from '@veg/hyphaeon-runtime/dates';
 	import DropZone from '$lib/analyze/DropZone.svelte';
+	import catalogue from '$lib/gallery/examples.json';
+	import type { DatedExample } from '$lib/gallery/types';
 	import { digest, readText } from '$lib/analyze/inputs';
 	import { setHandoff, takeHandoff } from '$lib/handoff';
 	import { clockPreview } from '$lib/time/clock';
+	import { crossCheckSentence, datingView, figureModel, modeShiftSentence, modelOffer, predictionCaveat, taxonRows } from '$lib/time/dating';
+	import { DATING_CSV_NAME, DATING_JSON_NAME, datingCsv, datingDownloadNote, datingJson } from '$lib/time/datingDownloads';
+	import DatingSection from '$lib/time/DatingSection.svelte';
+	import TaxonDatingTable from '$lib/time/TaxonDatingTable.svelte';
+	import { datingClient, datingModelClient, temporalClient, workersAvailable } from '$lib/workers/clients';
+	import type { DatingModelRequest, DatingRequest, DatingResponse, TemporalRequest, TemporalResponse } from '$lib/workers/protocol';
+	import TemporalSection from '$lib/time/TemporalSection.svelte';
+	import { codonCeiling, recordAfterAbort, TEMPORAL_MAX_SPECIES, temporalGate, type TemporalRecord } from '$lib/time/temporal';
+	import { DATING_NEURAL_MAX_TAXA } from '@veg/hyphaeon-runtime/dating';
 	import {
 		diagnosis,
 		pageState,
@@ -53,7 +74,7 @@
 	import { DATES_CSV_COLUMNS, datesCsv, datesJson, saveText } from '$lib/time/downloads';
 	import { buildRecord, fromStored } from '$lib/time/record';
 	import { alignmentHeaders, classifyDropped, isDateSource } from '$lib/time/sources';
-	import type { TimeSetOptions, TimeSetRecord, TimeUnits } from '$lib/time/types';
+	import type { DatingResult, DatingRootChoice, TimeSetOptions, TimeSetRecord, TimeUnits } from '$lib/time/types';
 	import DateReviewTable from '$lib/time/DateReviewTable.svelte';
 	import CoverageFigure from '$lib/time/CoverageFigure.svelte';
 	import ClockPreview from '$lib/time/ClockPreview.svelte';
@@ -97,6 +118,67 @@
 	let recordId = $state<string | null>(null);
 	let visibleRows = $state<ReviewRow[]>([]);
 
+	// ---- the dating run (phase 3) ----------------------------------------------------------------
+	let datingRoot = $state<DatingRootChoice>('consensus');
+	let rootTaxon = $state<string | null>(null);
+	let excludedTaxa = $state<string[]>([]);
+	let dating = $state<DatingResult | null>(null);
+	let datingState = $state<'idle' | 'running'>('idle');
+	let datingProgress = $state('');
+	let datingFailure = $state<string | null>(null);
+	let datingAbort: AbortController | null = null;
+
+	// ---- the model-based half (phase 4) ----------------------------------------------------------
+	/**
+	 * `--distance-mode`, which with a model present is a decision about the WHOLE record and not
+	 * just about which estimators exist: `auto` resolves to `latent` (dating.py:2520-2523) and then
+	 * every estimator, the ordinary one included, is fitted against the latent root's divergences.
+	 * The reader gets the choice because the reference has it and because the two answers are both
+	 * defensible; the page's job is to name which one it is showing.
+	 */
+	let distanceMode = $state<'auto' | 'tn93'>('auto');
+	/** What the LAST estimate did. Not a preference — the two runs produce different records. */
+	let usedModel = $state(false);
+	/**
+	 * The previous run, kept for exactly one sentence: when the distance mode changed between two
+	 * runs the reader made, the ordinary fit moves without its arithmetic changing, and that is the
+	 * single most surprising consequence of turning the model on. It is NOT persisted — a comparison
+	 * between a run you watched and a run you did not is not one this page should make for you.
+	 */
+	let priorDating = $state<DatingResult | null>(null);
+	/**
+	 * Whether this build ships a dating graph, read from `models/manifest.json` ONCE, and only after
+	 * an alignment with usable dates is loaded — so the empty route still requests nothing at all.
+	 * `'absent'` is a fact about the build and is said in place; it is not a failure.
+	 */
+	let modelProbe = $state<'idle' | 'checking' | 'ready' | 'absent' | 'failed'>('idle');
+	let modelGraph = $state<{ variant: string; file: string; sha256: string } | null>(null);
+	let modelProbeNote = $state<string | null>(null);
+
+	// ---- temporal selection (phase 5) ------------------------------------------------------------
+	/**
+	 * The second pillar this page can run, and the second thing on the route that loads a graph.
+	 *
+	 * THE RECORD IS HELD IN MEMORY AND IS NOT PERSISTED WITH THE REVIEW, deliberately. A finished
+	 * record carries two `[L, T]` float64 curve blocks — 17.5 MB on a 4,384-codon alignment at the
+	 * default grid — and the date review's IndexedDB row is meant to be the small, cheap thing that
+	 * survives a reload. Section 5 says so where it says what it cost; re-running is seconds plus the
+	 * null, and the graph is already in the browser's cache by then.
+	 */
+	let temporalRecord = $state<TemporalRecord | null>(null);
+	let temporalRefusal = $state<{ code: string; message: string } | null>(null);
+	let temporalFailure = $state<string | null>(null);
+	let temporalState = $state<'idle' | 'running'>('idle');
+	let temporalProgress = $state({ phase: '', done: 0, total: 0, message: '' });
+	let temporalReference = $state<{ command: string; reproduces: boolean; caveats: string[] } | null>(null);
+	let temporalNotes = $state<string[]>([]);
+	let temporalAbort: AbortController | null = null;
+	/** `null` walks the runtime's rounds (200 -> 500 -> 1,000) under its own work budget. */
+	let temporalDraws = $state<number | null>(null);
+	let temporalTimePoints = $state(250);
+	let temporalRoot = $state<string | null>(null);
+	let temporalScoreInvariable = $state(true);
+
 	// ---- derived: the whole review, re-derived on every edit --------------------------------------
 	const names = $derived(alignmentText ? alignmentHeaders(alignmentText) : null);
 	const taxa = $derived(alignmentText ? taxaForDates(alignmentText) : []);
@@ -133,6 +215,39 @@
 	const unmatched = $derived(ingest ? unmatchedMetadataLine(ingest, metadataName) : null);
 	const anchors = $derived(taxa.length ? archival1959Candidates(taxa) : []);
 	const preview = $derived(clockPreview({ treeText, ingest }));
+	const datingResult = $derived(datingView(dating, ingest?.time_units ?? 'years'));
+	const datingFigure = $derived(figureModel(dating));
+	const datingTaxa = $derived(taxonRows(dating, excludedTaxa));
+	const datingCaveat = $derived(predictionCaveat(dating, ingest?.time_units ?? 'years'));
+	/** What can be offered before a run, and the honest reason when nothing can. */
+	const offer = $derived(
+		modelOffer({
+			workers: workersAvailable(),
+			dated: ingest?.coverage.dated ?? 0,
+			// The model-free run counted them; before one has been made the sentence says "every codon"
+			// rather than guessing, which is why this is nullable rather than parsed here.
+			codons: ((dating?.record?.primaeon ?? {}) as { codon_count?: number }).codon_count ?? null,
+			maxTaxa: DATING_NEURAL_MAX_TAXA
+		})
+	);
+	/** One sentence, and only when the reader's last two runs measured divergence differently. */
+	const modeShift = $derived(modeShiftSentence(dating, priorDating, ingest?.time_units ?? 'years'));
+	/**
+	 * The one line that stops the page printing two ancestor numbers with nothing between them. The
+	 * width it compares against is the interval section 3 quotes, so "they disagree by more than the
+	 * interval" means what it says.
+	 */
+	const crossCheck = $derived.by(() => {
+		const ols = (dating?.record?.ols ?? null) as Record<string, unknown> | null;
+		const t = typeof ols?.t_mrca === 'number' ? ols.t_mrca : NaN;
+		const ci = Array.isArray(ols?.ci_fieller) ? (ols.ci_fieller as number[]) : null;
+		const width = ci && Number.isFinite(ci[0]) && Number.isFinite(ci[1]) ? ci[1] - ci[0] : NaN;
+		if (!preview.available || !preview.fit?.ok) return null;
+		return crossCheckSentence(t, preview.fit.tMrca, width, ingest?.time_units ?? 'years');
+	});
+
+	const temporalReady = $derived(temporalGate(ingest?.coverage.dated ?? 0, ingest?.span ?? null, gate.ready, gate.reasons));
+	const temporalCodons = $derived(alignmentText ? codonCeiling(alignmentText) : null);
 
 	const tableInfo = $derived(
 		(ingest?.table ?? null) as {
@@ -210,6 +325,42 @@
 		}
 	}
 
+	/**
+	 * THE BUNDLED DATED EXAMPLES.
+	 *
+	 * /time shipped with nothing to click: its three dated examples lived in the engine checkout, so
+	 * the one route whose whole subject is metadata had no data to read. They are tracked under
+	 * `static/gallery/inputs/` now, and each carries its dates a different way on purpose — a
+	 * four-digit year at the end of a name, a two-digit isolate year, a decimal year in a
+	 * pipe-delimited field — because the review stage is what this route exists to show and one
+	 * example per rule is what exercises it.
+	 *
+	 * Fetched and handed to `acceptFiles` as real `File` objects rather than assigned straight to
+	 * `alignmentText`: that way an example goes through the same classification, the same digest and
+	 * the same refusals as a dropped file, and there is no second path to keep in step.
+	 */
+	const DATED: readonly DatedExample[] = (catalogue.dated ?? []) as DatedExample[];
+
+	async function loadExample(example: DatedExample) {
+		failure = null;
+		busy = true;
+		try {
+			const names = [example.alignment, ...(example.tree ? [example.tree] : [])];
+			const files = await Promise.all(
+				names.map(async (name) => {
+					const res = await fetch(`${base}/gallery/inputs/${name}`);
+					if (!res.ok) throw new Error(`${name} could not be read from this build (${res.status}).`);
+					return new File([await res.blob()], name, { type: 'text/plain' });
+				})
+			);
+			busy = false;
+			await acceptFiles(files);
+		} catch (err) {
+			failure = err instanceof Error ? err.message : String(err);
+			busy = false;
+		}
+	}
+
 	function onMetadataFile(files: FileList | null) {
 		if (!files || files.length === 0) return;
 		void acceptFiles(files);
@@ -252,7 +403,14 @@
 			delimiter: tableInfo?.delimiter ?? null,
 			dropUndated,
 			rootMode: 'midpoint',
-			outgroup: null
+			outgroup: null,
+			datingRoot,
+			rootTaxon,
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			excludedTaxa: [...excludedTaxa],
+			useModel: usedModel,
+			distanceMode
 		};
 	}
 
@@ -272,7 +430,8 @@
 			},
 			options: options(),
 			ingest,
-			ready: gate.ready
+			ready: gate.ready,
+			dating
 		});
 	}
 
@@ -281,6 +440,7 @@
 		// Track what the reader can see change, then write at the store's own cadence.
 		void ingest;
 		void dropUndated;
+		void dating;
 		if (!ingest || !storageAvailable()) return;
 		if (saveTimer) clearTimeout(saveTimer);
 		saveTimer = setTimeout(() => {
@@ -341,8 +501,335 @@
 			archival1959 = stored.options.archival1959;
 			customPattern = stored.options.customPattern ?? '';
 			dropUndated = stored.options.dropUndated;
+			datingRoot = stored.options.datingRoot;
+			rootTaxon = stored.options.rootTaxon;
+			excludedTaxa = [...stored.options.excludedTaxa];
+			distanceMode = stored.options.distanceMode === 'tn93' ? 'tn93' : 'auto';
+			usedModel = stored.options.useModel;
+			dating = stored.dating;
 		})();
 	});
+
+	/**
+	 * Whether this build ships a dating graph. One same-origin read of `models/manifest.json`
+	 * (about 1.5 kB), and only once the page has an alignment whose dates are usable — so the empty
+	 * route, and a route whose dates are not ready, still request literally nothing. The manifest
+	 * names no graph on a build that did not export one, and `'absent'` is then said in place rather
+	 * than discovered by a reader who pressed a button.
+	 */
+	$effect(() => {
+		if (!ingest || !gate.ready || modelProbe !== 'idle') return;
+		modelProbe = 'checking';
+		void (async () => {
+			try {
+				const res = await fetch(`${base}/models/manifest.json`, { cache: 'force-cache' });
+				if (!res.ok) throw new Error(`models/manifest.json answered ${res.status}`);
+				const doc = (await res.json()) as {
+					variants?: Record<string, { taxa_onnx_sha256?: string; taxa_onnx_file?: string }>;
+					default_variant?: string;
+				};
+				// The SAME rule the worker's `pickVariant` takes, so the probe cannot advertise a graph
+				// the run would not load: `general` unless the manifest names another default.
+				const name = doc.default_variant ?? 'general';
+				const v = doc.variants?.[name];
+				if (!v?.taxa_onnx_sha256) {
+					modelProbe = 'absent';
+					return;
+				}
+				modelGraph = { variant: name, file: v.taxa_onnx_file ?? `${name}_taxa.onnx`, sha256: v.taxa_onnx_sha256 };
+				modelProbe = 'ready';
+			} catch (err) {
+				modelProbe = 'failed';
+				modelProbeNote = err instanceof Error ? err.message : String(err);
+			}
+		})();
+	});
+
+	// ---- the ancestor-date run -------------------------------------------------------------------
+
+	/**
+	 * The magic root strings the reference tests for (`dating.py:650`, `:659`) are passed through as
+	 * `rootTaxon`, because that is the argument the reference itself uses for all four cases. Case 1
+	 * is tested FIRST and case-sensitively, so a sequence actually named `earliest` wins — which is
+	 * why the picker lists the sequence names separately rather than expecting a reader to type one.
+	 */
+	function rootArgument(): string | null {
+		if (datingRoot === 'taxon') return rootTaxon;
+		if (datingRoot === 'unweighted') return 'unweighted_consensus';
+		if (datingRoot === 'earliest') return 'earliest';
+		return null;
+	}
+
+	/** The dated rows, in alignment order — the one payload both estimates share. */
+	function datedRows(): Array<{ taxon: string; value: number }> {
+		return (ingest?.rows ?? [])
+			.filter((r) => r.value != null && Number.isFinite(r.value))
+			.map((r) => ({ taxon: r.taxon, value: r.value as number }));
+	}
+
+	/**
+	 * What a finished run becomes. Both estimates land here, so the record's shape is identical
+	 * whichever produced it and the section reads one object.
+	 */
+	function adopt(response: DatingResponse, model: boolean) {
+		// The previous run is kept ONLY to compare distance modes; see `priorDating`'s declaration.
+		priorDating = dating;
+		usedModel = model;
+		dating = {
+			...response,
+			ranAtIso: new Date().toISOString(),
+			options: {
+				root: datingRoot,
+				rootTaxon,
+				clockModel: 'auto',
+				ciMethod: 'fieller',
+				excludedTaxa: [...excludedTaxa],
+				units: ingest?.time_units ?? 'years',
+				useModel: model,
+				distanceMode: model ? distanceMode : 'tn93'
+			}
+		};
+	}
+
+	async function estimateAncestor() {
+		if (!ingest || !gate.ready || !workersAvailable()) return;
+		datingFailure = null;
+		datingProgress = 'Reading the alignment…';
+		datingState = 'running';
+		datingAbort = new AbortController();
+		const request: DatingRequest = {
+			alignmentText,
+			alignmentName,
+			dates: ingest.rows
+				.filter((r) => r.value != null && Number.isFinite(r.value))
+				.map((r) => ({ taxon: r.taxon, value: r.value as number })),
+			rootTaxon: rootArgument(),
+			excludedTaxa: [...excludedTaxa],
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			timeUnits: ingest.time_units
+		};
+		try {
+			const response = await datingClient().call<DatingResponse>(request, {
+				signal: datingAbort.signal,
+				onProgress: (_phase, done, total, message) => {
+					datingProgress = total > 0 ? `${message} (${done} of ${total})` : message;
+				}
+			});
+			adopt(response, false);
+		} catch (err) {
+			const e = err instanceof Error ? err : new Error(String(err));
+			// A cancel is not a failure, and it leaves whatever the previous run produced in place.
+			if (e.name !== 'AbortError') datingFailure = e.message;
+		} finally {
+			datingState = 'idle';
+			datingProgress = '';
+			datingAbort = null;
+		}
+	}
+
+	/**
+	 * The same run WITH the model: a forward pass through `<variant>_taxa.onnx` over every codon,
+	 * then the same estimator chain with the two matrices handed in. It is a second, separate action
+	 * and not a checkbox on the first, for two reasons the section states in words: it downloads a
+	 * 7.3 MB graph and takes seconds rather than milliseconds, and under the reference's own default
+	 * it changes what divergence MEANS, so it produces a different record rather than more fields on
+	 * the same one.
+	 */
+	async function estimateWithModel() {
+		if (!ingest || !gate.ready || !workersAvailable()) return;
+		datingFailure = null;
+		datingProgress = 'Preparing the dating graph…';
+		datingState = 'running';
+		datingAbort = new AbortController();
+		const request: DatingModelRequest = {
+			alignmentText,
+			alignmentName,
+			dates: datedRows(),
+			rootTaxon: rootArgument(),
+			excludedTaxa: [...excludedTaxa],
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			timeUnits: ingest.time_units,
+			manifestUrl: absolute('/models/manifest.json'),
+			modelsBase: absolute('/models/'),
+			ortBase: absolute('/ort/'),
+			numThreads: Math.max(1, Math.min(16, navigator?.hardwareConcurrency ?? 1)),
+			distanceMode
+		};
+		try {
+			const response = await datingModelClient().call<DatingResponse>(request, {
+				signal: datingAbort.signal,
+				onProgress: (_phase, done, total, message) => {
+					datingProgress = total > 0 ? `${message} (${done} of ${total})` : message;
+				}
+			});
+			adopt(response, true);
+		} catch (err) {
+			const e = err instanceof Error ? err : new Error(String(err));
+			if (e.name !== 'AbortError') datingFailure = e.message;
+		} finally {
+			datingState = 'idle';
+			datingProgress = '';
+			datingAbort = null;
+		}
+	}
+
+	/** A worker's `location` is the bundle, so every URL it is handed has to be absolute. */
+	function absolute(path: string): string {
+		return new URL(`${base}${path}`, globalThis.location?.href ?? 'http://localhost/').href;
+	}
+
+	function cancelEstimate() {
+		datingAbort?.abort();
+	}
+
+	// ---- the temporal-selection run (phase 5) ----------------------------------------------------
+
+	/**
+	 * One `hyphaeon temporal` run in `lib/workers/temporal.worker.ts`.
+	 *
+	 * THE THREE PAYLOADS ARRIVE AS `section` EVENTS, and the middle one is thin on purpose: a null
+	 * chunk carries `p_perm`, `q_perm` and the permutation block and NOT the record, because the
+	 * record's curve blocks are megabytes and `postMessage` clones what it is given. Merging them is
+	 * a shallow copy here — the typed arrays are shared, not copied — so the table and Figure 7
+	 * sharpen as the draws come in without the page rebuilding anything.
+	 *
+	 * A CANCEL DURING THE NULL IS NOT AN ERROR. `runTemporalNull` catches its own abort, records the
+	 * achieved draw count, and the run finishes the classification and the wave modes and returns a
+	 * complete record; the promise resolves and this function adopts it. Only a cancel during the
+	 * model pass rejects, and that leaves the section as it was.
+	 */
+	async function runTemporalSelection() {
+		if (!ingest || !temporalReady.ok || !workersAvailable()) return;
+		temporalFailure = null;
+		temporalRefusal = null;
+		temporalRecord = null;
+		temporalReference = null;
+		temporalNotes = [];
+		temporalProgress = { phase: 'temporal-prepare', done: 0, total: 0, message: 'Preparing the model…' };
+		temporalState = 'running';
+		temporalAbort = new AbortController();
+		const request: TemporalRequest = {
+			alignmentText,
+			treeText: treeText ?? '',
+			alignmentName,
+			treeName,
+			dates: datedRows(),
+			datesByRule: ingest.by_rule ?? null,
+			datesSource: ingest.source ?? null,
+			timeUnits: ingest.time_units,
+			options: {
+				numTimePoints: temporalTimePoints,
+				permutations: temporalDraws,
+				bandwidth: null,
+				rootTaxon: temporalRoot,
+				scoreInvariableSites: temporalScoreInvariable,
+				seed: 42,
+				maxSpecies: TEMPORAL_MAX_SPECIES
+			},
+			manifestUrl: absolute('/models/manifest.json'),
+			modelsBase: absolute('/models/'),
+			ortBase: absolute('/ort/'),
+			tn93Base: absolute('/tn93/'),
+			numThreads: Math.max(1, Math.min(16, navigator?.hardwareConcurrency ?? 1))
+		};
+		try {
+			const response = await temporalClient().call<TemporalResponse>(request, {
+				signal: temporalAbort.signal,
+				// The null is the one long wait and the record is what a cancel keeps, so the worker is
+				// given the same long grace the analyze worker gets for its DMS: terminating it mid-run
+				// would throw away both the answer and the verified session.
+				terminateAfterMs: 60_000,
+				onProgress: (phase, done, total, message) => {
+					temporalProgress = { phase, done, total, message };
+				},
+				onSection: (_name, payload) => {
+					const p = payload as { stage: string; record?: TemporalRecord; p_perm?: Float32Array; q_perm?: Float32Array; permutations?: unknown };
+					if (p.stage === 'null' && temporalRecord && p.p_perm && p.q_perm) {
+						// Shallow: every other column is the same typed array the scored payload brought.
+						// THE STAGE IS CARRIED, and the section reads it: this payload replaces the two
+						// p-value columns and NOTHING downstream of them, so `classification`,
+						// `is_confirmed_sweep` and the three sweep counts are still the scored payload's
+						// zeros. A record that said `complete` here would have the page call codons off
+						// zeros one chunk into the null (`nullInFlight`, lib/time/temporal.ts).
+						temporalRecord = {
+							...temporalRecord,
+							stage: 'null',
+							complete: false,
+							sites: { ...temporalRecord.sites, p_perm: p.p_perm, q_perm: p.q_perm },
+							permutations: {
+								...(p.permutations as TemporalRecord['permutations'])!,
+								tested: ((p.permutations as { completed?: number })?.completed ?? 0) > 0
+							}
+						};
+						return;
+					}
+					if (p.record) temporalRecord = p.record;
+				}
+			});
+			if (response.refusal) {
+				temporalRefusal = { code: response.refusal.code, message: response.refusal.message };
+				temporalRecord = null;
+			} else if (response.record) {
+				temporalRecord = response.record as unknown as TemporalRecord;
+				temporalReference = response.reference;
+				temporalNotes = response.downloadNotes;
+			}
+		} catch (err) {
+			const e = err instanceof Error ? err : new Error(String(err));
+			// A cancel before the first payload leaves the section offered, with nothing claimed.
+			if (e.name !== 'AbortError') temporalFailure = e.message;
+			else if (!temporalRecord) temporalProgress = { phase: '', done: 0, total: 0, message: '' };
+			// AND A CANCEL THE WORKER DID NOT ANSWER IS NOT A RUNNING NULL. The cooperative cancel
+			// normally resolves — `runTemporalNull` catches its own abort and returns a COMPLETE record
+			// at the achieved draw count — so reaching here with a record means the grace expired and
+			// the worker was terminated mid-null. The record the page is holding then says `stage:
+			// 'null'`, and every sentence keyed on that says "still running" about a worker that no
+			// longer exists. `stopped` is the page's own stage (see `TemporalRecord['stage']`): it is
+			// deliberately NOT `complete`, because no call, sweep count or wave mode was ever computed
+			// on this record and promoting it would have the section read those off the scored
+			// payload's zeros.
+			// The transition itself is `recordAfterAbort` in lib/time/temporal.ts, where a test drives
+			// it: this route has no component harness, and a page-only fix is a fix nothing checks.
+			else if (temporalRecord && temporalRecord.stage !== 'complete') {
+				temporalRecord = recordAfterAbort(temporalRecord);
+				temporalProgress = { phase: '', done: 0, total: 0, message: '' };
+			}
+		} finally {
+			temporalState = 'idle';
+			temporalAbort = null;
+		}
+	}
+
+	function cancelTemporal() {
+		temporalAbort?.abort();
+	}
+
+	/**
+	 * The four files, written by the runtime's own byte-equal writers — DYNAMICALLY IMPORTED at the
+	 * click. `@veg/hyphaeon-runtime/temporal` reaches `predict.js` and the whole library; importing it
+	 * at the top of this module would put the pillar in the route's initial bundle so that a reader
+	 * who never presses the button still downloads it. (The reproduction line takes the other route
+	 * and is computed in the worker, because the page prints it without being asked; see protocol.ts.)
+	 */
+	async function downloadTemporal(which: 'sites' | 'curves' | 'waves' | 'summary') {
+		if (!temporalRecord) return;
+		const { temporalDownloads } = await import('@veg/hyphaeon-runtime/temporal');
+		const files = temporalDownloads(temporalRecord, { prefix: 'temporal' }) as Array<{ name: string; mime: string; text: string }>;
+		const index = which === 'sites' ? 0 : which === 'curves' ? 1 : which === 'waves' ? 2 : 3;
+		const file = files[index];
+		if (file) saveText(file.name, file.text, file.mime);
+	}
+
+	function setRoot(choice: DatingRootChoice, taxon: string | null) {
+		datingRoot = choice;
+		rootTaxon = taxon;
+	}
+
+	function toggleExcluded(taxon: string, on: boolean) {
+		excludedTaxa = on ? [...excludedTaxa, taxon] : excludedTaxa.filter((t) => t !== taxon);
+	}
 
 	// ---- downloads and the hand-off back ---------------------------------------------------------
 	function downloadCsv() {
@@ -351,6 +838,12 @@
 	function downloadJson() {
 		const record = currentRecord();
 		if (record) saveText('dates.json', datesJson(record), 'application/json');
+	}
+	function downloadDatingJson() {
+		if (dating?.ok) saveText(DATING_JSON_NAME, datingJson(dating), 'application/json');
+	}
+	function downloadDatingCsv() {
+		if (dating?.ok) saveText(DATING_CSV_NAME, datingCsv(dating.rows), 'text/csv');
 	}
 	async function runSelection() {
 		setHandoff({ alignmentText, alignmentName, treeText, treeName, metadataText, metadataName });
@@ -398,6 +891,23 @@
 				onFiles={(files) => void acceptFiles(files)}
 			/>
 
+			<!-- Shown whether or not something is loaded: hiding them after the first load left a reader
+			     unable to switch examples without reloading the page. -->
+			{#if DATED.length > 0}
+				<p class="examples">
+					<span class="examples__label">Or try a dated example:</span>
+					{#each DATED as example (example.id)}
+						<button
+							class="chip"
+							type="button"
+							disabled={busy}
+							title={`${example.description} ${example.expect}`}
+							onclick={() => void loadExample(example)}>{example.name}</button
+						>
+					{/each}
+				</p>
+			{/if}
+
 			{#if failure}
 				<p class="notice--error" role="alert"><strong>Refused.</strong> {failure}</p>
 			{/if}
@@ -411,7 +921,14 @@
 					<details class="strip">
 						<summary><b>What we read from your files.</b> {strip.sentence}</summary>
 						<table>
-							<caption><b>Everything the date layer reported.</b> One row per diagnostic, in its own report order; severity is the same three-value scale the analysis report uses.</caption>
+							<!-- NOT `<b>`, and that is the fix for a counter bug this phase inherited. `app.css`'s
+							     `.numbered caption b::before` increments the table counter, but this caption lives
+							     inside a CLOSED `<details>`, which is `display: none` and therefore increments
+							     nothing — so the review table below was "Table 1" with the strip closed and
+							     "Table 2" with it open, and two more tables on the page would have made that
+							     visible. This caption keeps its look and leaves the counter alone; DESIGN.md §8
+							     records the choice. -->
+							<caption><span class="capname">Everything the date layer reported.</span> One row per diagnostic, in its own report order; severity is the same three-value scale the analysis report uses.</caption>
 							<thead>
 								<tr><th scope="col">Severity</th><th scope="col">Code</th><th scope="col">Message</th></tr>
 							</thead>
@@ -511,9 +1028,123 @@
 		</header>
 		{#if ingest && ingest.coverage.dated > 0}
 			<CoverageFigure rows={rows} units={ingest.time_units} span={ingest.span} />
-			<ClockPreview preview={preview} {treeName} />
+			<ClockPreview preview={preview} {treeName} {crossCheck} />
 		{:else}
 			<p class="note">No sequence carries a date yet, so there is nothing to place on a time axis.</p>
+		{/if}
+	</section>
+
+	<section class="section" id="dating" aria-labelledby="dating-title">
+		<header class="section__head">
+			<h2 id="dating-title">Ancestor date</h2>
+			<p class="eyebrow"><code>hyphaeon dating --method all --no-tree</code>, ported</p>
+		</header>
+		{#if ingest}
+			{#if datingFailure}
+				<p class="notice--error" role="alert"><strong>The estimate failed.</strong> {datingFailure}</p>
+			{/if}
+			<DatingSection
+				view={datingResult}
+				figure={datingFigure}
+				run={dating}
+				units={ingest.time_units}
+				ready={gate.ready}
+				gateReasons={gate.reasons}
+				state={datingState}
+				progress={datingProgress}
+				taxa={taxa}
+				root={datingRoot}
+				{rootTaxon}
+				excludedCount={excludedTaxa.length}
+				{alignmentName}
+				{offer}
+				{modelProbe}
+				{modelGraph}
+				{modelProbeNote}
+				{modeShift}
+				bind:distanceMode
+				onRoot={setRoot}
+				onRun={() => void estimateAncestor()}
+				onRunModel={() => void estimateWithModel()}
+				onCancel={cancelEstimate}
+			/>
+		{:else}
+			<p class="note">Nothing is loaded yet, so there is nothing to date.</p>
+		{/if}
+	</section>
+
+	<section class="section" id="taxa" aria-labelledby="taxa-title">
+		<header class="section__head">
+			<h2 id="taxa-title">Per-sequence dates</h2>
+			<p class="eyebrow"><code>hyphaeon dating</code>'s per-taxon CSV, ported</p>
+		</header>
+		{#if dating?.ok && ingest}
+			<p class="note">
+				Every sequence the estimate saw, whether or not it was in the fit. Tick a row to leave it
+				out and the button in section 3 re-reads; excluded sequences are named in the provenance below
+				and in both downloads, so an estimate can never be quietly conditioned on a hidden exclusion.
+			</p>
+			{#if datingCaveat}
+				<p class="note note--warn">
+					<strong>The predicted dates are not dates here.</strong>
+					{datingCaveat.text}
+				</p>
+			{/if}
+			<TaxonDatingTable
+				rows={datingTaxa}
+				units={ingest.time_units}
+				activeName={dating.activeName}
+				excluded={excludedTaxa}
+				onToggle={toggleExcluded}
+			/>
+			<div class="downloads">
+				<button type="button" class="button button--secondary" onclick={downloadDatingCsv}>Dating (CSV)</button>
+				<button type="button" class="button button--secondary" onclick={downloadDatingJson}>Dating (JSON)</button>
+			</div>
+			<p class="hint downloads__note">{datingDownloadNote(dating)}</p>
+		{:else}
+			<p class="note">
+				No estimate has been made yet. Section 3 starts one; this table is its per-sequence output —
+				the label you supplied, the date the clock predicts, the gap between them, and whether the
+				sequence was flagged or held out of the fit.
+			</p>
+		{/if}
+	</section>
+
+	<section class="section" id="temporal" aria-labelledby="temporal-title">
+		<header class="section__head">
+			<h2 id="temporal-title">Temporal selection</h2>
+			<p class="eyebrow"><code>hyphaeon temporal</code>, ported</p>
+		</header>
+		{#if ingest}
+			<TemporalSection
+				gate={temporalReady}
+				record={temporalRecord}
+				refusal={temporalRefusal}
+				failure={temporalFailure}
+				runState={temporalState}
+				progress={temporalProgress}
+				codons={temporalCodons}
+				dated={ingest.coverage.dated}
+				units={ingest.time_units}
+				{taxa}
+				reference={temporalReference}
+				downloadNotes={temporalNotes}
+				workersAvailable={workersAvailable()}
+				bind:draws={temporalDraws}
+				bind:timePoints={temporalTimePoints}
+				bind:rootTaxon={temporalRoot}
+				bind:scoreInvariable={temporalScoreInvariable}
+				onRun={() => void runTemporalSelection()}
+				onCancel={cancelTemporal}
+				onDownload={(which) => void downloadTemporal(which)}
+			/>
+		{:else}
+			<p class="note">
+				Nothing is loaded yet. This section scores every codon once through the model, follows each
+				one's selection signal along the sampling dates, and tests the codons that move against a null
+				that shuffles those dates.
+			</p>
 		{/if}
 	</section>
 
@@ -531,6 +1162,46 @@
 				<div><dt>Name matching</dt><dd>{ingest.match_tier ?? 'not used'}{#if ingest.match_tier && ingest.match_tier !== 'exact'}<span class="qual">weaker than an exact comparison; every row says which tier matched it</span>{/if}</dd></div>
 				<div><dt>Archival 1959 rule</dt><dd>{archival1959 ? 'applied' : 'off'}{#if anchors.length}<span class="qual">{anchors.length} sequence{anchors.length === 1 ? '' : 's'} would be affected</span>{/if}</dd></div>
 				<div><dt>Tree</dt><dd>{treeName ?? 'none supplied'}{#if !preview.available}<span class="qual">no clock preview: {preview.code}</span>{/if}</dd></div>
+				<div>
+					<dt>Ancestor date</dt>
+					<dd>
+						{#if dating?.ok}
+							{datingResult?.distanceMode === 'latent' ? 'latent-root divergences' : 'tree-free TN93'}, root {dating.rootDescription}
+							<span class="qual"
+								>{dating.selectedClock}; the page quotes {datingResult?.headline === 'pgls'
+									? 'the generalised fit'
+									: datingResult?.headline === 'spline'
+										? 'the spline'
+										: 'the straight line'}{datingResult && datingResult.headline !== datingResult.activeModel
+									? ', because the selected model’s interval is degenerate upstream'
+									: ''}. Excluded: {excludedTaxa.length === 0 ? 'none' : excludedTaxa.join(', ')}. No root
+								search, no bootstrap, no random numbers anywhere on this path.</span
+							>
+						{:else}
+							not estimated<span class="qual">section 3 starts it; the model-free estimate loads nothing</span>
+						{/if}
+					</dd>
+				</div>
+				<div>
+					<dt>Dating graph</dt>
+					<dd>
+						{#if dating?.model}
+							{dating.model.file} · {dating.model.variant}
+							<span class="qual mono">sha256 {dating.model.sha256.slice(0, 12)}…</span>
+							<span class="qual"
+								>{dating.model.taxa} sequences × {dating.model.codons} codons in {dating.model.passSeconds.toFixed(1)} s at
+								{dating.model.numThreads} thread{dating.model.numThreads === 1 ? '' : 's'}; every site, no taxon cap and
+								no duplicate pruning, which is what the reference's dating pass reads.</span
+							>
+						{:else if modelProbe === 'absent'}
+							not in this build<span class="qual">models/manifest.json declares no <span class="mono">taxa_onnx_sha256</span>, so the two model-based estimators cannot run</span>
+						{:else if modelProbe === 'ready' && modelGraph}
+							{modelGraph.file}, not loaded<span class="qual">section 3 offers it; nothing has been downloaded</span>
+						{:else}
+							not loaded<span class="qual">no graph has been requested on this route</span>
+						{/if}
+					</dd>
+				</div>
 			</dl>
 
 			<div class="downloads">
@@ -551,14 +1222,62 @@
 		{/if}
 
 		<p class="note">
-			This page reads dates and shows what it read. The clock-rate estimate, the ancestor date and
-			the per-sequence outlier table read this same table and are not built yet;
-			<span class="mono">hyphaeon dating</span> computes them today at the command line.
+			This page reads dates, shows what it read, and estimates an ancestor date from them. The
+			default estimate loads nothing; the model-based one loads one graph and says so before it
+			does. Four upstream quirks are replicated on purpose and worth naming here: the
+			model-averaged row reads a deliberately skewed interval as a symmetric Gaussian one
+			(<span class="mono">dating.py:2916</span>); the spline clock's own interval collapses to its
+			point estimate because its bootstrap raises on every replicate
+			(<span class="mono">dating.py:1912</span>); loading the model turns that same spline into a
+			generalised fit on divergences that did not move
+			(<span class="mono">dating.py:2844</span>); and the ridge the command line prints is not the
+			ridge the generalised fit used — a fit built from Pagel's λ* ignores the ridge argument
+			entirely (<span class="mono">dating.py:1352-1357</span>), so this page shows λ* and never both
+			numbers under one word. The temporal-selection pillar — per-site trajectories, velocities and
+			wave modes — is not ported; <span class="mono">hyphaeon temporal</span> computes it today at the
+			command line.
 		</p>
 	</section>
 </article>
 
 <style>
+	/* The dated-example line. Same shape as /analyze's demo chips (routes/analyze/+page.svelte) and
+	   the landing page's example links: a button that reads as a link, separated by middots, because
+	   DESIGN.md §2 allows no pills and no filled controls but the primary action. */
+	.examples {
+		margin-top: var(--space-4);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+	}
+	.examples__label {
+		margin-right: var(--space-1);
+	}
+	.chip {
+		background: none;
+		border: 0;
+		padding: 0;
+		color: var(--link);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
+		font-size: inherit;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.chip:hover {
+		text-decoration-thickness: 2px;
+	}
+	.chip:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.chip + .chip::before {
+		content: '·';
+		color: var(--text-faint);
+		margin: 0 var(--space-2);
+		display: inline-block;
+		text-decoration: none;
+	}
 	.timepage {
 		margin-bottom: var(--space-10);
 	}
@@ -696,6 +1415,11 @@
 	}
 	.faint {
 		color: var(--text-faint);
+	}
+	/* The strip caption's bold opening, which deliberately is not a `<b>`; see the markup. */
+	.capname {
+		color: var(--text);
+		font-weight: 700;
 	}
 	@media (max-width: 40em) {
 		.section {

@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import { DIAGNOSTIC_CODES } from "@veg/hyphaeon-js";
+import { DATE_DIAGNOSTIC_CODES } from "@veg/hyphaeon-runtime/dates";
 import { parseAlignment, hasEmbeddedTree, diagnose, treeSourceFrom, CODES, NATIVE_ANALYSES } from "../src/validate.js";
 import { classifyRun, workFor, MAX_SYNC_WORK } from "../src/caps.js";
 import { example } from "./helpers.js";
@@ -61,14 +62,57 @@ describe("parseAlignment is the library's dataset.py mirror", () => {
 describe("CODES", () => {
   it("publishes every library code plus the two app codes, and none of the three D22 retired", () => {
     for (const c of DIAGNOSTIC_CODES) expect(CODES).toHaveProperty(c);
-    expect(Object.keys(CODES).filter((c) => !DIAGNOSTIC_CODES.includes(c)).sort()).toEqual(["CAPS_EXCEEDED", "RUN_MODE"]);
+    // The library's codes, the app codes, and — since Phase 6 — the date layer's own thirty-one
+    // plus this surface's three (two date gates and the dating distance-mode pair). Since the
+    // phase 6 review hyphaeon_validate EMITS the date codes as well, for analysis dates / dating /
+    // temporal; the rest are published so a client that sees one from hyphaeon_dates can look it up.
+    const extra = Object.keys(CODES).filter((c) => !DIAGNOSTIC_CODES.includes(c)).sort();
+    expect(extra).toContain("CAPS_EXCEEDED");
+    expect(extra).toContain("RUN_MODE");
+    expect(extra).toContain("DATING_LATENT_NEEDS_MODEL");
+    expect(extra.filter((c) => !/^(DATES?|DATE|DATING)_/.test(c))).toEqual(["CAPS_EXCEEDED", "RUN_MODE"]);
+    for (const code of DATE_DIAGNOSTIC_CODES) expect(CODES, code).toHaveProperty(code);
+    for (const code of ["DATES_BARE_NUMBER_MAJORITY", "DATES_UNDATED_PRESENT"]) expect(CODES, code).toHaveProperty(code);
     expect(CODES).toHaveProperty("TREE_FREE_TN93");
     expect(CODES).toHaveProperty("TN93_SATURATED_PAIRS");
     for (const gone of ["TREE_MISSING", "BRANCH_LENGTHS_MISSING", "TN93_UNAVAILABLE"]) expect(CODES).not.toHaveProperty(gone);
   });
 
   it("every pillar is native: there is no bridged list left", () => {
-    expect([...NATIVE_ANALYSES].sort()).toEqual(["analyze", "busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
+    expect([...NATIVE_ANALYSES].sort()).toEqual(["analyze", "busted", "dates", "dating", "dms", "epistasis", "evaluate", "meme", "phenotype", "temporal"]);
+  });
+
+  it("sizes the three time analyses honestly: no model where none runs, and temporal always a job", async () => {
+    const alignment = await example("H5N1_HA_geo.fasta");
+
+    // `dates` reads sequence NAMES: no codon is parsed, no matrix is built, no graph is loaded.
+    // Quoting the library's model-pass cost here would promise a forward pass it never makes.
+    const dates = diagnose({ alignment, analysis: "dates" });
+    expect(dates.summary.work).toBe(0);
+    expect(dates.summary.engine).toBe("in-process (no model)");
+    expect(dates.summary.estimated_seconds).toBeLessThan(0.5);
+    const datesMode = dates.warnings.find((w) => w.code === "RUN_MODE");
+    expect(datesMode.message).toMatch(/loads NO model and no graph/);
+    expect(datesMode.message).not.toMatch(/ONNX Runtime/);
+    expect(datesMode.data.runs_the_model).toBe(false);
+
+    // `dating`'s default path is O(taxa x codons) and model-free; `use_model` is opt-in and this
+    // tool has no flag for it, so it sizes the default and says which default it sized.
+    const dating = diagnose({ alignment, analysis: "dating" });
+    expect(dating.summary.engine).toBe("in-process (no model unless use_model)");
+    expect(dating.summary.work).toBe(workFor("dating", dating.summary.codons, dating.summary.sequence_count));
+    expect(dating.summary.work).toBeLessThan(workFor("meme", dating.summary.codons, dating.summary.sequence_count));
+    expect(dating.warnings.find((w) => w.code === "RUN_MODE").message).toMatch(/by default, loads NO model/);
+
+    // `temporal` is ALWAYS a job however small the input, because its record is megabytes.
+    const temporal = diagnose({ alignment, analysis: "temporal" });
+    expect(temporal.summary.mode).toBe("job");
+    const tMode = temporal.warnings.find((w) => w.code === "RUN_MODE");
+    expect(tMode.data.mode).toBe("job");
+    expect(tMode.message).toMatch(/ALWAYS returns a job id/);
+    expect(tMode.message).toMatch(/never the record/);
+    // And its estimate carries the null, which the library's one-pass figure does not know about.
+    expect(temporal.summary.estimated_seconds).toBeGreaterThan(diagnose({ alignment, analysis: "meme" }).summary.estimated_seconds);
   });
 
   it("treeSourceFrom names what the run will record", () => {
@@ -265,5 +309,83 @@ describe("caps", () => {
     expect(workFor("analyze", 351, 18)).toBe(351 * 18 * 18);
     expect(classifyRun("analyze", { codons: 351, taxa: 18 })).toMatchObject({ ok: true, mode: "sync" });
     expect(classifyRun("analyze", { codons: 40000, taxa: 18 }).ok).toBe(false);
+  });
+});
+
+describe("the date gate: validate answers the question the time tools will be asked", () => {
+  // PHASE 6 REVIEW, M3. hyphaeon_validate answered `ok: true` for analysis `temporal` and `dating`
+  // on Smc6.fasta — a file with no date anywhere — complete with summary.mode "job" and
+  // estimated_seconds 2.12, and both tools then refused the same bytes. Validate is the call a
+  // client makes precisely to avoid that, so the three checks the analysis dispatcher runs are run
+  // here too, from the same functions.
+  it("refuses an undated alignment for `dating` and `temporal`, and says which code and what to do", async () => {
+    const alignment = await example("Smc6.fasta");
+    for (const analysis of ["dating", "temporal"]) {
+      const out = diagnose({ alignment, analysis });
+      expect(out.ok, analysis).toBe(false);
+      const refusals = out.warnings.filter((w) => w.severity === "refuse");
+      expect(refusals.length, analysis).toBeGreaterThan(0);
+      expect(refusals.map((w) => w.code), analysis).toContain("DATES_NONE");
+      // The hint names the METADATA fix, never the alignment one.
+      expect(refusals.find((w) => w.code === "DATES_NONE").hint).toMatch(/dates_file|date_pattern/);
+      expect(out.summary.dates.coverage.dated).toBe(0);
+    }
+    // The same file for a pillar with no date layer is unaffected: this gate is not a new refusal
+    // for everyone, it is the date tools' own.
+    expect(diagnose({ alignment, analysis: "meme" }).ok).toBe(true);
+  });
+
+  it("`dates` reports the same gates at INFO, because reporting them is that tool's job", async () => {
+    const h1n1 = await example("H1N1_2009_pandemic.fasta");
+    const review = diagnose({ alignment: h1n1, analysis: "dates" });
+    const undated = review.warnings.find((w) => w.code === "DATES_UNDATED_PRESENT");
+    expect(undated).toBeDefined();
+    expect(undated.severity).toBe("info");
+    expect(review.ok).toBe(true);
+    // The two analyses refuse the identical fact, with the override named.
+    const run = diagnose({ alignment: h1n1, analysis: "temporal" });
+    const blocked = run.warnings.find((w) => w.code === "DATES_UNDATED_PRESENT");
+    expect(blocked.severity).toBe("refuse");
+    expect(blocked.data.override).toBe("drop_undated");
+    expect(run.ok).toBe(false);
+    // ... and accept it when the caller says so, which is what the run will do with the same flag.
+    const overridden = diagnose({ alignment: h1n1, analysis: "temporal", dates: { drop_undated: true } });
+    expect(overridden.warnings.some((w) => w.code === "DATES_UNDATED_PRESENT" && w.severity === "refuse")).toBe(false);
+    expect(overridden.ok).toBe(true);
+    expect(overridden.summary.dates.coverage.dated).toBe(95);
+    expect(overridden.summary.dates.gate.applied).toContain("DATES_UNDATED_PRESENT");
+  });
+
+  it("refuses a dated set with too few sequences at EACH pillar's own threshold", () => {
+    // Four dated sequences: enough to regress (three), not enough to survey (five,
+    // temporal.py:474). One alignment, two answers, and each one says which number it used.
+    const four =
+      ">a_2001\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCC\n" +
+      ">b_2002\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCG\n" +
+      ">c_2003\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCA\n" +
+      ">d_2004\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCT\n";
+    const dating = diagnose({ alignment: four, analysis: "dating" });
+    expect(dating.warnings.some((w) => w.code === "DATING_TOO_FEW_DATED")).toBe(false);
+    expect(dating.summary.dates.coverage.dated).toBe(4);
+
+    const temporal = diagnose({ alignment: four, analysis: "temporal" });
+    const refusal = temporal.warnings.find((w) => w.code === "TEMPORAL_TOO_FEW_DATED");
+    expect(temporal.ok).toBe(false);
+    expect(refusal.severity).toBe("refuse");
+    expect(refusal.message).toMatch(/at least 5/);
+    expect(refusal.hint).toMatch(/at least 5/);
+    expect(refusal.hint).not.toMatch(/At least 3 sequences/);
+    expect(temporal.summary.dates.min_dated_taxa).toBe(5);
+  });
+
+  it("validating with the run's own date arguments is validating the run: the pattern is applied", () => {
+    const named = ">iso|2001.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCC\n>iso|2002.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCG\n>iso|2003.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCA\n>iso|2004.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCT\n>iso|2005.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCG\n";
+    const withPattern = diagnose({ alignment: named, analysis: "temporal", dates: { date_pattern: "\\|(\\d{4}\\.\\d)\\|" } });
+    expect(withPattern.ok).toBe(true);
+    expect(withPattern.summary.dates.coverage.dated).toBe(5);
+    // A pattern that cannot compile is refused here as the run would refuse it, with its own code.
+    const bad = diagnose({ alignment: named, analysis: "temporal", dates: { date_pattern: "(" } });
+    expect(bad.ok).toBe(false);
+    expect(bad.warnings.map((w) => w.code)).toContain("DATE_REGEX_INVALID");
   });
 });

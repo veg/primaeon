@@ -25,6 +25,7 @@ describe("resources", () => {
     expect(templates).toContain("hyphaeon://examples/{name}");
     expect(templates).toContain("hyphaeon://gallery/{name}");
     expect(templates).toContain("hyphaeon://report/{id}");
+    expect(templates).toContain("hyphaeon://temporal/{id}");
     // No report has been run in this server: nothing is listed, and reads explain themselves.
     expect(uris.filter((u) => u.startsWith("hyphaeon://report/"))).toEqual([]);
     const none = await ctx.client.readResource({ uri: "hyphaeon://report/" + "a".repeat(32) });
@@ -32,6 +33,14 @@ describe("resources", () => {
     expect(none.contents[0].text).toMatch(/^Error: no job/);
     const bad = await ctx.client.readResource({ uri: "hyphaeon://report/not-an-id" });
     expect(bad.contents[0].text).toMatch(/^Error: a report id is the 32-hex job_id/);
+    // The temporal template behaves the same way, and says so in its own words rather than the
+    // report's — a client that read "report" here would go looking for sections that do not exist.
+    expect(uris.filter((u) => u.startsWith("hyphaeon://temporal/"))).toEqual([]);
+    const noRun = await ctx.client.readResource({ uri: "hyphaeon://temporal/" + "b".repeat(32) });
+    expect(noRun.contents[0].mimeType).toBe("text/plain");
+    expect(noRun.contents[0].text).toMatch(/^Error: no job/);
+    const badRun = await ctx.client.readResource({ uri: "hyphaeon://temporal/not-an-id" });
+    expect(badRun.contents[0].text).toMatch(/^Error: a temporal id is the 32-hex job_id/);
   });
 
   it("serves caveats keyed by model_version with the model_eval numbers", async () => {
@@ -46,10 +55,13 @@ describe("resources", () => {
   it("serves the requirements with the validation codes; every pillar in-process, no tree required", async () => {
     const res = await ctx.client.readResource({ uri: "hyphaeon://methods/requirements" });
     const body = JSON.parse(res.contents[0].text);
-    expect(Object.keys(body.pillars).sort()).toEqual(["analyze", "busted", "dms", "epistasis", "evaluate", "meme", "phenotype"]);
+    expect(Object.keys(body.pillars).sort()).toEqual(["analyze", "busted", "dates", "dating", "dms", "epistasis", "evaluate", "meme", "phenotype", "temporal"]);
     expect(body.pillars.meme.options.model_variant.cli).toBe("--model-variant");
     for (const name of Object.keys(body.pillars)) {
-      expect(body.pillars[name].engine, name).toBe("in-process");
+      // The two time pillars qualify the word: `dates` runs no model at all and `dating` runs one
+      // only when asked, and the requirements resource has to say so rather than claim parity with
+      // the pillars whose every run loads a graph.
+      expect(body.pillars[name].engine, name).toMatch(/^in-process/);
       // D22: no pillar requires a tree.
       expect(body.pillars[name].requires_tree, name).toBe(false);
     }
@@ -60,6 +72,25 @@ describe("resources", () => {
     expect(body.pillars.meme.tree).toMatch(/OPTIONAL/);
     expect(body.pillars.meme.tree).toMatch(/Tamura-Nei 93/);
     expect(body.pillars.meme.tree).not.toMatch(/HKY85/);
+    // Phase 6, the contract sentences the requirements resource must keep.
+    expect(body.pillars.dates.engine).toMatch(/NO MODEL/);
+    expect(body.pillars.dates.beast_xml).toMatch(/REFUSED/);
+    expect(body.pillars.dates.name_matching.tiers).not.toContain("substring");
+    expect(body.pillars.dating.tree).toMatch(/NONE, on any surface/);
+    expect(body.pillars.dating.estimator_note).toMatch(/MODEL-FREE BY DEFAULT/);
+    expect(body.pillars.dating.reference_command).toMatch(/OBJECT/);
+    expect(body.pillars.temporal.always_a_job).toMatch(/NEVER returned inline/);
+    expect(body.pillars.temporal.sections.names).toEqual(body.caps.temporal.sections);
+    expect(body.pillars.temporal.honesty.null_state).toMatch(/not-started \| running \| finished \| stopped/);
+    expect(body.pillars.temporal.honesty.p_perm_fill).toMatch(/NOT a measurement/);
+    expect(body.pillars.temporal.honesty.wave_variance).toMatch(/MOVE WITH THE NULL/);
+    expect(body.pillars.temporal.honesty.upstream_bugs_replicated.length).toBeGreaterThanOrEqual(4);
+    expect(body.caps.taxa.dating_model_max).toBe(1500);
+    expect(body.caps.temporal.always_a_job).toBe(true);
+    // The date layer's whole vocabulary is published, refusals included.
+    for (const code of ["DATES_NONE", "DATES_TOO_FEW", "DATES_NO_SPAN", "DATES_BEAST_XML_UNSUPPORTED", "DATES_BARE_NUMBER_MAJORITY", "DATES_UNDATED_PRESENT"]) {
+      expect(body.validation_codes, code).toHaveProperty(code);
+    }
     expect(body.pillars.phenotype.trait).toMatch(/preset/);
     expect(body.pillars.phenotype.permulations_need_a_tree).toMatch(/tree-free/);
     expect(body.pillars.analyze.options.phenotype.note).toMatch(/report-pass/);
@@ -72,7 +103,7 @@ describe("resources", () => {
     expect(body.validation_codes).not.toHaveProperty("TREE_MISSING");
     expect(body.caps.work.sync_max).toBe(2.5e9);
     expect(body.caps.analyze.wait_default_sec).toBe(120);
-    expect(body.provenance.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
+    expect(body.provenance.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze", "dates", "dating", "temporal"]);
     expect(body.provenance.bridged.analyses).toEqual([]);
     expect(body.provenance.bridged.note).toMatch(/no Python/i);
   });

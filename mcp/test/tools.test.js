@@ -30,11 +30,11 @@ describe("tool registry", () => {
     await ctx.close();
   });
 
-  it("tools/list has all twelve names and says which run in-process", async () => {
+  it("tools/list has all fifteen names and says which run in-process", async () => {
     const { tools } = await ctx.client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([...TOOL_NAMES].sort());
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(15);
     for (const t of tools) expect(t.description.length).toBeGreaterThan(20);
     expect(tools.find((t) => t.name === "hyphaeon_analyze").description).toMatch(/ONE ACTION/);
     expect(tools.find((t) => t.name === "hyphaeon_analyze").description).toMatch(/IN THIS PROCESS/);
@@ -43,9 +43,51 @@ describe("tool registry", () => {
     expect(tools.find((t) => t.name === "hyphaeon_dms").description).toMatch(/IN THIS PROCESS/);
     expect(tools.find((t) => t.name === "hyphaeon_phenotype").description).toMatch(/IN THIS PROCESS/);
     expect(tools.find((t) => t.name === "hyphaeon_phenotype").description).toMatch(/no Python anywhere/);
-    expect([...NATIVE_ANALYSES]).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
+    expect([...NATIVE_ANALYSES]).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze", "dates", "dating", "temporal"]);
+    // Phase 6: the three time tools, and the contract sentences that must survive a description edit.
+    const dates = tools.find((t) => t.name === "hyphaeon_dates");
+    expect(dates.description).toMatch(/Runs NO MODEL/);
+    expect(dates.description).toMatch(/DATES_BARE_NUMBER_MAJORITY/);
+    expect(dates.description).toMatch(/DATES_UNDATED_PRESENT/);
+    expect(dates.description).toMatch(/46,241,654/);
+    expect(Object.keys(dates.inputSchema.properties)).toEqual(
+      expect.arrayContaining(["alignment", "dates_file", "dates_file_name", "date_source_kind", "strain_col", "date_col", "delimiter", "date_pattern", "date_pattern_flags", "time_units", "archival_1959", "header_fallback", "accept_bare_numbers", "drop_undated", "rows", "top"])
+    );
+    // hyphaeon_dates takes NO tree and no model options: it reads sequence names.
+    expect(dates.inputSchema.properties.tree).toBeUndefined();
+    expect(dates.inputSchema.properties.model_variant).toBeUndefined();
+
+    const dating = tools.find((t) => t.name === "hyphaeon_dating");
+    expect(dating.description).toMatch(/MODEL-FREE BY DEFAULT/);
+    expect(dating.description).toMatch(/DATING_GRAPH_UNAVAILABLE/);
+    expect(dating.description).toMatch(/1938\.77/);
+    expect(dating.description).toMatch(/TAKES NO TREE/);
+    expect(Object.keys(dating.inputSchema.properties)).toEqual(
+      expect.arrayContaining(["alignment", "dates_file", "use_model", "distance_mode", "clock_model", "ci_method", "root_taxon", "accept_bare_numbers", "drop_undated"])
+    );
+    // D34: the clock pillar takes no tree on any surface.
+    expect(dating.inputSchema.properties.tree).toBeUndefined();
+    // D33: the power-law clock is not ported, so the enum must not offer it (the description says
+    // so in words, which is why this checks the enum and not the JSON).
+    expect(dating.inputSchema.properties.clock_model.enum).toEqual(["auto", "linear", "spline"]);
+    // The four interval methods that need a PCG64 mirror are refused, not silently substituted.
+    for (const gone of ["poisson", "residual-boot", "site-boot", "jackknife"]) {
+      expect(dating.inputSchema.properties.ci_method.enum, gone).not.toContain(gone);
+    }
+
+    const temporal = tools.find((t) => t.name === "hyphaeon_temporal");
+    expect(temporal.description).toMatch(/ALWAYS RUNS AS A JOB and is NEVER returned inline/);
+    expect(temporal.description).toMatch(/null_state/);
+    expect(temporal.description).toMatch(/NOT a measurement/i);
+    expect(temporal.description).toMatch(/move with the null|moves with the null|conditioned on the/i);
+    expect(temporal.description).toMatch(/reproduces` is FALSE/);
+    expect(Object.keys(temporal.inputSchema.properties)).toEqual(
+      expect.arrayContaining(["alignment", "tree", "dates_file", "n_permutations", "time_points", "sweep_mode", "score_invariable_sites", "wave_sign", "section", "sites", "wait_seconds", "accept_bare_numbers", "drop_undated"])
+    );
+    // D28: only the convention this build computes may be asked for.
+    expect(temporal.inputSchema.properties.wave_sign.enum).toEqual(["canonical"]);
     // D22: every tool says a tree is optional, and none of them offers to estimate branch lengths.
-    for (const name of ["hyphaeon_meme", "hyphaeon_busted", "hyphaeon_epistasis", "hyphaeon_dms", "hyphaeon_phenotype", "hyphaeon_analyze"]) {
+    for (const name of ["hyphaeon_meme", "hyphaeon_busted", "hyphaeon_epistasis", "hyphaeon_dms", "hyphaeon_phenotype", "hyphaeon_analyze", "hyphaeon_temporal"]) {
       const tool = tools.find((x) => x.name === name);
       expect(tool.inputSchema.properties.tree.description, name).toMatch(/OPTIONAL/);
       expect(tool.inputSchema.properties.tree.description, name).toMatch(/TN93/);
@@ -58,7 +100,11 @@ describe("tool registry", () => {
       expect.arrayContaining(["alignment", "tree", "use_tn93", "preset", "foreground", "background", "phenotype_file", "trait_col", "species_col", "continuous", "permulations", "n_permutations", "alpha", "min_taxa", "seed"])
     );
     const getResults = tools.find((t) => t.name === "get_results");
-    expect(Object.keys(getResults.inputSchema.properties)).toEqual(expect.arrayContaining(["job_id", "section", "fields", "top", "summary_only"]));
+    expect(Object.keys(getResults.inputSchema.properties)).toEqual(expect.arrayContaining(["job_id", "section", "fields", "top", "summary_only", "sites"]));
+    // The section enum serves both vocabularies: the report's and the temporal record's.
+    for (const sec of ["sites", "gene", "dms", "curves", "waves", "permutations", "honesty"]) {
+      expect(getResults.inputSchema.properties.section.enum, sec).toContain(sec);
+    }
   });
 
   it("prompts/list has one interpretation guide per pillar, one for the report, and choose-analysis", async () => {
@@ -112,13 +158,28 @@ describe("tool registry", () => {
     expect(body.variants[0].busted_head_path).toMatch(/busted_head\.onnx$/);
     expect(body.variants[1].busted_head_path).toBeNull();
     expect(body.native.surface).toBe("mcp-stdio");
-    expect(body.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
+    expect(body.native.analyses).toEqual(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze", "dates", "dating", "temporal"]);
     expect(body.native.engine).toBe("onnxruntime-node");
     expect(body.native.available).toBe(true);
     expect(body.native.onnxruntime_node).toBe("1.23.2");
     expect(body.native.models_dir).toMatch(/models$/);
     expect(body.native.mds_sign).toBe("canonical");
-    expect(body.native.runtime_provides).toEqual({ runEpistasis: true, runDms: true, runEverything: true, runPhenotype: true });
+    expect(body.native.runtime_provides).toEqual({
+      runEpistasis: true,
+      runDms: true,
+      runEverything: true,
+      runPhenotype: true,
+      ingestDates: true,
+      runDating: true,
+      runDatingModelPass: true,
+      runTemporal: true,
+      temporalReferenceCommand: true
+    });
+    // Phase 6: whether the model-based clock can run at all, per variant, read from the manifest
+    // without loading a graph — so `use_model: true` is answerable before a run rather than inside one.
+    expect(body.native.dating_graph).toEqual({ general: "declared", viral: "declared" });
+    expect(body.native.date_layer.engine).toMatch(/no model/);
+    expect(body.native.date_layer.beast_xml).toMatch(/refused/);
     // D22 / Phase 3: no estimator, no second engine.
     expect(body.native.branch_length_estimator).toBeNull();
     expect(body.native.tree_free).toMatch(/tn93/);
@@ -152,6 +213,46 @@ describe("hyphaeon_validate through the tool", () => {
     expect(codes).toContain("COST_ESTIMATE");
     expect(codes).toContain("RUN_MODE");
     expect(body.warnings.every((w) => ["info", "warn", "refuse"].includes(w.severity))).toBe(true);
+  });
+
+  it("the date gate travels through the tool: Smc6 is refused for `temporal`, and H5N1 with its CSV is not", async () => {
+    // PHASE 6 REVIEW, M3. Through the TOOL rather than through diagnose(): the date arguments are
+    // accepted here, a file:// dates_file is resolved the way an analysis resolves one, and the
+    // reply is isError when the run would be refused, so a client sees the same answer twice
+    // instead of a green light followed by a refusal.
+    const smc6 = await example("Smc6.fasta");
+    const res = await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment: smc6, analysis: "temporal" } });
+    const body = parseText(res);
+    expect(res.isError).toBe(true);
+    expect(body.ok).toBe(false);
+    expect(body.warnings.filter((w) => w.severity === "refuse").map((w) => w.code)).toContain("DATES_NONE");
+    expect(body.summary.dates.coverage.dated).toBe(0);
+    // The cost line is still there — it says what the run WOULD cost — but `ok` is the answer.
+    expect(body.warnings.map((w) => w.code)).toContain("RUN_MODE");
+
+    const ok = parseText(
+      await ctx.client.callTool({
+        name: "hyphaeon_validate",
+        arguments: {
+          alignment: await example("H5N1_HA_geo.fasta"),
+          tree: await example("H5N1_HA.nwk"),
+          analysis: "temporal",
+          dates_file: await example("H5N1_HA_metadata.csv"),
+          dates_file_name: "H5N1_HA_metadata.csv"
+        }
+      })
+    );
+    expect(ok.ok).toBe(true);
+    expect(ok.summary.mode).toBe("job");
+    expect(ok.summary.dates.source).toBe("table");
+    expect(ok.summary.dates.coverage.dated).toBeGreaterThan(90);
+    expect(ok.summary.dates.headline).toMatch(/dated from table/);
+    expect(ok.summary.dates.gate.ok).toBe(true);
+
+    // A pillar with no date layer is not asked the question at all.
+    const meme = parseText(await ctx.client.callTool({ name: "hyphaeon_validate", arguments: { alignment: smc6, analysis: "meme" } }));
+    expect(meme.ok).toBe(true);
+    expect(meme.summary.dates).toBeUndefined();
   });
 
   it("sizes the whole report (analysis: analyze) in-process and names the wait budget", async () => {

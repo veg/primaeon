@@ -39,9 +39,9 @@ import { createHash } from 'node:crypto';
 
 import { BUSTED_HEAD_INPUT_NAMES, BUSTED_HEAD_OUTPUT_NAMES } from '@veg/hyphaeon-js';
 
-import { DEFAULT_INPUT_NAMES, REQUIRED_OUTPUT_NAMES, isSha256Hex, hashMismatchError } from './manifest.js';
+import { DEFAULT_INPUT_NAMES, REQUIRED_OUTPUT_NAMES, TAXA_OUTPUT_NAMES, isSha256Hex, hashMismatchError } from './manifest.js';
 
-export { runSites, buildFeeds, runBustedHead, buildBustedHeadFeeds } from './feeds.js';
+export { runSites, runTaxaSites, buildFeeds, runBustedHead, buildBustedHeadFeeds } from './feeds.js';
 
 /** Option keys a PRODUCTION call may carry; anything else is a seam and bypasses the memo. */
 const MEMO_KEYS = new Set(['modelPath', 'expectedSha256', 'threads', 'expectedInputs', 'expectedOutputs', 'kind']);
@@ -185,6 +185,30 @@ export function loadBustedHead(options = {}) {
 		expectedInputs: BUSTED_HEAD_INPUT_NAMES,
 		expectedOutputs: BUSTED_HEAD_OUTPUT_NAMES,
 		kind: 'busted_head'
+	});
+}
+
+/**
+ * Load `<variant>_taxa.onnx`: the same policy as `loadSession` with the dating graph's contract —
+ * the backbone's four inputs, outputs `cross_attn_sum` [N, N] and `taxa_repr_sum` [N, embed_dim]
+ * (export.py TAXA_OUTPUT_NAMES via manifest.js's own list). The hash comes from the manifest's
+ * `taxa_onnx_sha256`, which is optional: a manifest without it declares no dating graph and the
+ * caller must refuse the model-based estimators rather than load the backbone in its place.
+ *
+ * BOTH OUTPUTS ARE `expectedOutputs`, so a backbone handed to this function is rejected at load
+ * rather than at the first run — the memo is keyed on modelPath + expectedSha256 + threads so the two graphs cannot collide, and
+ * `releaseSessions()` already drains every memoised handle, which matters because this makes a
+ * third live ORT session in a process that SIGABRTs at exit with one still alive.
+ *
+ * @param {{modelPath: string, expectedSha256?: string, threads?: number, verifyHash?: boolean,
+ *   ort?: any, readFileImpl?: (p: string) => Promise<Buffer|Uint8Array>}} options
+ */
+export function loadTaxaGraph(options = {}) {
+	return loadSession({
+		...options,
+		expectedInputs: DEFAULT_INPUT_NAMES,
+		expectedOutputs: TAXA_OUTPUT_NAMES,
+		kind: 'taxa'
 	});
 }
 

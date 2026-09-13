@@ -16,11 +16,15 @@ record: `PLAN.md` (draft v5).
   lockfiles were removed at Phase 0 integration and must not come back.
 - `npm test` — `vitest run` in every workspace with a test script (`npm -ws run test --if-present`).
   Nothing shells out any more (the Python bridge is deleted, Phase 3): the MCP and server suites
-  need only `HYPHAEON_MODELS_DIR=../HyphAeon/models`.
+  need only `HYPHAEON_MODELS_DIR=../HyphAeon/models`. Measured at Phase 6 integration on this
+  machine: runtime 28 files / 592 tests in 49.9 s, web 24 / 309 in 2.8 s, mcp 13 / 154 in 42.3 s,
+  server 6 / 91 in 42.5 s — 2 min 18 s in all.
 - `cd runtime && npx vitest run` — the runtime suite alone; `test/pipeline.test.js`,
   `test/parity-fixtures.test.js`, `test/tree-free.test.js` and `test/phenotype.test.js` score the
-  examples through the real general graph under onnxruntime-node (~45 s), and
-  `test/no-hyphy.test.js` asserts HyPhy stayed removed.
+  examples through the real general graph under onnxruntime-node, `test/dating-model.test.js`
+  loads the SECOND graph (`<variant>_taxa.onnx`) and `test/temporal-port.test.js` replays the
+  reference CLI's own committed temporal output (49.9 s in all), and `test/no-hyphy.test.js`
+  asserts HyPhy stayed removed.
 - `npm run build` — `web/` static build (adapter-static). Its `prebuild` copies the ORT WASM and
   the graphs + `manifest.json` into `web/static/`, writes `web/static/_headers`, and then prebakes
   the gallery (`web/scripts/prebake-gallery.mjs`, stamp-cached; `HYPHAEON_PREBAKE=skip` on a
@@ -29,7 +33,11 @@ record: `PLAN.md` (draft v5).
 - `npm run e2e` — Playwright from `e2e/` (`npm -w e2e run e2e`; the built site under `vite preview`
   on port 4173, so run `npm run build` first). `e2e/` is a workspace so `@playwright/test` is
   installed once at the root; its script is named `e2e`, not `test`, so `npm test` never starts a
-  browser. Do not rebuild `web/build` while the suite runs; the preview serves it live.
+  browser. Do not rebuild `web/build` while the suite runs; the preview serves it live. 76 specs,
+  48.8 s at Phase 6 against a `HYPHAEON_PREBAKE=skip` build; `server.spec.ts` alone is 15 specs in
+  13.6 s. `server.spec.ts` and `time.spec.ts` read the DATED examples (korber, H5N1, H1N1) from
+  `../HyphAeon/examples`, not from `web/static/gallery/inputs`, and skip when that checkout is
+  absent.
 - Parity: `node runtime/scripts/parity-node.mjs --examples all --analyses
   meme,busted,epistasis,dms,phenotype --busted-examples all` writes the `node` surface into
   `../HyphAeon/parity/node/` — and a tree-free run (camelid, HIV1_RT under D22) into
@@ -37,20 +45,31 @@ record: `PLAN.md` (draft v5).
   writes the browser runs into `parity/browser/` and `parity/web/`. Then `cd ../HyphAeon && python
   scripts/parity.py --examples all --surfaces python,node,web` compares (`browser` is not a surface
   name it knows, and neither is `node-tn93`; PHASE3.md's table evaluates those files at PLAN §5.4's
-  classes with a scratch comparator).
+  classes with a scratch comparator). **`dating` and `temporal` are not in this harness at all** —
+  neither runner writes a surface for them and `parity.py` has no comparator — so their numbers are
+  held by `runtime/test/dating-port.test.js` and `runtime/test/temporal-port.test.js` against the
+  reference CLI's own committed output, and the honesty block on every such record says in the
+  record itself what the run does and does not reproduce.
 - `node mcp/bin/hyphaeon-mcp.js` — the stdio MCP server; `HYPHAEON_MODELS_DIR` defaults to
-  `web/static/models` of the checkout (so build once), `HYPHAEON_MCP_THREADS` to 1.
+  `web/static/models` of the checkout (so build once), `HYPHAEON_MCP_THREADS` to 1. 15 tools since
+  0.5.0; `hyphaeon_dates` needs no models on disk at all (it reads names and a metadata document),
+  and `hyphaeon_dating` needs them only when `use_model: true` asks for the second graph.
 - Server (`server/`, PLAN.md §3.5 + the MCP over HTTP behind OAuth at `/mcp`):
   `cd server && HYPHAEON_MODELS_DIR=../web/static/models npm start` listens on
   `HYPHAEON_SERVER_PORT` (7040; `npm start` passes `--disable-warning=ExperimentalWarning` for
   `node:sqlite`); `HYPHAEON_MODELS_DIR=../../HyphAeon/models npm test` runs its vitest + supertest
-  suite (~40 s: a full `analyze` job on bat_oas1 runs the DMS at `HYPHAEON_SERVER_THREADS`, default
-  2). Other knobs: `HYPHAEON_SERVER_ISSUER` (public origin; the OAuth issuer and the only allowed
-  `Origin`), `HYPHAEON_DATA_DIR`, `HYPHAEON_SERVER_WORKERS`, `HYPHAEON_JOB_TTL_MS`,
-  `HYPHAEON_JOB_TIMEOUT_MS`, `HYPHAEON_MCP_AUTH` (never `0` on a public host). Smoke:
+  suite (42.5 s at Phase 6, 6 files / 91 tests: a full `analyze` job on bat_oas1 runs the DMS at
+  `HYPHAEON_SERVER_THREADS`, default 2, and `test/time.test.js` adds a temporal run and a
+  model-based clock). Other knobs: `HYPHAEON_SERVER_ISSUER` (public origin; the OAuth issuer and
+  the only allowed `Origin`), `HYPHAEON_DATA_DIR`, `HYPHAEON_SERVER_WORKERS`, `HYPHAEON_JOB_TTL_MS`,
+  `HYPHAEON_JOB_TIMEOUT_MS`, `HYPHAEON_TEMPORAL_PERM_BUDGET` (1.0e12; Phase 6),
+  `HYPHAEON_MCP_AUTH` (never `0` on a public host). Ten analyses since Phase 6 — the seven of
+  Phase 3 plus `dates`, `dating` and `temporal`, which take a second input `dates_file` (the
+  metadata document's TEXT, never a path). Smoke:
   `curl -s localhost:7040/api/v1/health`, then `POST /api/v1/jobs {"analysis":"analyze","alignment":…}`
-  → `GET /api/v1/jobs/<id>/events` (SSE) → `GET /api/v1/jobs/<id>/result`. `deploy/README.md` is the
-  runbook (Apache vhost, pm2, Docker, `rsync-web.sh`).
+  → `GET /api/v1/jobs/<id>/events` (SSE) → `GET /api/v1/jobs/<id>/result`;
+  `POST /api/v1/jobs/<id>/cancel` stops a run and KEEPS what it produced, where `DELETE` removes it.
+  `deploy/README.md` is the runbook (Apache vhost, pm2, Docker, `rsync-web.sh`).
 - Parity, Phase 2–3: the same runner writes the epistasis (B = 10,000, `parity.py`'s default), the
   Smc6 DMS and RHO's phenotype files; the e2e writes bat_oas1's meme, Smc6's epistasis (B = 1,000),
   camelid's tree-free meme and RHO's phenotype browser files.
@@ -167,6 +186,22 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   inputs, graph hash, options, library version, runtime sources and the script's own version, so a
   no-change build costs ~0.4 s and a runtime change rebakes everything (3 min at 8 threads: DMS
   bat_oas1 3.1 s, Smc6 9.6 s, camelid 19.2 s, HIV1_RT 70.0 s, RHO 71.6 s).
+- **`server/src/time.js` RESOLVES `mcp/src/time.js`; it does not import it and it does not copy
+  it** (Phase 6). `@veg/hyphaeon-mcp`'s exports map publishes `./engine`, `./tools` and `./caps`
+  but no `./time`, and the MCP is where the shared time vocabulary already lives: the two
+  confirmation gates with the 0.5 bare-number threshold, the 23-code refusal→hint table, the null's
+  four states and the sentence each licenses, and the `{command, reproduces, caveats}` reproduction
+  object. So the file does `createRequire().resolve` of the published entry and reads `time.js`
+  beside it (`pathToFileURL`, not `import.meta.resolve`, which vitest's SSR transform does not
+  give it). A second copy of `BARE_NUMBER_MAJORITY` would be a second threshold, and two surfaces
+  disagreeing about when to refuse a bare-number axis is the exact failure the gate exists to
+  prevent. It becomes a one-line import the day the package publishes the subpath.
+- **The DATED examples live in the engine checkout, not the web gallery.** `web/static/gallery/`
+  holds the five selection demos; korber_env_gp160, H5N1_HA_geo (+ `H5N1_HA_metadata.csv`,
+  `H5N1_HA.nwk`) and H1N1_2009_pandemic are in `../HyphAeon/examples/`, so `e2e/time.spec.ts`,
+  `e2e/server.spec.ts`, `server/test/time.test.js` and `mcp/test/{dates,dating,temporal}.test.js`
+  resolve them from there and SKIP when the sibling checkout is absent. Nothing dated is prebaked
+  into the gallery, so the time pillars have no demo record on a machine without the engine.
 
 ## Working rules
 
@@ -201,12 +236,15 @@ time; `workflow_dispatch` takes an `engine_ref` input). Node from `.nvmrc` (22).
   `ci` job is the one that rebakes) and `actions/deploy-pages`. `web/static/.nojekyll` is required
   because Jekyll would drop `_app/`. Pages cannot send COOP/COEP, so that deployment runs ONNX on one
   thread; the production host (`deploy/README.md`) is the multi-threaded one.
-- **`ENGINE_REF`** (workflow `env`, `phase-4b` today: the tag carrying
-  `tn93Options.pairwiseDistances`, which the compiled TN93 needs) is the engine commit CI runs against — a
+- **`ENGINE_REF`** (workflow `env`, `phase-5d` today: the first tag carrying `js/src/temporal.js`,
+  which the temporal pillar named-imports) is the engine commit CI runs against — a
   tag, branch or SHA. It is bumped in the same change that moves the app onto a new library, never
   by itself; a push to the engine's default branch cannot break this repository's CI. Once the
   library is a published npm version the `file:` link goes away, but the models and fixtures the
-  suites read still come from this checkout, so the ref stays.
+  suites read still come from this checkout, so the ref stays. **`pages.yml` carries its own copy
+  of the same value and it must match**: it drifted to `phase-5c` during the temporal phase, which
+  is not a stale deployment but a failed one (no `js/src/temporal.js` at that tag, so the web
+  build's named imports fail at module link). Phase 6 set both to `phase-5d`; change them together.
 - **Five jobs, split so nobody waits on the slow ones** (measured on run 34166686659, 2026-09-11:
   the gallery prebake was 8.8 min of a 14-min job and the two parity halves 9.6 + 8.3 of a 19-min
   one). `scope` (~20 s) decides from the changed paths whether the slow gates run; `unit` is one
@@ -605,3 +643,122 @@ untouched — no store, worker, prop contract or number changed except the two n
   radius/shadow/transform/tracking grep returns only `--radius: 0`, explicit `border-radius: 0`
   on inputs, `letter-spacing: 0` and the modal's shadow; no hex literal outside `app.css`,
   `viz/theme.ts` and `app.html`'s `theme-color`; no off-origin request on any route.
+
+### 2026-09-12 — Phase 6: the time pillars reach the other two surfaces (`PHASE6.md`)
+
+The four phases that built the `/time` route — the date layer (`PHASE2-DATES.md`), the molecular
+clock (`PHASE3-DATING.md`), its model-based estimator (`PHASE4-DATING-MODEL.md`) and temporal
+selection (`PHASE5-TEMPORAL.md`) — landed in the browser and nowhere else; each of their reports
+says so under "deferred". Phase 6 gives the MCP and the Node server what the browser has, "as every
+other pillar has", and is the last phase of the plan. Nothing in `runtime/src/`, `web/` outside
+`src/routes/mcp/`, or the engine was touched: both surfaces wrap the runtime exports Phase 5 left
+for them.
+
+- **`mcp/` 0.5.0 — three tools, and one of them loads nothing.** `TOOL_NAMES` is 15.
+  `hyphaeon_dates` is the date review as data and never reaches `src/engine.js`: no model, no
+  graph, milliseconds. `hyphaeon_dating` is the clock, model-free by default and taking NO tree
+  (D34); `use_model: true` adds the second ONNX artifact. `hyphaeon_temporal` is **always a job**
+  and its record is never returned inline — ten sections through `get_results section=`
+  (`summary | sites | curves | waves | permutations | dates | candidates | warnings | honesty |
+  provenance`), with a new `sites` argument. Every result carries an **honesty block** naming which
+  of the null's four states the run is in (`not-started | running | finished | stopped`), whether
+  the calls are final and why not, and a `reference_command` that is an OBJECT
+  `{command, reproduces, caveats}` rather than the argv array the other six pillars stamp —
+  `engine.js`'s `referenceCommand` now THROWS for these two rather than build a second,
+  disagreeing line. 23 `DATES_*` / `DATE_*` / `DATING_*` / `TEMPORAL_*` refusals, every one
+  `kind: "input"` with its own code and a metadata-specific hint; three new codes
+  (`DATES_BARE_NUMBER_MAJORITY`, `DATES_UNDATED_PRESENT`, `DATING_GRAPH_UNAVAILABLE`). New
+  resource `hyphaeon://temporal/{id}`, three new prompts, `caps.js` gained
+  `DATING_MODEL_MAX_TAXA = 1500` and `TEMPORAL_ALWAYS_JOB`. 13 files / 154 tests in 42.3 s.
+- **`server/` — ten analyses, a second input and a cancel that keeps.** `dates`, `dating` and
+  `temporal` on `POST /api/v1/jobs`, with `dates_file` as TEXT in the body under the alignment's
+  own 8 MiB cap (never a server path), written into the job directory as `dates.txt` and threaded
+  as an INPUT so no copy of a caller's Auspice build lands in `provenance.options`. The date layer
+  is consulted **at the door**, on the HTTP thread, so an undatable alignment is a 422 before a
+  worker is spent (3–24 ms on the bundled examples). New `POST /api/v1/jobs/:id/cancel`: stop and
+  KEEP, where `DELETE` removes — a cancelled temporal run ends `completed` with a truncated null
+  and a `RUN_STOPPED_EARLY` warning naming the achieved draw count, because draw *b* is seeded from
+  `splitmix64(seed, b)` and a run stopped at 313 is bit-identical to one configured at 313.
+  `?section=` serves the ten temporal sections through the MCP's own `temporalSection`, `?sites=`
+  names 1-indexed codons and `?file=` serves the reference's own files (temporal
+  `sites|curves|waves|summary`, dating `json|csv`) with a `Content-Disposition`. New
+  `HYPHAEON_TEMPORAL_PERM_BUDGET` (1.0e12, twenty times the browser's 5.0e10). 6 files / 91 tests
+  in 42.5 s.
+- **The SSE projection is the thing worth knowing.** `runTemporal`'s own interim payload is the
+  WHOLE record (measured upstream at ~6.7 MiB apiece, 17 of them at the reference's defaults), and
+  `jobs.js` hands a section payload straight to the stream, so `server/src/time.js` projects each
+  one into a `summary` or `permutations` section. MEASURED over a real HTTP connection by the new
+  e2e (H5N1, T = 60, B = 200): **9 section events, the biggest 28.7 KB, 175.4 KB of section traffic
+  in all, 7 permutation payloads, 3.4 s**. Forwarding the record unprojected would not error; it
+  would put ~114 MiB of progress indicator through the stream to deliver a p-value table.
+- **`e2e/server.spec.ts` drives all three through the real bin** — submit, stream, read the result,
+  take the downloads — on the SAME empty-PATH server the seven older analyses run on, so the
+  no-subprocess claim now covers the date layer and both time pillars. That test also now asserts
+  that `server/src/time.js`, `mcp/src/time.js` and `runtime/src/{dates,dating,temporal}/` are
+  INSIDE the scan that proves it, rather than merely not caught by it. Five new specs: the H5N1
+  date review (36 ms), the door refusals (23 ms), the korber undated gate (33 ms), the H5N1 clock
+  with both reference files (80 ms; t_mrca 1979.834, μ 6.811e-4, model-free over TN93) and the
+  temporal run with every section and file (3.1 s). 15 specs in 13.6 s; the whole suite 76 in 48.8 s.
+- **Two integration fixes.** `web/src/routes/mcp/tools.ts`'s new `hyphaeon_dates` note opened
+  "Runs no model and loads no graph", and `e2e/smoke.spec.ts` forbids the bare word `Runs` anywhere
+  in that table — Phase 3 had a "Runs" COLUMN marking tools bridged to Python, and the assertion
+  that keeps it deleted cannot tell a column from a verb. The copy now opens "Loads no model and no
+  graph"; the test was not touched. And **`pages.yml`'s `ENGINE_REF` was `phase-5c` while
+  `ci.yml`'s was `phase-5d`**, which is not a stale deployment but a failed one: `js/src/temporal.js`
+  does not exist before `phase-5d` and the web build's named imports of it fail at module link.
+  Both are `phase-5d` now.
+- **Verified at integration**, with `HYPHAEON_MODELS_DIR=../HyphAeon/models` and the engine checkout
+  at `phase-5e` (whose only difference from the pinned `phase-5d` is `scripts/parity.py` — the
+  library is byte-identical): `npm run test --workspaces --if-present` → runtime 28 files / 592
+  tests 49.9 s, web 24 / 309 2.8 s, mcp 13 / 154 42.3 s, server 6 / 91 42.5 s, exit 0;
+  `cd web && npm run check` → **659 files, 0 errors, 0 warnings**; `HYPHAEON_PREBAKE=skip npm run
+  build` clean in 8.8 s; Playwright **76 / 76 in 48.8 s**; `npm ci --dry-run` resolves the root
+  lockfile (the MCP's 0.5.0 bump and `server`'s dependency on it are the only two lines that moved).
+- **Carried**: `PHASE6.md` §7 is the consolidated list of everything still open across the whole
+  plan — it replaces the five separate "carried" lists rather than adding a sixth.
+
+### 2026-09-12 — Phase 6 review round and final check (`PHASE6.md` §8)
+
+Three adversarial reviewers drove both surfaces after Phase 6 integrated; one returned RED. Their
+work and the final check are in `PHASE6.md` §8. **The entry above is wrong on one point: the review
+round DID touch `runtime/src/`** — `dates/`, `dating/`, `temporal/` and two new files
+(`dating/headline.js`, `temporal/caps.js`) — because three findings were about what a number MEANS,
+and that is result semantics, which lives in the runtime and not in a wrapper.
+
+- **The one that mattered most was a disagreement nobody could see from a single surface.**
+  `datingHeadline` decides which fit a surface may quote: it refuses to headline a fit whose
+  `ci_mrca` is a point estimate `[x, x]`, which every spline fit is, because the spline's bootstrap
+  never runs upstream (`dating.py:1912` hands numpy's `rcond=` to `scipy.linalg.lstsq`, whose
+  keyword is `cond=`, and the replicate dies in a bare `except` at 1919-1920). It was ported to the
+  runtime for all three surfaces and only the browser called it. MEASURED over the wire on korber:
+  the server's dating result said `t_mrca 1938.77`, `ci_mrca [1938.77, 1938.77]`; the `/time` page
+  said **1893.91 [1850.90, 1916.79]**. Forty-five years apart, same run. `honesty.headline` and
+  `summary.headline` now carry the rule on every dating result and the tests assert equality with
+  `datingHeadline(record)` field for field.
+- **`datingReferenceCommand` is the runtime's now**, not a second copy in `mcp/src/time.js` — which
+  had already diverged, missing exactly the two caveats about which date the reader was shown.
+  `mcp/src/time.js` re-exports it. Same for `datingHeadline`.
+- **One honesty block contradicted itself about `p_perm`.** `download_notes` carried the runtime's
+  measured "a 1.0 does NOT mean untested" while `p_perm_fill`, two keys away, still said the
+  opposite and pointed at a record key a CSV reader does not have. `p_perm_fill` is
+  `temporalPPermNote(record)` now plus the one clause that is about the surface.
+- **`TEMPORAL_TAXON_CAPS` was keyed by four nicknames, only one of which any caller passes** —
+  `provenance.surface` is `web-time | mcp-stdio | mcp-http | node-server`. Every non-browser lookup
+  fell through to the runtime default, which happens to be the right value today. The stamped
+  strings are keys now.
+- **Five Python citations had drifted** (`dating.py:1917`→`1912`, `temporal.py:210`→`209`,
+  `--no-tree` on the date subcommand is `cli.py:1898`, its flags run `1895-1926`, dating's `-s` is
+  `1922`). Every MECHANISM checked out against the read-only reference; only the numbers had moved.
+- **Verified at the final check** (engine checkout at `phase-5f`+2; `git diff phase-5d..HEAD -- js/`
+  is EMPTY, so the library is byte-identical to the `phase-5d` both workflows pin):
+  `npm run test --workspaces --if-present` → runtime 28 files / **599** tests, web 24 / **315**,
+  mcp 14 / **177**, server 6 / **111** — 72 files, 1,202 tests, exit 0;
+  `cd web && npm run check` → **661 files, 0 errors, 0 warnings**; `HYPHAEON_PREBAKE=skip npm run
+  build` clean; Playwright **76 / 76 in 41.2 s**. Driven over the wire on a private port, not
+  through the suites: the `time_points` cap (999999 / 2001 → 422 `TEMPORAL_TIME_POINTS_EXCEEDED`,
+  −3 / 2.5 → `TEMPORAL_TIME_POINTS_INVALID`, T = 500 runs and stores 4,182,988 B = 8,366 B a grid
+  point); a 4,988,493-byte record → 406 `TEMPORAL_RECORD_TOO_LARGE` whose `details` name exactly the
+  ten sections `hyphaeon://methods/requirements` advertises, all ten then serving 200 with the
+  biggest at 152,137 B; and an MCP temporal job cancelled 2.9 s into the null, which kept the record
+  at **724 of 10,000 draws**, labelled partial everywhere, finding the same 16 confirmed sweeps the
+  full run finds.

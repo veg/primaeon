@@ -39,7 +39,8 @@ import { DATE_THRESHOLDS, DATE_MESSAGES, fillMessage } from './codes.js';
 
 /**
  * @typedef {{regex: RegExp|null, valid: boolean, error: string|null, code: string|null,
- *   groups: number, pattern: string, flags: string, source: 'user'}} CompiledDateRegex
+ *   groups: number, pattern: string, flags: string, source: 'user',
+ *   warning: {code: string, message: string}|null}} CompiledDateRegex
  */
 
 /**
@@ -68,7 +69,7 @@ export function compileDateRegex(pattern, options = {}) {
 	const flags = (options.flags ?? '').replace('g', '');
 	const src = String(pattern ?? '');
 	/** @type {CompiledDateRegex} */
-	const base = { regex: null, valid: false, error: null, code: null, groups: 0, pattern: src, flags, source: 'user' };
+	const base = { regex: null, valid: false, error: null, code: null, groups: 0, pattern: src, flags, source: 'user', warning: null };
 
 	if (src === '') return { ...base, code: 'DATE_REGEX_INVALID', error: 'The pattern is empty.' };
 	if (src.length > DATE_THRESHOLDS.maxPatternLength) {
@@ -98,7 +99,17 @@ export function compileDateRegex(pattern, options = {}) {
 		// dating.py:478 reads `m.group(1)`: with no group there is nothing to read and CPython raises.
 		return { ...base, regex, groups, code: 'DATE_REGEX_NO_GROUP', error: DATE_MESSAGES.REGEX_NO_GROUP };
 	}
-	return { regex, valid: true, error: null, code: null, groups, pattern: src, flags, source: 'user' };
+	// MORE THAN ONE GROUP IS VALID AND STILL WORTH SAYING. Only group 1 is read, here and upstream, so
+	// a two-group pattern whose date is in the second group silently dates nothing it was meant to.
+	// A note rather than a refusal: the pattern runs, and it runs exactly as the reference runs it.
+	const warning =
+		groups > 1
+			? {
+					code: 'DATE_REGEX_EXTRA_GROUPS',
+					message: fillMessage(DATE_MESSAGES.REGEX_EXTRA_GROUPS, { groups })
+				}
+			: null;
+	return { regex, valid: true, error: null, code: null, groups, pattern: src, flags, source: 'user', warning };
 }
 
 /**
