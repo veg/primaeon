@@ -28,7 +28,7 @@
 
 import type { InputDigest } from '$lib/api';
 
-export const TIME_SET_SCHEMA_VERSION = 2;
+export const TIME_SET_SCHEMA_VERSION = 3;
 
 /** The library's four axes. `years` is the only calendar one. */
 export type TimeUnits = 'years' | 'generations' | 'days' | 'arbitrary';
@@ -124,6 +124,23 @@ export interface TimeSetOptions {
 	ciMethod: 'fieller' | 'delta';
 	/** Sequences the reader dropped from the fit. Never silent: named in the record and both files. */
 	excludedTaxa: string[];
+
+	// ---- phase 4: the two estimators the model feeds ---------------------------------------------
+	/**
+	 * Whether the LAST estimate loaded `<variant>_taxa.onnx`. It is a record of what happened, not a
+	 * preference: the two runs produce different records and the page stores one of them, so a
+	 * reopened review has to be able to say which it is showing without re-deriving it from the
+	 * record's shape.
+	 */
+	useModel: boolean;
+	/**
+	 * `--distance-mode`. `auto` is the reference's default and resolves to `latent` the moment a
+	 * dating graph is present and there is no tree (dating.py:2520-2523) — which changes the
+	 * DIVERGENCES every estimator is fitted against, the ordinary one included, not just which
+	 * estimators exist. It is stored beside `useModel` because a record that says `latent` must be
+	 * able to say whether that was chosen or defaulted to.
+	 */
+	distanceMode: 'auto' | 'tn93' | 'latent';
 }
 
 /**
@@ -150,10 +167,21 @@ export interface DatingResult {
 	selectedClock: string;
 	ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
 	rootDescription: string;
-	rootCase: number;
+	/**
+	 * Which of `compute_tree_free_divergences`' four cases produced the divergences — and NULL under
+	 * `--distance-mode latent`, where none of them did: the root is a position the model found in
+	 * its own representation space and has no case number (dating.py:2586-2599). Every reader of
+	 * this field tests `rootDescription` for the latent prefix first.
+	 */
+	rootCase: number | null;
 	elapsedMs: number;
 	ranAtIso: string;
 	options: DatingRunOptions;
+	/**
+	 * Phase 4. Null on a model-free run — which is a FACT about the run and not a missing field, so
+	 * a stored v2 record reads back as the model-free run it was rather than as an unknown one.
+	 */
+	model?: DatingModelInfo | null;
 }
 
 /** The dating knobs, echoed into the result so a stored run says what produced it. */
@@ -164,6 +192,26 @@ export interface DatingRunOptions {
 	ciMethod: 'fieller' | 'delta';
 	excludedTaxa: string[];
 	units: TimeUnits;
+	/** Phase 4: whether this run loaded the dating graph, and under which distance mode. */
+	useModel: boolean;
+	distanceMode: 'auto' | 'tn93' | 'latent';
+}
+
+/**
+ * Which dating graph produced a model run's two matrices. Mirrors the worker's own
+ * `DatingModelProvenance`; it is declared again here because `types.ts` is the record's schema and
+ * the record must not depend on the worker protocol.
+ */
+export interface DatingModelInfo {
+	variant: string;
+	sha256: string;
+	file: string;
+	numThreads: number;
+	crossOriginIsolated: boolean;
+	firstLoad: boolean;
+	taxa: number;
+	codons: number;
+	passSeconds: number;
 }
 
 /**

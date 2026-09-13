@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
 
 env:
-  ENGINE_REF: phase-5b
+  ENGINE_REF: phase-5c
   ONNXRUNTIME_NODE_INSTALL: skip
   HYPHAEON_ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   HYPHAEON_MODELS_DIR: ${{ github.workspace }}/HyphAeon/models

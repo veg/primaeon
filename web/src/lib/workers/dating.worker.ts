@@ -64,6 +64,10 @@ serve<DatingRequest, DatingResponse>((payload, ctx) => {
 		ensemble: run.ensemble,
 		rootDescription: run.rootDescription,
 		rootCase: run.rootCase,
-		elapsedMs: Date.now() - started
+		elapsedMs: Date.now() - started,
+		// Phase 4 gave the response a `model` block. This worker's whole purpose is that it is null
+		// here — `modelUnavailableReason` is what the record then says instead, and the section turns
+		// it into the two rows naming what did not run.
+		model: null
 	};
 });

@@ -275,8 +275,55 @@ export interface DatingResponse {
 	selectedClock: string;
 	ensemble: { t_mrca: number | null; ci_mrca: number[] | null; weights: Record<string, number> };
 	rootDescription: string;
-	rootCase: number;
+	/** Null under `--distance-mode latent`: the latent root is not one of the four root cases. */
+	rootCase: number | null;
 	elapsedMs: number;
+	/** Null on a model-free run; the dating graph's identity when the model half ran. */
+	model: DatingModelProvenance | null;
+}
+
+// ---- dating-model worker (Phase 4: the two estimators the model feeds) ------------------------
+
+/**
+ * One `hyphaeon dating --method all` run WITH the model: a full forward pass over every codon
+ * through `<variant>_taxa.onnx`, then the same `runDating` the model-free worker calls, with the
+ * two matrices handed in.
+ *
+ * IT IS A SUPERSET OF `DatingRequest` ON PURPOSE. The model half does not replace the model-free
+ * estimate, it re-runs the whole record with two more estimators and (under `auto`) a different
+ * divergence vector, so every field that decides the model-free answer has to travel again or the
+ * two runs would not be comparable. `distanceMode` is the one addition a reader controls: `auto` is
+ * the reference's own default and resolves to `latent` the moment a dating graph is present
+ * (dating.py:2520-2523), which is why the page names the divergence source and not just the
+ * estimator.
+ */
+export interface DatingModelRequest extends DatingRequest {
+	/** Absolute URL of `models/manifest.json` and the directory the graphs are served from. */
+	manifestUrl: string;
+	modelsBase: string;
+	/** Absolute URL prefix of the vendored ORT WASM (`.../ort/`). */
+	ortBase: string;
+	/** Threads to ask ORT for; honoured only when the worker is cross-origin isolated. */
+	numThreads: number;
+	/** `auto` (the reference's default), or a mode the reader pinned. */
+	distanceMode: 'auto' | 'tn93' | 'latent';
+	/** The manifest variant to date with; the manifest's own default when absent. */
+	variant?: string | null;
+}
+
+/** Which graph produced the two matrices, for the provenance line and the record. */
+export interface DatingModelProvenance {
+	variant: string;
+	/** The graph the session verified, so a reader can diff it against `models/manifest.json`. */
+	sha256: string;
+	file: string;
+	numThreads: number;
+	crossOriginIsolated: boolean;
+	/** True when this run paid for the download rather than reusing a warm session. */
+	firstLoad: boolean;
+	taxa: number;
+	codons: number;
+	passSeconds: number;
 }
 
 /** Everything the analyze worker accepts, and everything it answers. */

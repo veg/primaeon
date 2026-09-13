@@ -1,6 +1,7 @@
 /**
  * createSession.js — one call that reads the manifest, picks a variant, and loads the verified
- * backbone (and, on request, the busted head) on whichever runtime this code is running in.
+ * backbone (and, on request, the busted head or the dating graph) on whichever runtime this code
+ * is running in.
  *
  * WHY THIS FILE EXISTS. The web worker, the MCP server and the job server each need the same
  * four steps before they can score anything: load `models/manifest.json`, pick a variant
@@ -79,6 +80,7 @@ async function libraryVersionUnderNode() {
  *   threads?: number,                    intra-op threads (Node) / numThreads (web, honoured only when crossOriginIsolated)
  *   ortWasmPath?: string,                web only: where the vendored ORT WASM lives
  *   bustedHead?: boolean,                also load busted_head.onnx now (default false; `loadHead()` does it lazily)
+ *   taxaGraph?: boolean,                 also load <variant>_taxa.onnx now (default false; `loadTaxaGraph()` does it lazily)
  *   libraryVersion?: string|null,        the @veg/hyphaeon-js version to record (web passes it; Node reads it)
  *   sessionModule?: object,              test seam: an object with loadSession / loadBustedHead
  *   loadOptions?: object                 extra options passed through to loadSession (test seams)
@@ -86,9 +88,13 @@ async function libraryVersionUnderNode() {
  * @returns {Promise<{
  *   runtime: 'node'|'web', manifest: object, variant: ReturnType<typeof pickVariant>,
  *   backbone: object, head: object|null, loadHead: () => Promise<object|null>,
+ *   taxa: object|null, loadTaxaGraph: () => Promise<object|null>,
  *   libraryVersion: string|null
- * }>} `backbone` and `head` are loadSession handles, each stamped with `variant`, `modelVersion`,
- *   `referenceVersion`, `defaultSeed` and `libraryVersion` for the provenance block.
+ * }>} `backbone`, `head` and `taxa` are loadSession handles, each stamped with `variant`,
+ *   `modelVersion`, `referenceVersion`, `defaultSeed` and `libraryVersion` for the provenance
+ *   block. `loadTaxaGraph()` returns NULL when the manifest declares no `taxa_onnx_sha256` for the
+ *   variant — the dating pass reads that as "not built" and refuses the model-based estimators
+ *   rather than substituting anything.
  */
 export async function createSession(args = {}) {
 	const {
@@ -98,6 +104,7 @@ export async function createSession(args = {}) {
 		threads = 1,
 		ortWasmPath,
 		bustedHead = false,
+		taxaGraph = false,
 		sessionModule,
 		loadOptions = {}
 	} = args;
@@ -178,6 +185,30 @@ export async function createSession(args = {}) {
 	};
 	if (bustedHead) await loadHead();
 
+	let taxa = null;
+	const loadTaxa = async () => {
+		if (taxa) return taxa;
+		// Optional by construction, and the null is the whole point: a manifest written before the
+		// dating graph existed, or an export run with --skip-taxa-graph, declares no hash and there
+		// is nothing to load. The caller must say so, not improvise.
+		if (!variant.taxaOnnxFile || !variant.taxaOnnxSha256) return null;
+		const location = locate(variant.taxaOnnxFile);
+		taxa = stamp(
+			await (runtime === 'node'
+				? mod.loadTaxaGraph({ modelPath: location, expectedSha256: variant.taxaOnnxSha256, threads, ...loadOptions })
+				: mod.loadTaxaGraph({
+						modelUrl: location,
+						expectedSha256: variant.taxaOnnxSha256,
+						numThreads: threads,
+						...(ortWasmPath ? { ortWasmPath } : {}),
+						...loadOptions
+					})),
+			variant.taxaOnnxSha256
+		);
+		return taxa;
+	};
+	if (taxaGraph) await loadTaxa();
+
 	return {
 		runtime,
 		manifest,
@@ -187,6 +218,10 @@ export async function createSession(args = {}) {
 			return head;
 		},
 		loadHead,
+		get taxa() {
+			return taxa;
+		},
+		loadTaxaGraph: loadTaxa,
 		libraryVersion
 	};
 }

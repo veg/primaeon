@@ -4,14 +4,29 @@
  *
  * WHY THIS FILE EXISTS, AND WHY IT IS NOT IN THE LIBRARY. Two things live here and both are
  * result semantics by CLAUDE.md's own test. First, ADJUDICATION: `dating.py:2943-2996` arbitrates
- * between five estimators, three of which this build does not run (PGLS and the latent root need a
- * taxon-by-taxon attention matrix the current ONNX export does not emit — D29, phase 4 — and the
- * power-law clock is dropped by D33), so the decision tree collapses to the branches a
- * `--method ols --clock-model auto` run can actually reach, and WHICH branches those are depends on
- * which estimators this surface ran. Second, the SENTENCE: `selected_clock` is an English
- * paragraph with numbers formatted into it, and the reference builds it inside the engine. The
- * library returns the fields; this file builds the sentence, byte for byte with the reference's own
- * format specifiers, so a browser run and a command-line run produce the same string.
+ * between five estimators, of which this build runs four — OLS, the neural PGLS fit, the restricted
+ * spline and (as a source of divergences rather than of a date) the latent convex-hull root. Only
+ * the power-law clock is absent, dropped by D33. Which BRANCHES are reachable therefore depends on
+ * whether the model ran: a model-free run collapses the tree to the two arms a `--method ols` run
+ * can reach, and a run with the dating graph opens the four PGLS arms below. Second, the SENTENCE:
+ * `selected_clock` is an English paragraph with numbers formatted into it, and the reference builds
+ * it inside the engine. The library returns the fields; this file builds the sentence, byte for
+ * byte with the reference's own format specifiers, so a browser run and a command-line run produce
+ * the same string.
+ *
+ * THE CLADE-ATTENUATION TEST IS THE ONE BRANCH WITH NO ANALOGUE IN THE MODEL-FREE TREE
+ * (dating.py:2884-2891). `attr = mu_pgls / mu_ols`, and a fit is "clade attenuated" when OLS's
+ * Fieller g is bounded AND the rate deflated by more than half AND the generalised R² fell below
+ * 65 % of the ordinary one. It does two things: it takes the answer away from PGLS, and it
+ * disqualifies PGLS from the model-averaged row. Both matter on real data, where a phylogenetically
+ * structured sample can make the GLS slope collapse toward zero.
+ *
+ * WHY BOTH `pgls_bounded` AND `ols_bounded` APPEAR IN ONE CONDITION. Arm 2
+ * (dating.py:2969-2971) prefers OLS when PGLS's g >= 1 — an unbounded Fieller interval, i.e. a
+ * slope that is not significantly positive — but ONLY when OLS's own g is below 1. On korber under
+ * `--distance-mode latent` that is exactly what happens (PGLS g = 1.72 against OLS g = 0.173), so
+ * the headline date comes from the ordinary fit while the record still carries the PGLS one. A page
+ * that prints both must say which was selected and why, which is what the sentence is for.
  *
  * THE FOUR-CONJUNCT RULE THE SELECTION TURNS ON is the library's `is_nonlinear_preferred`
  * (dating.py:1894-1898): `p_f_test < 0.05` AND `delta_aic >= 2.0` AND `mu_ancestral > 0` AND
@@ -47,6 +62,29 @@ function olsValid(ols) {
 	return ols != null && Number.isFinite(ols.t_mrca) && ols.mu > 0;
 }
 
+/** `dating.py:2874` — the same two clauses on the GLS fit; the field names are identical. */
+function pglsValid(pgls) {
+	return pgls != null && Number.isFinite(pgls.t_mrca) && pgls.mu > 0;
+}
+
+/**
+ * `dating.py:2884-2891`. `1e-12` floors both the ratio's denominator and `mu_ols` itself, as the
+ * reference does, so a zero rate cannot make this NaN and silently fall through.
+ *
+ * @returns {{attenuated: boolean, attr: number, muOls: number, muPgls: number}}
+ */
+function cladeAttenuation(ols, pgls) {
+	const vOls = olsValid(ols);
+	const vPgls = pglsValid(pgls);
+	const muOls = ols ? (ols.mu ?? 1e-12) : 1e-12;
+	const muPgls = pgls ? (pgls.mu ?? 1e-12) : 1e-12;
+	const attr = vOls && vPgls ? muPgls / Math.max(1e-12, muOls) : 1.0;
+	const r2Ols = ols?.r2 ?? 0.0;
+	const r2Pgls = pgls?.r2 ?? 0.0;
+	const attenuated = fiellerBounded(ols) && attr < 0.5 && r2Pgls < 0.65 * r2Ols;
+	return { attenuated, attr, muOls, muPgls };
+}
+
 /** `dating.py:2875` — the spline's positivity test is on its ANCESTRAL rate, not on `mu`. */
 function splineValid(spline) {
 	return spline != null && Number.isFinite(spline.t_mrca) && spline.rate_ancestral > 0;
@@ -59,37 +97,64 @@ function fiellerBounded(model) {
 }
 
 /**
- * `dating.py:2943-2996`, restricted to the branches a model-free run reaches.
+ * `dating.py:2943-2996`. With `pgls` null the PGLS arms are unreachable and the tree collapses to
+ * exactly what a model-free run reached before phase 4; with `pgls` supplied every arm is live.
  *
- * @param {{ols: object|null, spline: object|null, clockModel?: 'auto'|'linear'|'spline'}} args
- * @returns {{name: 'ols'|'spline', model: object, selectedClock: string, olsValid: boolean,
- *   splineValid: boolean, olsBounded: boolean, warnings: Array<object>}}
+ * @param {{ols: object|null, pgls?: object|null, spline: object|null,
+ *   clockModel?: 'auto'|'linear'|'spline'}} args
+ * @returns {{name: 'ols'|'pgls'|'spline', model: object, selectedClock: string, olsValid: boolean,
+ *   pglsValid: boolean, splineValid: boolean, olsBounded: boolean, pglsBounded: boolean,
+ *   cladeAttenuated: boolean, attenuation: number, warnings: Array<object>}}
  */
-export function selectClockModel({ ols, spline, clockModel = 'auto' }) {
+export function selectClockModel({ ols, pgls = null, spline, clockModel = 'auto' }) {
 	const vOls = olsValid(ols);
+	const vPgls = pglsValid(pgls);
 	const vSpline = splineValid(spline);
 	const bounded = fiellerBounded(ols);
+	const pglsBounded = fiellerBounded(pgls);
+	const { attenuated, attr, muOls, muPgls } = cladeAttenuation(ols, pgls);
 	const warnings = [];
+	const common = {
+		olsValid: vOls,
+		pglsValid: vPgls,
+		splineValid: vSpline,
+		olsBounded: bounded,
+		pglsBounded,
+		cladeAttenuated: attenuated,
+		attenuation: attr,
+		warnings
+	};
+	if (vPgls && attenuated) {
+		warnings.push(
+			datingWarning(
+				'DATING_CLADE_ATTENUATED',
+				'warn',
+				fillMessage(DATING_MESSAGES.CLADE_ATTENUATED, {
+					factor: fixed(1 / attr, 1),
+					ols: muOls.toExponential(2),
+					pgls: muPgls.toExponential(2)
+				}),
+				{ attenuation: attr, mu_ols: muOls, mu_pgls: muPgls, r2_ols: ols?.r2 ?? null, r2_pgls: pgls?.r2 ?? null }
+			)
+		);
+	}
 
 	/** `dating.py:2946-2948`: `--clock-model spline` takes the spline whatever the test says. */
 	if (clockModel === 'spline' && spline != null) {
-		return { name: 'spline', model: spline, selectedClock: 'Restricted Spline (forced)', olsValid: vOls, splineValid: vSpline, olsBounded: bounded, warnings };
+		return { name: 'spline', model: spline, selectedClock: 'Restricted Spline (forced)', ...common };
 	}
-	/** `dating.py:2952-2961`, with PGLS absent: the linear arm is always OLS here. */
+	/** `dating.py:2952-2961`: the linear arm prefers PGLS unless it is attenuated or unidentified. */
 	if (clockModel === 'linear') {
-		return {
-			name: 'ols',
-			model: ols,
-			selectedClock: vOls ? 'Linear (Standard OLS)' : 'Linear (forced)',
-			olsValid: vOls,
-			splineValid: vSpline,
-			olsBounded: bounded,
-			warnings
-		};
+		if (vPgls && !attenuated && (pglsBounded || !bounded)) {
+			return { name: 'pgls', model: pgls, selectedClock: 'Linear (HyphAeon PGLS)', ...common };
+		}
+		if (vOls) {
+			return { name: 'ols', model: ols, selectedClock: 'Linear (Standard OLS)', ...common };
+		}
+		return { name: pgls != null ? 'pgls' : 'ols', model: pgls ?? ols, selectedClock: 'Linear (forced)', ...common };
 	}
 
-	// auto. dating.py:2964-2967 — the curvature test first, and it is the only branch that can
-	// take the answer away from OLS on this path.
+	// auto. dating.py:2964-2967 — the curvature test first, whatever else ran.
 	if (vSpline && spline.is_nonlinear_preferred) {
 		const ratioStr =
 			spline.rate_ratio > 1.0 ? `acceleration (${fixed(spline.rate_ratio, 2)}x)` : `deceleration (${fixed(spline.rate_ratio, 2)}x)`;
@@ -126,18 +191,76 @@ export function selectClockModel({ ols, spline, clockModel = 'auto' }) {
 		if (Array.isArray(spline.ci_mrca) && spline.ci_mrca[0] === spline.ci_mrca[1]) {
 			warnings.push(datingWarning('DATING_SPLINE_NO_INTERVAL', 'warn', DATING_MESSAGES.SPLINE_NO_INTERVAL, { ci: [...spline.ci_mrca] }));
 		}
-		return { name: 'spline', model: spline, selectedClock, olsValid: vOls, splineValid: vSpline, olsBounded: bounded, warnings };
+		return { name: 'spline', model: spline, selectedClock, ...common };
 	}
 
-	// dating.py:2985-2987 and :2993-2995 — the two arms left once PGLS is absent.
+	// dating.py:2969-2971 — PGLS ran, its slope is not significantly positive (Fieller g >= 1) and
+	// OLS's is: the ordinary fit answers and the sentence says why. This is korber's own branch under
+	// --distance-mode latent.
+	if (vPgls && !pglsBounded && bounded) {
+		return {
+			name: 'ols',
+			model: ols,
+			selectedClock: `Linear (OLS preferred: PGLS temporal slope non-significant, g=${fixed(pgls.fieller_g, 2)} vs OLS g=${fixed(ols.fieller_g, 3)})`,
+			...common
+		};
+	}
+
+	// dating.py:2974-2976 — the clade-attenuation escape. `1/attr` is the deflation factor the
+	// sentence quotes, and `%.2e` is Python's own exponent form for the two rates.
+	if (vPgls && attenuated) {
+		return {
+			name: 'ols',
+			model: ols,
+			selectedClock:
+				`Linear (OLS preferred: PGLS clade attenuation detected, rate deflated ${fixed(1 / attr, 1)}x ` +
+				`from OLS ${muOls.toExponential(2)} to ${muPgls.toExponential(2)})`,
+			...common
+		};
+	}
+
+	// dating.py:2979-2984 — the ordinary preference for the GLS fit when it is identified. `sp_p`
+	// reads the SPLINE's p even though the spline was not selected, and prints "p=n/a" when no
+	// spline was fitted at all; both are the reference's.
+	if (vPgls && pglsBounded) {
+		const spP = spline ? `p=${fixed(spline.p_f_test, 4)}` : 'p=n/a';
+		const lam = pgls.pagel_lambda;
+		const lamStr = typeof lam === 'number' && Number.isFinite(lam) ? `, λ*=${fixed(lam, 4)}` : '';
+		return {
+			name: 'pgls',
+			model: pgls,
+			selectedClock: `Linear PGLS (parsimonious linear clock preferred${lamStr}; ${spP})`,
+			...common
+		};
+	}
+
+	// dating.py:2985-2987
+	if (vOls && bounded) {
+		return { name: 'ols', model: ols, selectedClock: 'Linear (Standard OLS)', ...common };
+	}
+
+	// dating.py:2988-2992 — PGLS is valid but nobody's interval is bounded. Python formats a NaN g
+	// as the literal "inf" here, which is its own inaccuracy and is reproduced.
+	if (vPgls) {
+		const gp = Number.isNaN(pgls.fieller_g) ? 'inf' : fixed(pgls.fieller_g, 2);
+		const go = ols == null || Number.isNaN(ols.fieller_g) ? 'inf' : fixed(ols.fieller_g, 2);
+		return {
+			name: 'pgls',
+			model: pgls,
+			selectedClock: `Linear PGLS (unbounded temporal signal: PGLS g=${gp}, OLS g=${go}; slope p >= 0.05)`,
+			...common
+		};
+	}
+
+	// dating.py:2993-2997
+	if (vOls) {
+		return { name: 'ols', model: ols, selectedClock: 'Linear (OLS fallback: PGLS non-positive rate)', ...common };
+	}
 	return {
-		name: 'ols',
-		model: ols,
-		selectedClock: vOls && bounded ? 'Linear (Standard OLS)' : 'Linear (parsimonious linear clock; non-positive rate)',
-		olsValid: vOls,
-		splineValid: vSpline,
-		olsBounded: bounded,
-		warnings
+		name: pgls != null ? 'pgls' : 'ols',
+		model: pgls ?? ols,
+		selectedClock: 'Linear (parsimonious linear clock; non-positive rate)',
+		...common
 	};
 }
 
@@ -145,11 +268,17 @@ export function selectClockModel({ ols, spline, clockModel = 'auto' }) {
  * `dating.py:2894-2941`: who is allowed into the average, then the library's arithmetic, then the
  * reference's own `elif ols_valid` fallback when nobody is.
  *
- * @param {{ols: object|null, spline: object|null, minSampleTime: number, selected?: string}} args
+ * PGLS IS ADMITTED UNDER AN EXTRA CLAUSE THE OTHER TWO DO NOT HAVE (dating.py:2905): valid, Fieller
+ * bounded, finite interval — and NOT clade attenuated. So the same test that can take the headline
+ * away from PGLS also removes it from the average, and a record can carry a PGLS fit that appears
+ * in neither. That is the reference's, and it is why `admitted` travels back to the caller.
+ *
+ * @param {{ols: object|null, pgls?: object|null, spline: object|null, minSampleTime: number,
+ *   selected?: string, cladeAttenuated?: boolean}} args
  * @returns {{ensemble: {t_mrca: number|null, ci_mrca: number[]|null, weights: Record<string,number>},
  *   admitted: string[], warnings: Array<object>}}
  */
-export function admitEnsembleCandidates({ ols, spline, minSampleTime, selected = null }) {
+export function admitEnsembleCandidates({ ols, pgls = null, spline, minSampleTime, selected = null, cladeAttenuated = false }) {
 	const warnings = [];
 	/** `dating.py:2897`: finite on both ends and strictly wider than zero. */
 	const admissible = (model) => {
@@ -160,9 +289,11 @@ export function admitEnsembleCandidates({ ols, spline, minSampleTime, selected =
 		return Number.isFinite(w) && w > 0;
 	};
 
-	/** Insertion order is the reference's `precisions` dict order: ols, then spline. */
+	/** Insertion order is the reference's `precisions` dict order: ols, then pgls, then spline. */
 	const candidates = [];
 	if (olsValid(ols) && fiellerBounded(ols) && admissible(ols)) candidates.push({ name: 'ols', t_mrca: ols.t_mrca, ci_mrca: ols.ci_mrca });
+	if (pglsValid(pgls) && fiellerBounded(pgls) && !cladeAttenuated && admissible(pgls))
+		candidates.push({ name: 'pgls', t_mrca: pgls.t_mrca, ci_mrca: pgls.ci_mrca });
 	if (splineValid(spline) && spline.is_nonlinear_preferred && admissible(spline))
 		candidates.push({ name: 'spline', t_mrca: spline.t_mrca, ci_mrca: spline.ci_mrca });
 

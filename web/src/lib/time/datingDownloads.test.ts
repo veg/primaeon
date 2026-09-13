@@ -47,7 +47,16 @@ function run(): DatingResult {
 		rootCase: r.rootCase,
 		elapsedMs: 0,
 		ranAtIso: '',
-		options: { root: 'taxon', rootTaxon: 'CONSENSUS', clockModel: 'auto', ciMethod: 'fieller', excludedTaxa: [], units: 'years' }
+		options: {
+			root: 'taxon',
+			rootTaxon: 'CONSENSUS',
+			clockModel: 'auto',
+			ciMethod: 'fieller',
+			excludedTaxa: [],
+			units: 'years',
+			useModel: false,
+			distanceMode: 'auto'
+		}
 	};
 }
 

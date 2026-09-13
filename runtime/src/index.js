@@ -31,7 +31,7 @@
  */
 
 export * from './manifest.js';
-export { buildFeeds, runSites, fetchesFor, buildBustedHeadFeeds, runBustedHead } from './feeds.js';
+export { buildFeeds, runSites, runTaxaSites, fetchesFor, buildBustedHeadFeeds, runBustedHead } from './feeds.js';
 export {
 	predictFromSession,
 	inferSites,
@@ -83,3 +83,15 @@ export * from './dates/index.js';
  * compared against, and the same suite runs the two side by side.
  */
 export * from './dating/index.js';
+
+/**
+ * PHASE 4 OF PLAN-TEMPORAL.md ADDS THE HALF THE MODEL FEEDS. `datingNeural.js` is the one file in
+ * this package that puts the two together: it runs `<variant>_taxa.onnx` over EVERY site of the
+ * alignment (not the variable ones — splits.py is fed the whole `[L, N, 1]` tensor, so the dating
+ * pass cannot ride the report's forward pass), accumulates the two batch-reduced outputs, divides
+ * once, and hands the library pure matrices. It sits OUTSIDE `src/dating/` deliberately: the
+ * import-boundary test that makes "the date-review page costs no model byte" a fact rather than a
+ * claim scans that directory for a session, a manifest or onnxruntime, and moving this inside it
+ * would mean weakening the test. `./dating/neural` is its own subpath export for the same reason.
+ */
+export { runDatingModelPass } from './datingNeural.js';

@@ -91,12 +91,16 @@ describe('HyPhy is not in this package', () => {
 		// the `/time` route reviews dates and dates an ancestor without a model, so it must be able
 		// to import that code without pulling in the ONNX surface through '.'. `dating-port.test.js`
 		// asserts the import graph under `src/dating/` cannot reach a session or a manifest at all.
+		// './dating/neural' is phase 4's model-based half and is the OPPOSITE subpath: it exists so
+		// that the one file which does load a graph for this pillar sits outside `src/dating/` and
+		// the boundary test above it stays exactly as written.
 		expect(Object.keys(pkg.exports)).toEqual([
 			'.',
 			'./web',
 			'./node',
 			'./dates',
 			'./dating',
+			'./dating/neural',
 			'./clock',
 			'./prescreen',
 			'./prescreen/scope',
