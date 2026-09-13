@@ -187,7 +187,25 @@ const HEADLINE = {
 	reference_wave_variance_pct: [39.67, 32.37, 13.92, 9.31]
 };
 
-/** Measured at this commit; each is asserted against its class AND against itself. See the header. */
+/**
+ * Measured at this commit; each is asserted against its class AND against itself. See the header.
+ *
+ * THESE ARE A REGRESSION TRIPWIRE, NOT THE SCIENTIFIC GATE. `CLASS` below is the gate: it is the
+ * tolerance a reader of the numbers is entitled to. `MEASURED` is tighter on purpose, so that a
+ * change in OUR arithmetic trips it long before it reaches the class.
+ *
+ * WHICH MEANS A TRIPWIRE MUST SPAN EVERY PLATFORM WE RUN ON, or it reports the platform instead of
+ * a regression. Two of these were fitted on the development machine alone and duly failed in CI on
+ * the first run that reached them (veg/primaeon run 34736590449, linux/x64): `energy.rel` measured
+ * 2.528e-5 against its 1.69e-5, and `loadings.abs` 5.020e-6 against its 4.8e-6. Both passed their
+ * CLASS on that run — the energy at 0.25 of it — so nothing about the port was wrong; the bounds
+ * were describing darwin/x64 under Rosetta and being asked about Linux.
+ *
+ * Both now carry the spread, with the platform named beside each figure and 1.5x headroom on the
+ * larger, because we hold ONE sample per platform and onnxruntime's reduction order is already
+ * known to move with the thread count (see `lrt`, which carries 10 % for that reason). Tighten them
+ * again when there are enough runs to say what the spread actually is.
+ */
 const MEASURED = {
 	/**
 	 * 1.152e-5 / 7.14e-6 at 4 intra-op threads and 1.144e-5 at 8: onnxruntime's reduction order
@@ -198,11 +216,13 @@ const MEASURED = {
 	p_static: { abs: 5.13e-7 },
 	q_static: { abs: 9.1e-7 },
 	r2_fpca: { abs: 5.1e-7 },
-	energy: { rel: 1.69e-5 },
+	/** darwin/x64 Rosetta 1.69e-5, linux/x64 2.528e-5; 1.5x the larger. CLASS is 1e-4. */
+	energy: { rel: 3.8e-5 },
 	prevalence: { abs: 6.7e-9 },
 	velocity: { abs: 1.05e-7 },
 	waves: { abs: 8.7e-8 },
-	loadings: { abs: 4.8e-6, rel: 1.29e-5 },
+	/** abs: darwin/x64 Rosetta 4.8e-6, linux/x64 5.020e-6; 1.5x the larger. rel is unmoved. */
+	loadings: { abs: 7.5e-6, rel: 1.29e-5 },
 	/** The reference against ITSELF, MPS vs CPU, over the same 4,384 rows. */
 	deviceSpread: { lrt: 6.4e-6, r2: 2.7e-7, energy: 5.6e-7, wave1Loading: 1.71e-4 },
 	sweeps: { ours: 32, disagreeing: 18, worstDistanceFromCut: 0.0392, withinOneDraw: 11 },
@@ -341,6 +361,34 @@ acceptance('the acceptance run, against `hyphaeon temporal`\'s own output', () =
 		const written = parseCsvText(temporalSitesCsvText(chain.record));
 		for (const name of ['peak_date', 't_half_start', 't_half_end', 'fwhm_years']) {
 			expect(csvColumn(written, name).join(','), name).toBe(csvColumn(chain.sites, name).join(','));
+		}
+	});
+
+	/**
+	 * THE GUARD ON THE GUARDS. `MEASURED` is a tripwire and `CLASS` is the gate, and widening a
+	 * tripwire is a legitimate thing to do when a second platform reports a wider spread — but only
+	 * up to the gate. Without this, a tripwire loosened once per platform eventually passes the
+	 * class it was meant to sit an order of magnitude beneath, and the file keeps asserting two
+	 * bounds while only one of them means anything. Every pair where both exist is checked; the
+	 * pairing is spelled out rather than derived, because a name that silently stops matching would
+	 * defeat the point.
+	 */
+	it('keeps every tripwire beneath the class it shadows', () => {
+		/** @type {[string, number, number][]} */
+		const pairs = [
+			['lrt abs', MEASURED.lrt.abs, CLASS.lrtAbs],
+			['lrt rel', MEASURED.lrt.rel, CLASS.lrtRel],
+			['p_static', MEASURED.p_static.abs, CLASS.pStatic],
+			['q_static', MEASURED.q_static.abs, CLASS.qStatic],
+			['r2_fpca', MEASURED.r2_fpca.abs, CLASS.r2],
+			['energy rel', MEASURED.energy.rel, CLASS.energyRel],
+			['prevalence', MEASURED.prevalence.abs, CLASS.prevalence],
+			['velocity', MEASURED.velocity.abs, CLASS.velocity],
+			['waves', MEASURED.waves.abs, CLASS.waves],
+			['loadings rel', MEASURED.loadings.rel, CLASS.loadingsRel]
+		];
+		for (const [name, measured, cls] of pairs) {
+			expect(measured, `${name}: the tripwire has been widened past the class it shadows`).toBeLessThan(cls);
 		}
 	});
 
