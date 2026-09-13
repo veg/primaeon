@@ -49,7 +49,7 @@
 	import { setHandoff, takeHandoff } from '$lib/handoff';
 	import { clockPreview } from '$lib/time/clock';
 	import { crossCheckSentence, datingView, figureModel, modeShiftSentence, modelOffer, predictionCaveat, taxonRows } from '$lib/time/dating';
-	import { DATING_CSV_NAME, DATING_DOWNLOAD_NOTE, DATING_JSON_NAME, datingCsv, datingJson } from '$lib/time/datingDownloads';
+	import { DATING_CSV_NAME, DATING_JSON_NAME, datingCsv, datingDownloadNote, datingJson } from '$lib/time/datingDownloads';
 	import DatingSection from '$lib/time/DatingSection.svelte';
 	import TaxonDatingTable from '$lib/time/TaxonDatingTable.svelte';
 	import { datingClient, datingModelClient, temporalClient, workersAvailable } from '$lib/workers/clients';
@@ -1046,7 +1046,7 @@
 				<button type="button" class="button button--secondary" onclick={downloadDatingCsv}>Dating (CSV)</button>
 				<button type="button" class="button button--secondary" onclick={downloadDatingJson}>Dating (JSON)</button>
 			</div>
-			<p class="hint downloads__note">{DATING_DOWNLOAD_NOTE}</p>
+			<p class="hint downloads__note">{datingDownloadNote(dating)}</p>
 		{:else}
 			<p class="note">
 				No estimate has been made yet. Section 3 starts one; this table is its per-sequence output —
@@ -1173,7 +1173,7 @@
 			model-averaged row reads a deliberately skewed interval as a symmetric Gaussian one
 			(<span class="mono">dating.py:2916</span>); the spline clock's own interval collapses to its
 			point estimate because its bootstrap raises on every replicate
-			(<span class="mono">dating.py:1917</span>); loading the model turns that same spline into a
+			(<span class="mono">dating.py:1912</span>); loading the model turns that same spline into a
 			generalised fit on divergences that did not move
 			(<span class="mono">dating.py:2844</span>); and the ridge the command line prints is not the
 			ridge the generalised fit used — a fit built from Pagel's λ* ignores the ridge argument

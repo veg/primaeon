@@ -34,6 +34,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { TEMPORAL_PERM_RATE, TEMPORAL_PERM_STAT_UNITS } from '@veg/hyphaeon-runtime/temporal';
+import { TEMPORAL_NULL_ASSUMPTION, TEMPORAL_THRESHOLDS } from '@veg/hyphaeon-runtime/temporal/codes';
 import {
 	borderlineBand,
 	callsAreFinal,
@@ -43,6 +44,7 @@ import {
 	costSentences,
 	duration,
 	honestyNotes,
+	TEMPORAL_MAX_SPECIES,
 	isBorderline,
 	ledeSentence,
 	modelSeconds,
@@ -620,6 +622,28 @@ describe('the running null — the state in which no count downstream of the shu
 		none.sites.is_confirmed_sweep = new Uint8Array(none.codons_total);
 		expect(velocityFigure(none).source).toBe('candidates');
 		expect(velocityFigure(demo()).source).toBe('sweeps');
+	});
+
+	it('says what the date-shuffling null assumes, first, and from the runtime (X1)', () => {
+		// The finding: three surfaces ran a null that treats the sequences as exchangeable and none of
+		// them said so anywhere. It leads the notes because it bounds the READING of every p below it.
+		const notes = honestyNotes(demo());
+		expect(notes[0].id).toBe('exchangeable');
+		expect(notes[0].lead).toBe(TEMPORAL_NULL_ASSUMPTION.lead);
+		expect(notes[0].rest).toBe(TEMPORAL_NULL_ASSUMPTION.rest);
+		expect(notes[0].rest).toMatch(/shared ancestry|descent/);
+		expect(notes[0].rest).toMatch(/anti-conservative/);
+		// It is the runtime's sentence, not a fourth copy of it.
+		expect(notes[0].rest).not.toBe('');
+		// A run whose null never drew has no p to over-read, so the note is not printed.
+		const nodraw = demo();
+		nodraw.permutations!.completed = 0;
+		expect(honestyNotes(nodraw).map((n) => n.id)).not.toContain('exchangeable');
+	});
+
+	it('takes the sequence cap from the runtime, so three surfaces cannot disagree (X3)', () => {
+		expect(TEMPORAL_MAX_SPECIES).toBe(TEMPORAL_THRESHOLDS.browserTaxonCap);
+		expect(TEMPORAL_MAX_SPECIES).toBe(256);
 	});
 
 	it('holds back the two notes that count codons against a threshold', () => {

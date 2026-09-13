@@ -29,6 +29,7 @@ import {
 	datingView,
 	estimatorRows,
 	figureModel,
+	headlineOf,
 	holdoutSentence,
 	intervalText,
 	isUnbounded,
@@ -121,7 +122,7 @@ describe('the interval, including the one that has no lower bound', () => {
 	});
 
 	it('calls a zero-width interval "not computed" rather than drawing it as an interval', () => {
-		// dating.py:1917's dead bootstrap: the spline's four intervals ARE their point estimates.
+		// dating.py:1912's dead bootstrap: the spline's four intervals ARE their point estimates.
 		expect(intervalText([1938.7746674292187, 1938.7746674292187], 'years')).toBe('not computed');
 	});
 });
@@ -379,5 +380,82 @@ describe('the cross-check that keeps the preview and the estimate from contradic
 	it('says nothing when either side has no estimate', () => {
 		expect(crossCheckSentence(NaN, 1901.2, 66.0, 'years')).toBeNull();
 		expect(crossCheckSentence(1893.9, NaN, 66.0, 'years')).toBeNull();
+	});
+});
+
+describe('phase 6 review: which date is quoted, and whether it may be quoted flatly', () => {
+	/** The reviewer's shape: a clock with no signal still produces a date and an interval. */
+	const noSignal = (): DatingResult =>
+		({
+			ok: true,
+			refusal: null,
+			warnings: [],
+			record: {
+				active_model: 'ols',
+				t_mrca: 1934.12,
+				ci_mrca: [-Infinity, 1972.26],
+				ci_method: 'fieller',
+				ols: {
+					t_mrca: 1934.12,
+					mu: 1.2e-5,
+					se_mu: 9e-6,
+					r2: 0.07,
+					p_value: 0.1036,
+					fieller_g: 1.474,
+					rmse: 1e-3,
+					ci_mrca: [-Infinity, 1972.26],
+					ci_fieller: [-Infinity, 1972.26],
+					n: 39
+				},
+				primaeon: { sequences_in_file: 40, dated: 39, train_count: 39 }
+			},
+			rows: [],
+			rootDescription: 'explicit_root_seq_0',
+			rootCase: 1
+		}) as unknown as DatingResult;
+
+	/** The flagship shape: the reference selects the spline, whose interval has zero width. */
+	const splineSelected = (): DatingResult =>
+		({
+			ok: true,
+			refusal: null,
+			warnings: [],
+			record: {
+				active_model: 'spline',
+				t_mrca: 1938.77,
+				ci_method: 'fieller',
+				ols: { t_mrca: 1893.91, mu: 1.169e-3, r2: 0.81, p_value: 1e-9, fieller_g: 0.09, rmse: 1e-3, ci_mrca: [1850.9, 1916.79], ci_fieller: [1850.9, 1916.79], n: 141 },
+				spline: { t_mrca: 1938.77, r2: 0.86, rate_ancestral: 2e-3, ci_mrca: [1938.77, 1938.77], n: 141 },
+				primaeon: { sequences_in_file: 143, dated: 142, train_count: 141 }
+			},
+			rows: [],
+			rootDescription: 'time_decay_consensus_root (γ=3.0030)',
+			rootCase: 4
+		}) as unknown as DatingResult;
+
+	it('X2: still refuses to headline a fit whose interval is a point estimate', () => {
+		const head = headlineOf(splineSelected())!;
+		expect(head.activeKey).toBe('spline');
+		expect(head.key).toBe('ols');
+		expect(head.departed).toBe(true);
+		// And the rule is the runtime's now, so the MCP and the server reach the same answer; the
+		// page's job is only to widen it into its own types.
+		expect(head.quotable).toBe(true);
+		expect(head.refutation).toBeNull();
+	});
+
+	it('X4: a clock with no signal is stated as a refuted number, not as a finding', () => {
+		const head = headlineOf(noSignal())!;
+		expect(head.quotable).toBe(false);
+		const text = verdictSentence(noSignal(), 'years');
+		// The refutation leads; the date follows it as a number rather than as a conclusion.
+		expect(text).toMatch(/^This date is not a finding\./);
+		expect(text).toMatch(/would place a common ancestor in 1934\.1/);
+		expect(text).not.toMatch(/These 39 sequences.*share a common ancestor/);
+		// The date is still there — the reference prints it and refusing would be a divergence.
+		expect(text).toContain('1934.1');
+		expect(text).toContain('R² 0.070');
+		// And a fit that DOES have signal reads exactly as it did before.
+		expect(verdictSentence(splineSelected(), 'years')).toMatch(/^These 141 sequences/);
 	});
 });

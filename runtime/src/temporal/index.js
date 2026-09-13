@@ -22,6 +22,7 @@ export {
 	TEMPORAL_REFUSALS,
 	TEMPORAL_THRESHOLDS,
 	TEMPORAL_MESSAGES,
+	TEMPORAL_NULL_ASSUMPTION,
 	TEMPORAL_REFERENCE_RULES,
 	TEMPORAL_BEYOND_REFERENCE_RULES,
 	temporalWarning,
@@ -43,6 +44,16 @@ export {
 	runTemporalNull
 } from './null.js';
 
+export {
+	TEMPORAL_TAXON_CAPS,
+	TEMPORAL_TAXON_CEILING,
+	TEMPORAL_TAXON_COST,
+	temporalInferSeconds,
+	temporalScaleNote,
+	temporalTaxonCap,
+	temporalTaxonPlan
+} from './caps.js';
+
 export { TEMPORAL_SITE_COLUMNS, temporalRecord, siteRow, candidateSiteIndices } from './record.js';
 
 export {
@@ -57,6 +68,7 @@ export {
 	temporalSummaryJsonText,
 	temporalReferenceCommand,
 	temporalDownloadNotes,
+	temporalPPermNote,
 	temporalDownloads
 } from './results.js';
 

@@ -65,9 +65,13 @@ import {
 	TAXON_COLUMNS,
 	admitEnsembleCandidates,
 	coverageHoldout,
+	datingClockSignal,
 	datingCsvText,
+	datingDownloadNotes,
+	datingHeadline,
 	datingJsonText,
 	datingDownloads,
+	datingReferenceCommand,
 	datingTaxonRecords,
 	rankTaxonRows,
 	runDating,
@@ -819,5 +823,99 @@ suite('the import boundary that makes "no model on this page" a fact', () => {
 		// It computes its own arithmetic: no import at all, from the library or from this port.
 		expect([...src.matchAll(/^import\b/gm)]).toEqual([]);
 		expect(src).not.toContain('runOlsDating(');
+	});
+});
+
+// =================================================================================================
+// Phase 6's review: which ancestor date may be quoted, and what has to be said when the clock has
+// no signal. X2 and X4.
+// =================================================================================================
+
+/**
+ * The reviewer's own shape, as a bare record rather than a run: 40 pseudorandom coding sequences
+ * gave `t_mrca` with a half-infinite interval, R² 0.07 and slope p 0.10, and the section still
+ * stated the date. Built here so the assertion is about the RULE and not about a PRNG.
+ */
+const NO_SIGNAL = Object.freeze({
+	active_model: 'ols',
+	t_mrca: 1934.12,
+	ci_mrca: [-Infinity, 1972.26],
+	ci_method: 'fieller',
+	ols: {
+		t_mrca: 1934.12,
+		mu: 1.2e-5,
+		r2: 0.07,
+		p_value: 0.1036,
+		fieller_g: 1.474,
+		ci_mrca: [-Infinity, 1972.26],
+		ci_fieller: [-Infinity, 1972.26],
+		n: 39,
+		status: 'OK'
+	}
+});
+
+/** The flagship shape: the reference selects the spline and the spline has no interval at all. */
+const SPLINE_SELECTED = Object.freeze({
+	active_model: 'spline',
+	t_mrca: 1938.77,
+	ci_method: 'fieller',
+	ols: { t_mrca: 1893.91, r2: 0.81, p_value: 1e-9, fieller_g: 0.09, ci_mrca: [1850.9, 1916.79], n: 141 },
+	spline: { t_mrca: 1938.77, r2: 0.86, ci_mrca: [1938.77, 1938.77], n: 141 }
+});
+
+describe('the review findings this phase closed', () => {
+	it('X2: quotes `active_model` unless its interval is a point estimate, for every surface', () => {
+		const head = datingHeadline(SPLINE_SELECTED);
+		// The browser's rule, now the runtime's: the spline is selected and is refused, because a
+		// zero-width 95 % interval is not an interval. The MCP and the server read the same answer.
+		expect(head.activeKey).toBe('spline');
+		expect(head.key).toBe('ols');
+		expect(head.departed).toBe(true);
+		expect(head.quotable).toBe(true);
+		// And it is NOT "always OLS": a selected fit with a real interval is quoted, and then the
+		// surface agrees with the command line's own top-level `t_mrca`.
+		const pgls = { ...SPLINE_SELECTED, active_model: 'pgls', pgls: { t_mrca: 1841.61, ci_mrca: [1790.1, 1880.4], n: 141 } };
+		const p = datingHeadline(pgls);
+		expect(p.key).toBe('pgls');
+		expect(p.departed).toBe(false);
+		// A departure is a fact a reader diffing the two files needs, so the reproduction line says it.
+		const caveats = datingReferenceCommand({ record: SPLINE_SELECTED, distanceMode: 'tn93' }).caveats.join(' ');
+		expect(caveats).toMatch(/top-level `t_mrca` is spline's/);
+		expect(datingDownloadNotes({ record: SPLINE_SELECTED }).join(' ')).toMatch(/is not the date this application quotes/);
+	});
+
+	it('X4: a fit with no clock signal states the date with its own refutation attached', () => {
+		const signal = datingClockSignal(NO_SIGNAL);
+		expect(signal.hasSignal).toBe(false);
+		expect(signal.p).toBeCloseTo(0.1036, 6);
+		// The date is still there — refusing would diverge from `hyphaeon dating`, which prints it.
+		const head = datingHeadline(NO_SIGNAL);
+		expect(head.key).toBe('ols');
+		expect(Number(head.model.t_mrca)).toBeCloseTo(1934.12, 6);
+		// What changed is that it may not be stated flatly.
+		expect(head.quotable).toBe(false);
+		expect(head.refutation).toMatch(/not a finding/);
+		expect(head.refutation).toMatch(/p = 0.104/);
+		expect(head.refutation).toMatch(/R² 0.070/);
+		expect(head.refutation).toMatch(/arbitrarily old/);
+		// A fit that DOES have signal says nothing extra.
+		expect(datingHeadline(SPLINE_SELECTED).refutation).toBeNull();
+		// And the code exists at all, which it did not before: `DATING_UNBOUNDED_ANTIQUITY` reports
+		// the shape of an interval and never the state of the regression.
+		expect(DATING_DIAGNOSTIC_CODES).toContain('DATING_NO_CLOCK_SIGNAL');
+		expect(DATING_DIAGNOSTIC_CODES.indexOf('DATING_NO_CLOCK_SIGNAL')).toBeLessThan(
+			DATING_DIAGNOSTIC_CODES.indexOf('DATING_UNBOUNDED_ANTIQUITY')
+		);
+	});
+
+	it('X4: the slope test and Fieller\'s g are the same statement, so they never disagree', () => {
+		// `g >= 1` iff `|mu|/se_mu <= t` iff the F on 1 and n-2 d.f. is not significant at 0.05.
+		// The warning tests `p_value` because `g` exists only under `--ci-method fieller`; where both
+		// exist they must agree, and a record where they did not would mean one of them is misread.
+		for (const rec of [NO_SIGNAL, SPLINE_SELECTED]) {
+			const s = datingClockSignal(rec);
+			if (s.g == null) continue;
+			expect(s.hasSignal, `g ${s.g} against p ${s.p}`).toBe(s.g < 1);
+		}
 	});
 });

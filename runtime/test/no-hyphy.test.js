@@ -97,7 +97,12 @@ describe('HyPhy is not in this package', () => {
 		// temporal-selection pillar, and it is a subpath for IMPORT TIDINESS ONLY: unlike './dates'
 		// and './dating' it is not model-free — its first step is a forward pass over every codon —
 		// so there is deliberately no import-boundary assertion behind it, and a reader must not
-		// infer one from the symmetry of this list.
+		// infer one from the symmetry of this list. './temporal/codes' is the ONE part of that pillar
+		// that IS model-free — `src/temporal/codes.js` imports nothing but the date layer's own
+		// import-free `codes.js` — and it is a subpath because the `/time` page renders the pillar's
+		// vocabulary (the null's stated assumption, the browser's taxon cap) in copy the reader sees
+		// before any button is pressed, and importing './temporal' to read a sentence would pull
+		// `predict.js`, the library and onnxruntime into the route's initial bundle.
 		expect(Object.keys(pkg.exports)).toEqual([
 			'.',
 			'./web',
@@ -107,6 +112,7 @@ describe('HyPhy is not in this package', () => {
 			'./dating/neural',
 			'./clock',
 			'./temporal',
+			'./temporal/codes',
 			'./prescreen',
 			'./prescreen/scope',
 			'./package.json',

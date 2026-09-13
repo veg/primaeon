@@ -2,7 +2,7 @@
   "name": "@veg/hyphaeon-server",
   "private": true,
   "version": "0.1.0",
-  "description": "HyphAeon Node server: REST job API (PLAN.md 3.5) and the streamable-HTTP MCP mount behind the auto-approving OAuth ceremony (PLAN.md 3.6), over @veg/hyphaeon-runtime under onnxruntime-node.",
+  "description": "HyphAeon Node server: REST job API (PLAN.md 3.5) for every pillar — site selection, omnibus, epistasis, digital DMS, phenotype association, the date review, the molecular clock and temporal selection — and the streamable-HTTP MCP mount behind the auto-approving OAuth ceremony (PLAN.md 3.6), over @veg/hyphaeon-runtime under onnxruntime-node.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -28,7 +28,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@veg/hyphaeon-js": "1.0.0",
-    "@veg/hyphaeon-mcp": "0.4.0",
+    "@veg/hyphaeon-mcp": "0.5.0",
     "@veg/hyphaeon-runtime": "0.0.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",

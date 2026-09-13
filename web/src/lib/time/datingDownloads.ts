@@ -34,7 +34,13 @@
  * made at this call site and stated in the note.
  */
 
-import { datingCsvText, datingJsonText, TAXON_COLUMNS } from '@veg/hyphaeon-runtime/dating';
+import {
+	datingCsvText,
+	datingDownloadNotes,
+	datingJsonText,
+	datingReferenceCommand,
+	TAXON_COLUMNS
+} from '@veg/hyphaeon-runtime/dating';
 import type { DatingResult, TaxonDatingRow } from './types';
 
 /** The reference's ten `taxa_summary` columns, in its order. The eleventh is ours. */
@@ -54,11 +60,43 @@ export function datingCsv(rows: readonly TaxonDatingRow[]): string {
 	return datingCsvText(rows as TaxonDatingRow[], { predictionMethod: true });
 }
 
-/** The sentence under the two buttons. One clause per convention, because they differ. */
-export const DATING_DOWNLOAD_NOTE =
-	`Both files reproduce ${'hyphaeon dating'}'s own outputs: the JSON carries the reference's top-level keys in its ` +
-	`order, with the estimators this build does not run left null, and the CSV carries the ten ${'taxa_summary'} ` +
-	`columns under the reference's own header names. Each adds one thing the reference has no place for — a ` +
-	`${'primaeon'} block naming the alignment, the options and the sequences you excluded, and a ` +
-	`${'prediction_method'} column saying which model produced each predicted date. The CSV is in ALIGNMENT order, ` +
-	`so it diffs against a command-line run; the dates CSV in section 6 is in the order you are reading it.`;
+/**
+ * The sentence under the two buttons, BUILT FROM THE RUN rather than written once.
+ *
+ * WHY IT CHANGED. The constant this replaces opened "Both files reproduce `hyphaeon dating`'s own
+ * outputs" and closed "The CSV is in ALIGNMENT order, so it diffs against a command-line run",
+ * unconditionally — while the MCP, on the same run, was answering `reproduces: false`, most often
+ * because this build's date layer reads headers the reference's parser cannot and the two runs are
+ * therefore not over the same sequences at all. Phase 5 fixed exactly this sentence for the
+ * temporal pillar (`temporalReferenceCommand`); this is that fix. The runtime had no
+ * `datingReferenceCommand` at all, which is why the claim had to be hard-coded here in the first
+ * place, so the function now lives beside `temporalReferenceCommand` in
+ * `runtime/src/dating/results.js` and both this page and the MCP call it.
+ *
+ * The notes themselves are `datingDownloadNotes(run, options)` — the same options this file passes
+ * to the writers, so the note describes the files the reader will actually get rather than the
+ * runtime's defaults — and the reproduction clause is appended only when `reproduces` is true.
+ */
+export function datingDownloadNote(run: DatingResult | null): string {
+	const written = { includeProvenance: true, predictionMethod: true };
+	const notes = run ? (datingDownloadNotes(run as never, written) as string[]) : [];
+	if (!run) {
+		return (
+			`${DATING_JSON_NAME} carries \`hyphaeon dating -o out.json\`'s own top-level keys in its order and ` +
+			`${DATING_CSV_NAME} carries the ten \`taxa_summary\` columns under the reference's own header names, in ` +
+			`ALIGNMENT order — the opposite convention to the dates CSV in section 6, which is in the order you are ` +
+			`reading it.`
+		);
+	}
+	const { reproduces, caveats } = datingReferenceCommand(run as never, {}, {}) as {
+		reproduces: boolean;
+		caveats: string[];
+	};
+	notes.push(
+		reproduces
+			? 'Run the command this section prints and a command-line run produces the same numbers, so these files ' +
+				'diff against it once the two added keys are dropped.'
+			: `These files do NOT reproduce a command-line run as they stand: ${caveats[1] ?? caveats[0]}`
+	);
+	return notes.join(' ');
+}

@@ -150,7 +150,7 @@ export interface TimeSetOptions {
  * `prediction_method` column.
  *
  * THERE IS NO BOOTSTRAP FIELD AND THERE IS NO SEED. This pillar draws no random numbers at all:
- * the reference's spline bootstrap raises on every replicate upstream (`dating.py:1917` passes
+ * the reference's spline bootstrap raises on every replicate upstream (`dating.py:1912` passes
  * numpy's `rcond=` to `scipy.linalg.lstsq`), and the three interval methods that would need a
  * generator are not ported. Adding a `bootstrap` option would advertise something the build does
  * not do.

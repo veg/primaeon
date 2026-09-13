@@ -57,6 +57,7 @@ export const TEMPORAL_DIAGNOSTIC_CODES = Object.freeze([
 	'TEMPORAL_TAU_PEAK_OVERRIDDEN',
 	'TEMPORAL_STATIC_NONE_SIGNIFICANT',
 	'TEMPORAL_NO_CANDIDATES',
+	'TEMPORAL_NULL_ASSUMES_EXCHANGEABLE',
 	'TEMPORAL_NULL_SKIPPED',
 	'TEMPORAL_NULL_TRUNCATED',
 	'TEMPORAL_Q_PERM_UNREACHABLE',
@@ -126,6 +127,15 @@ export const TEMPORAL_THRESHOLDS = Object.freeze({
 	permutationsDefault: 200,
 	/** `TEMPORAL_PERM_B_MIN`: the count below which the answer is not worth showing. See above. */
 	permutationsMin: 200,
+	/**
+	 * The `maxSpecies` the BROWSER runs this pillar at — the report's own `default_taxon_cap`
+	 * (`REPORT_DEFAULTS.maxSpecies`, `analyze.js`, and the manifest's own figure). It is a browser
+	 * number and not a pillar number: the MCP and the server apply no cap at all, which is the
+	 * reference's own `-s` default. `caps.js` holds the whole policy, per surface, with what each
+	 * choice was measured to cost; this constant lives here so a surface that only wants the number
+	 * can read it without importing anything that loads a graph.
+	 */
+	browserTaxonCap: 256,
 	/** temporal.py:719, `K`. */
 	waveCount: 4,
 	/** temporal.py:531, and the cut both classification columns read. */
@@ -180,6 +190,60 @@ export const TEMPORAL_BEYOND_REFERENCE_RULES = Object.freeze([
 	'dpi',
 	'flexible_numeric'
 ]);
+
+/**
+ * WHAT THE DATE-SHUFFLING NULL ASSUMES, in one place, because it is the assumption this pillar's
+ * whole second stage rests on and the reference states it nowhere.
+ *
+ * WHAT IS PERMUTED, read off the reference rather than described. `temporal.py:657-661` is four
+ * lines: `p_idx = rng.permutation(N)`, `W_p = norm_weights[:, p_idx]`, `c_p = cand_attrs @ W_p.T`,
+ * `v_p = _perm_stat(c_p)`. `norm_weights` is the `[T, N]` Nadaraya-Watson kernel — grid point `t`
+ * against sequence `n`'s SAMPLING DATE (temporal.py:547) — and permuting its columns reassigns the
+ * dates across the sequences. `cand_attrs`, the `[C, N]` directional attribution, is never touched.
+ * So the null holds each sequence's attribution fixed and asks how often a random re-dating of the
+ * same sequences produces as strong a trajectory.
+ *
+ * WHICH HYPOTHESIS THAT TESTS, exactly: that a sequence's attribution at this codon is independent
+ * of WHEN it was sampled, with the sequences treated as exchangeable draws.
+ *
+ * WHAT IT THEREFORE DOES NOT CONTROL FOR. Sequences related by descent are not exchangeable. A
+ * derived residue that arose ONCE on an internal branch is carried by every descendant of that
+ * branch, so if the clade carrying it is also sampled inside one window - the ordinary case in a
+ * surveillance set, not the exception - the trajectory rises with time from a SINGLE evolutionary
+ * event, and the shuffle, which breaks the date-to-clade association, counts that one event as N
+ * independent observations. Where phylogeny and sampling date are confounded the effective sample
+ * size is the number of independent ORIGINS of the substitution rather than the number of sequences
+ * carrying it, and `p_perm` is anti-conservative by however much those two differ. Nothing in this
+ * pillar corrects for it: there is no phylogenetic null here, and none is offered.
+ *
+ * WHAT MAY STILL BE SAID, which is why this is a caveat and not a refusal. The test is a valid test
+ * of the hypothesis it states; the reading it supports is "this codon's trajectory is not what
+ * shuffled dates produce on these sequences", and the reading it does not support is "this codon
+ * swept independently of ancestry". The reference behaves identically and this port replicates it;
+ * the difference is that here it is written down.
+ *
+ * IT IS TWO STRINGS rather than one so a surface can render it as a lead and a body - the shape the
+ * `/time` page's honesty notes already use - and join them with a space when it wants a paragraph.
+ * `TEMPORAL_MESSAGES.NULL_ASSUMES_EXCHANGEABLE` is that join, for the warning list.
+ */
+export const TEMPORAL_NULL_ASSUMPTION = Object.freeze({
+	lead: 'The null shuffles sampling dates across sequences, which treats them as exchangeable.',
+	rest:
+		'Significance here is estimated by permuting the sampling dates over the sequences and re-smoothing ' +
+		'each candidate against the permuted axis (temporal.py:657-661); the attribution values themselves ' +
+		'never move. That tests one hypothesis - that a sequence\'s attribution at this codon is independent ' +
+		'of when it was sampled - and it treats the sequences as exchangeable, which sequences related by ' +
+		'descent are not. A derived residue that arose ONCE on an internal branch is carried by every ' +
+		'descendant of it, so a clade that is also sampled inside one window gives a trajectory that rises ' +
+		'with time from a single evolutionary event, and the shuffle counts that one event as if it were as ' +
+		'many independent observations as there are sequences carrying it. Where phylogeny and sampling date ' +
+		'are confounded - the ordinary case in a surveillance set - the effective sample size is the number ' +
+		'of independent ORIGINS of a substitution, not the number of sequences, and the permutation p-value ' +
+		'is anti-conservative by that much. No phylogenetic null is computed here and none is available: ' +
+		'read a confirmed sweep as "this trajectory is not what shuffled dates produce on these sequences", ' +
+		'not as "this codon swept independently of ancestry". `hyphaeon temporal` does exactly the same ' +
+		'thing and says none of this; the test is not changed here, only stated.'
+});
 
 /** The messages, with `{placeholders}` `fillMessage` substitutes. */
 export const TEMPORAL_MESSAGES = Object.freeze({
@@ -249,6 +313,8 @@ export const TEMPORAL_MESSAGES = Object.freeze({
 	NO_CANDIDATES:
 		'No codon passed the sweep-energy floor (peak >= {tauPeak}, area >= {tauAuc}), so there was ' +
 		'nothing to test and the null was not run. Every codon is either invariable or flat.',
+	/** `TEMPORAL_NULL_ASSUMPTION`'s two halves joined; see that constant for the whole argument. */
+	NULL_ASSUMES_EXCHANGEABLE: `${TEMPORAL_NULL_ASSUMPTION.lead} ${TEMPORAL_NULL_ASSUMPTION.rest}`,
 	NULL_SKIPPED:
 		'Testing {C} candidate codon(s) against {B} shuffled date sets over {N} dated sequences and ' +
 		'{T} grid points is about {work} units of work, above this surface\'s budget of {budget}. ' +

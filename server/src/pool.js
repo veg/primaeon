@@ -30,6 +30,7 @@ const WORKER_URL = new URL("./worker.js", import.meta.url);
  * @param {number} [opts.size]           workers, default 1
  * @param {object} [opts.env]            environment for the workers (HYPHAEON_MODELS_DIR, ...)
  * @param {number} [opts.threads]        ORT threads per worker
+ * @param {number} [opts.temporalPermBudget}  work cap on the temporal null (src/config.js)
  * @param {number} [opts.cancelGraceMs]  default 5000
  * @param {object} [opts.logger]
  */
@@ -46,7 +47,7 @@ export function createPool(opts = {}) {
 
   function spawn() {
     const w = {
-      worker: new Worker(WORKER_URL, { workerData: { env: opts.env || {}, threads: opts.threads } }),
+      worker: new Worker(WORKER_URL, { workerData: { env: opts.env || {}, threads: opts.threads, temporalPermBudget: opts.temporalPermBudget } }),
       ready: false,
       task: null
     };

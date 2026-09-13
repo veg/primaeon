@@ -89,6 +89,9 @@ cannot support.
 | `hyphaeon_epistasis` | in-process (runtime `runEpistasis`: attributions, cosine network, sectors with the permutation null, sector-site DMS) | `mcp-stdio` / `mcp-http` |
 | `hyphaeon_dms` | in-process (runtime `runDms`: 19 substitutions per site, progressive) | `mcp-stdio` / `mcp-http` |
 | `hyphaeon_phenotype` | in-process (runtime `runPhenotype` over the library's `phenotype.py` port) | `mcp-stdio` / `mcp-http` |
+| `hyphaeon_dates` | in-process, **no model**: the runtime's `./dates` subtree, which imports no manifest, no session and no `predict.js` (measured: 93 ms of import, zero onnxruntime modules loaded) | — |
+| `hyphaeon_dating` | in-process; **no model unless `use_model`**, which loads the second artifact `<variant>_taxa.onnx` (runtime `runDatingModelPass` + `runDating`) | `mcp-stdio` / `mcp-http` |
+| `hyphaeon_temporal` | in-process (runtime `runTemporal` over the library's `temporal.py` port) | `mcp-stdio` / `mcp-http` |
 | `hyphaeon_evaluate` | in-process (runtime `runEvaluate` over the library's `evaluation.py` port) | `mcp-stdio` / `mcp-http` |
 | `job_status`, `get_results`, `cancel_job`, `list_models` | — | — |
 
@@ -140,24 +143,76 @@ allowance):
 
 | Tool | What it does | Runs the model |
 |---|---|---|
-| `hyphaeon_validate` | The library's "Before you run" diagnostics (format, alphabet, frame, stops, unknown codons, duplicates, three-tier tree/alignment name matching, the tree decision, negative lengths, the `> 10` patristic rescale, TN93 saturation, depth regime, cost) plus this server's caps and run mode; `analysis: "analyze"` sizes the whole report. Returns `{ok, warnings:[{code, severity, message, data}], summary}` | no |
+| `hyphaeon_validate` | The library's "Before you run" diagnostics (format, alphabet, frame, stops, unknown codons, duplicates, three-tier tree/alignment name matching, the tree decision, negative lengths, the `> 10` patristic rescale, TN93 saturation, depth regime, cost) plus this server's caps and run mode; `analysis: "analyze"` sizes the whole report, and `analysis: "dates" / "dating" / "temporal"` **also reads the dates** with the same arguments and the same gates the run will apply. Returns `{ok, warnings:[{code, severity, message, data}], summary}` | no |
 | `hyphaeon_analyze` | The whole report (above): `variant`, `max_species`, `reference_sequence`, `call_mode`, `seed`, `permutations`, `dms`, `dms_work_budget`, `use_tn93`, `phenotype`, `phenotype_file`, `wait_seconds`, `section` | yes |
 | `hyphaeon_meme` | Per-site LRT, MEME mixture p, BH q, invariable flag, the app's rank columns (`zScore`, `percentile`, `call`); `filter`, `attribute`, `model_variant`, `max_species` | yes |
 | `hyphaeon_busted` | ACAT / Simes combination, omnibus LRT, total selection energy, neural BUSTED head (selection probability, gene LRT, omega classes, SRV) | yes |
 | `hyphaeon_epistasis` | Co-selection network (cosine, Student-t p, BH q, CESI), sectors with spectral coherence and the seeded permutation null, the sector-site DMS unless `no_dms`; `seed`, `n_permutations`, the CLI's thresholds | yes |
 | `hyphaeon_dms` | 19-substitution digital DMS per site with intrinsic plasticity; `focal_taxon`; app-side `sites` sweeps a subset | yes |
 | `hyphaeon_phenotype` | Directional trait association per site (foreground vs background attention, rho, t-test p, ACAT with the site LRT, BH q), a PARS signature, trait co-selection pairs, trait sectors, and — with `permulations` > 0 and a tree — a gene-level Brownian-motion permulation p. Trait: `preset`, `foreground`, or `phenotype_file` (the CSV/TSV **text**) | yes |
+| `hyphaeon_dates` | The date review stage as data: a sampling date per sequence from the FASTA headers, a Nextstrain Auspice JSON, a name-to-date JSON object, a CSV/TSV table or a pattern you supply, with **which rule dated each sequence**, what did not match, what was imputed, the seven-tier name ladder's counts, and whether the set carries a clock at all. Also reports the two gates the two pillars below refuse on. Runs no model; milliseconds | no |
+| `hyphaeon_dating` | The molecular clock: root-to-tip regression, rate `mu`, `t_mrca` with a Fieller / delta / linear interval, a restricted-cubic-spline alternative adjudicated against the line, an ensemble, and a per-taxon table of divergences, predicted dates, residuals, z-scores and outliers. **Model-free by default** and takes no tree (D34); `use_model: true` is a *different* estimator, not a better one | only with `use_model` |
+| `hyphaeon_temporal` | Per-site selection trajectories through calendar time: prevalence and sweep velocity over a dense grid, peak date and intensity, half-rise / half-fall, FWHM, area; a two-stage filter (energy floor, then a date-shuffling permutation null with BH q); an fPCA decomposition into four wave modes; a four-way classification against the static call. **Always a job**, and the record is read one `section` at a time | yes |
 | `hyphaeon_evaluate` | Concordance of a `hyphaeon meme` CSV with a HyPhy MEME JSON | no |
-| `job_status` | Status of a queued job, with the latest progress phase and, for a running report, `sections_ready` | — |
-| `get_results` | Result of a completed job, with `fields`, `top`, `summary_only`, and `section` for reports (also while running, for final sections) | — |
-| `cancel_job` | Cancel a queued or running job | — |
+| `job_status` | Status of a queued job, with the latest progress phase and, for a running report, `sections_ready`; for a cancelled job, whether a partial record survived (`partial_result`) or may still arrive (`result_pending`) | — |
+| `get_results` | Result of a completed job — or of a STOPPED one, labelled `status: "cancelled"`, `partial_result: true` with the draw count it reached — with `fields`, `top`, `summary_only`, and `section` for reports (also while running, for final sections) and for temporal records | — |
+| `cancel_job` | Cancel a queued or running job. A `hyphaeon_temporal` run KEEPS what it had finished (the runtime classifies at the achieved draw count); a report keeps nothing | — |
 | `list_models` | The manifest read through the runtime (variants, hashes, graph paths), and the engine's status: models directory, onnxruntime-node, MDS convention, and which runtime entry points are present | — |
 
 Per-pillar analysis inputs mirror the CLI options one-to-one (`--filter` -> `filter`,
 `--n-permutations` -> `n_permutations`, `--permulations` -> `permulations`, `--seed` -> `seed`,
 `--use-tn93` -> `use_tn93`, `--mds-sign` -> `mds_sign`, and so on). Over stdio, `alignment`,
-`tree`, `phenotype_file`, `prediction` and `meme_result` also accept a `file://` URL (the file's
-basename becomes the document's label). Every analysis tool and `get_results` accept `fields`
+`tree`, `phenotype_file`, `dates_file`, `prediction` and `meme_result` also accept a `file://` URL
+(the file's basename becomes the document's label).
+
+### The time pillars
+
+Call `hyphaeon_dates` first. It runs no model, costs milliseconds, and is the only place that says
+which sequences carry a date and by what rule — which is the difference between an analysis of your
+dataset and an analysis of a subset of it (measured on the bundled examples: H1N1 dates 95 of 100
+from its headers, korber 142 of 143, H5N1 98 of 98).
+
+`hyphaeon_dating` and `hyphaeon_temporal` **refuse two date sets the browser asks a human about**,
+because a tool call has nobody to ask and must never pick the interpretation that produces the
+prettier answer:
+
+- `DATES_BARE_NUMBER_MAJORITY` — half or more of the dates were read as a bare number in the
+  sequence name, a rule that claims any number it finds. Measured on the bundled H1N1 set: with the
+  units inferred, 95 of 100 sequences date by the decimal-year rule over 2009.25–2009.91; forced to
+  `time_units: "generations"`, 100 of 100 date and the axis runs **from 1 to 46,241,654**, with no
+  error anywhere. Override with `accept_bare_numbers: true`, which is recorded in provenance.
+- `DATES_UNDATED_PRESENT` — some sequences carry no date and would be dropped silently. Override
+  with `drop_undated: true`, also recorded.
+
+Both pillars carry a `{command, reproduces, caveats}` **object** as `provenance.reference_command`
+rather than the argv array the other six carry, because neither can promise a reproduction:
+`hyphaeon temporal` draws its null from numpy's MT19937 where this build draws from xoshiro256**
+per-draw substreams (D17), and this build's date layer is the union of all three upstream parsers
+and reads headers `hyphaeon dating` cannot. `reproduces` is false on every temporal run whose null
+drew at all, and the caveats name why.
+
+A temporal record is **never returned inline** — measured at 2.1 MB on the 98 × 566 H5N1 example at
+the reference's own `--time-points 250`, and 7.2 MB on the engine's 4,384-codon acceptance run, of
+which the trajectory store alone is 92%. The tool waits inside the call and answers with the
+summary plus a `job_id`; `get_results section=<summary|sites|curves|waves|permutations|dates|candidates|warnings|honesty|provenance>`
+pages the rest, and **every section carries the `honesty` block**: `null_state`
+(`not-started | running | finished | stopped`), whether the calls are final, why nothing is called
+when nothing is, the note that `p_perm` is 1.0 at every codon that never reached stage two (the
+reference's own fill, temporal.py:620-621, not a measurement), and the set the wave variance shares
+are conditioned on, and — on a run stopped by `cancel_job` — `null_truncated` with the draw count
+the null actually reached.
+
+Two replies that are not the analysis, and say so. A call that has not finished inside
+`wait_seconds` answers with `shape: "pending"` — the job id, the status, `sections_ready: []` and a
+`next` naming `job_status`, the only call that can work before the run ends, because every call,
+count and wave mode is computed after the null. And `cancel_job` on a temporal run does not throw
+the run away: `runTemporalNull` catches its own abort, classifies at the draws it finished and
+returns a complete record, so `get_results` serves it as a PARTIAL run — measured on the H5N1
+example, a run stopped 1.5 s into a 10,000-draw null kept 4,364 draws, 168 candidates and 16
+confirmed sweeps, with the p-grid it bought (2.29e-4) printed beside them. A cancel that arrives
+before the first chunk keeps nothing, and says that instead.
+
+Every analysis tool and `get_results` accept `fields`
 (top-level keys to keep), `top` (keep the N best records of each ranked collection) and
 `summary_only` (counts plus a per-pillar summary).
 
@@ -273,6 +328,33 @@ the contract for the web app's diagnostics panel and the Node server's `/validat
 
 - The neural BUSTED head is one seeded draw of a head the reference loads unseeded; only the
   statistical fields of `hyphaeon_busted` are reproducible upstream.
+- Neither time pillar has a comparator in `scripts/parity.py`. The acceptance evidence is
+  `runtime/test/temporal-port.test.js` (against `fixtures/temporal/acceptance/`) and
+  `runtime/test/dating-port.test.js`; `test/temporal.test.js` and `test/dating.test.js` here pin the
+  SURFACE — the size rule, the sections, the null's four states, the refusals — not the numbers.
+- `DATES_BARE_NUMBER_MAJORITY` and `DATES_UNDATED_PRESENT` are this surface's codes, not the
+  runtime's. They belong in `runtime/src/dates/codes.js` beside the other thirty-one, so all three
+  surfaces read one threshold and the browser renders the refusal instead of computing it; Phase 6's
+  MCP work did not touch `runtime/src/`. `src/time.js`'s header carries the duplication and the
+  reason.
+- `datingReferenceCommand` HAS MOVED to `runtime/src/dating/results.js` beside
+  `temporalReferenceCommand`, where phase 6's report said it belonged; `src/time.js` re-exports it
+  and holds no copy. It came back with two caveats the MCP's copy never had, both about which date
+  a surface may quote — see `datingHeadline` below.
+- `headline` is on `honesty` and on `summary` of every dating result: `datingHeadline`
+  (`runtime/src/dating/headline.js`) is the `/time` route's own rule, and it refuses to headline a
+  fit whose `ci_mrca` is a point estimate `[x, x]` (every spline fit, because the spline's bootstrap
+  never runs upstream) and attaches a refutation to a clock whose slope is not distinguishable from
+  zero. `record.t_mrca` and `summary.t_mrca` are still `active_model`'s and are never hidden; a
+  client that prints either one flat is doing what the browser deliberately does not.
+- `DATING_MODEL_TOO_MANY_TAXA` (the runtime's refusal above 1,500 sequences for the model-based
+  estimators) is unreachable through this server: `MAX_TAXA` is 1,000, so no admitted submission can
+  reach the pillar's own ceiling. The mapping exists and is correct; the caps make it moot.
+- BEAST XML is refused (`DATES_BEAST_XML_UNSUPPORTED`); the reference reads one (dating.py:433-434).
+- `hyphaeon dating`'s `--clock-model power`, `--loocv`, `--bootstrap` and its `poisson`,
+  `residual-boot`, `site-boot` and `jackknife` interval methods are not ported and are refused by
+  the schema rather than silently answered with a substitute. `record.primaeon.estimators_not_built`
+  names each one and why.
 - `--mds-sign lapack` cannot run in-process (the library computes the canonical convention only);
   use the Python reference for pre-convention numbers.
 - `p_perm` at the report's default B = 1,000 is a noisy estimate on every surface; the parity

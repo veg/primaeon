@@ -166,6 +166,43 @@ describe("job manager", () => {
     expect(m.stats().counts.failed).toBe(1);
   });
 
+  it("keeps a temporal job's date metadata on disk so a restarted client can resubmit it", async () => {
+    // PHASE 6. The restart path fails what it cannot resume and tells the client to submit again —
+    // which is only a usable instruction if everything the client sent is still there. The date
+    // metadata is a second document the caller may no longer have to hand, so it is written into
+    // the job directory as submitted, like the alignment and the tree, and recorded in
+    // `inputs.files`. `dates.txt`, not `.csv` or `.json`: it may honestly be any of the three.
+    const config = testConfig({ jobTtlMs: 60_000 });
+    cleanups.push(async () => config.cleanup());
+    const first = createJobManager({ config, pool: fakePool("hang"), logger: silentLogger });
+    const job = first.create({
+      analysis: "temporal",
+      alignment: ">a\nATG\n",
+      tree: "(a,b);",
+      dates_file: "strain,date\na,2001-01-01\n",
+      names: { alignment: "aln.fasta", dates_file: "meta.csv" }
+    });
+    expect(job.inputs.files).toMatchObject({ alignment: "alignment.fasta", tree: "tree.nwk", dates_file: "dates.txt" });
+    // A temporal job publishes the two live sections and nothing else; `dates` and `dating`
+    // publish none at all, which is why the field is absent rather than empty on those.
+    expect(job.sections).toEqual({ summary: "pending", permutations: "pending" });
+    const dir = path.join(config.jobsDir, job.id);
+    expect(existsSync(path.join(dir, "dates.txt"))).toBe(true);
+    // Let the stub reach `running` before the process "dies": a queued row and a running row take
+    // the same recovery path, but only the running one is the case the header is about.
+    await sleep(25);
+    expect(first.get(job.id).status).toBe("running");
+    await first.close();
+
+    const second = createJobManager({ config, pool: fakePool("resolve"), logger: silentLogger });
+    cleanups.push(() => second.close());
+    const v = second.get(job.id);
+    expect(v.status).toBe("failed");
+    expect(v.error.code).toBe("SERVER_RESTARTED");
+    expect(v.inputs.files.dates_file).toBe("dates.txt");
+    expect(existsSync(path.join(dir, "dates.txt"))).toBe(true);
+  });
+
   it("emits status/progress/section events and snapshots them for a late subscriber", async () => {
     const { m } = manager("resolve");
     const seen = [];

@@ -11,15 +11,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { RECORD_KEYS, TAXON_COLUMNS, runDating } from '@veg/hyphaeon-runtime/dating';
+import { RECORD_KEYS, TAXON_COLUMNS, datingReferenceCommand, runDating } from '@veg/hyphaeon-runtime/dating';
 import { ingestDates, taxaForDates } from '@veg/hyphaeon-runtime/dates';
 import {
 	DATING_CSV_COLUMNS,
 	DATING_CSV_NAME,
-	DATING_DOWNLOAD_NOTE,
 	DATING_EXTRA_COLUMN,
 	DATING_JSON_NAME,
 	datingCsv,
+	datingDownloadNote,
 	datingJson
 } from './datingDownloads';
 import { available, example } from './fixtures';
@@ -84,10 +84,34 @@ describe('the column constant', () => {
 	});
 
 	it('tells the reader that the two CSVs on this page use opposite row orders', () => {
-		expect(DATING_DOWNLOAD_NOTE).toMatch(/ALIGNMENT order/);
-		expect(DATING_DOWNLOAD_NOTE).toMatch(/the order you are reading it/);
-		expect(DATING_DOWNLOAD_NOTE).toMatch(/prediction_method/);
-		expect(DATING_DOWNLOAD_NOTE).toMatch(/primaeon/);
+		// With no run there is nothing to check a reproduction claim against, so the note states the
+		// conventions and claims nothing.
+		const note = datingDownloadNote(null);
+		expect(note).toMatch(/ALIGNMENT order/);
+		expect(note).toMatch(/the order you are reading it/);
+		expect(note).not.toMatch(/reproduce/i);
+	});
+});
+
+describe.runIf(available())('the download note is conditioned on the run (phase 6 review, X6)', () => {
+	const result = run();
+
+	it('names both added keys, because this page writes them into both files', () => {
+		const note = datingDownloadNote(result);
+		expect(note).toMatch(/prediction_method/);
+		expect(note).toMatch(/primaeon/);
+		expect(note).toMatch(/ALIGNMENT order/);
+	});
+
+	it('does not claim a reproduction the MCP answers false on for the same run', () => {
+		// korber is dated by this build's own header ladder and not from a `-d` table, so
+		// `datingReferenceCommand` answers `reproduces: false` — and the sentence that used to open
+		// "Both files reproduce `hyphaeon dating`'s own outputs" unconditionally must now say so.
+		const { reproduces } = datingReferenceCommand(result as never, {}, {}) as { reproduces: boolean };
+		expect(reproduces).toBe(false);
+		const note = datingDownloadNote(result);
+		expect(note).toMatch(/do NOT reproduce a command-line run/);
+		expect(note).not.toMatch(/Both files reproduce/);
 	});
 });
 

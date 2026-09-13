@@ -70,6 +70,8 @@
  * runtime's, copied and pinned equal to it by a test (`PERM_RATE`, `PERM_STAT_UNITS`).
  */
 
+import { TEMPORAL_NULL_ASSUMPTION, TEMPORAL_THRESHOLDS } from '@veg/hyphaeon-runtime/temporal/codes';
+
 import { readsAs } from './dateReview';
 import { num, sci, yr } from './dating';
 import type { TimeUnits } from './types';
@@ -92,14 +94,21 @@ export const TEMPORAL_MAX_RIDGES = 24;
 export const TEMPORAL_PAGE_SIZE = 40;
 
 /**
- * The sequence cap this page runs at, and the reason it is the report's own (`REPORT_DEFAULTS`,
- * `runtime/src/analyze.js:107` — the manifest's `default_taxon_cap`) rather than something looser.
- * Above it the library reduces the alignment by Faith's phylogenetic diversity, which is TIME-BLIND
+ * The sequence cap this page runs at. It is the report's own (`REPORT_DEFAULTS`,
+ * `runtime/src/analyze.js:107` — the manifest's `default_taxon_cap`) rather than something looser:
+ * above it the library reduces the alignment by Faith's phylogenetic diversity, which is TIME-BLIND
  * (D27) and can remove the early part of an epidemic — exactly the part a sweep is measured
  * against — so a downsampled run is not comparable with a command-line run on the whole file.
  * `honestyNotes` says so whenever `primaeon.taxon_cap` reports that it bit.
+ *
+ * IT IS NOW READ FROM THE RUNTIME rather than written here. Phase 6 shipped this page capping at
+ * 256 while the MCP and the server passed `Infinity`, with no statement anywhere of what each
+ * choice cost; `runtime/src/temporal/caps.js` holds the policy for all three, with the measured
+ * table behind it (memory is flat at 1.3-2.3 GB from 97 to 1,499 sequences, so the binding
+ * constraint is TIME: 3.5 s of model pass at 97 and 192 s at 1,499 on a 566-codon gene). This
+ * constant stays exported so nothing downstream has to change its import.
  */
-export const TEMPORAL_MAX_SPECIES = 256;
+export const TEMPORAL_MAX_SPECIES = TEMPORAL_THRESHOLDS.browserTaxonCap;
 
 // =================================================================================================
 // The record, as it reaches the page
@@ -424,6 +433,14 @@ export function temporalGate(
  * cost nothing. Two literals that silently drift from the runtime's do, so `temporal.test.ts`
  * imports `TEMPORAL_PERM_RATE` and `TEMPORAL_PERM_STAT_UNITS` from the runtime and asserts these
  * equal them: a re-measurement there fails this page's suite instead of splitting the two.
+ *
+ * WHAT IS NO LONGER COPIED, since phase 6's review. `@veg/hyphaeon-runtime/temporal/codes` is a
+ * SECOND subpath onto `src/temporal/codes.js` alone, which imports nothing but the date layer's own
+ * import-free `codes.js` — no session, no eigensolver, no library — so the pillar's VOCABULARY is
+ * importable here at no bundle cost. The sequence cap (`TEMPORAL_MAX_SPECIES`) and the null's
+ * stated assumption (`TEMPORAL_NULL_ASSUMPTION`, rendered as the first honesty note) come from
+ * there rather than being written twice. Only the two RATE constants above stay copied, because
+ * they live in `null.js`, which does reach the model layer.
  */
 export const PERM_RATE = 5.5e8;
 export const PERM_STAT_UNITS = 15;
@@ -1023,7 +1040,11 @@ export interface HonestyNote {
 /**
  * The sentences a reader comparing this page with a command-line run must see, in report order.
  * Everything the runtime already says in its own words is rendered from `record.warnings`; these
- * are the four the runtime cannot say because they are about what a READER will do with the numbers.
+ * are the ones the runtime cannot say because they are about what a READER will do with the numbers.
+ *
+ * THE FIRST IS THE EXCEPTION and is deliberately not written here: `exchangeable` is the runtime's
+ * own `TEMPORAL_NULL_ASSUMPTION`, rendered verbatim, because the same sentence has to reach the
+ * download notes and the MCP's honesty block and three copies of it would drift.
  */
 export function honestyNotes(record: TemporalRecord): HonestyNote[] {
 	const notes: HonestyNote[] = [];
@@ -1034,6 +1055,20 @@ export function honestyNotes(record: TemporalRecord): HonestyNote[] {
 	// time the reader finishes the sentence. They wait for the run instead of printing a number that
 	// will be wrong (`nullInFlight`).
 	const inFlight = nullInFlight(record);
+
+	// WHAT THE NULL ASSUMES, first and on every run that drew one, because it is the assumption the
+	// whole section rests on and it is the one a reader cannot infer from any number on the page.
+	// The words are the runtime's (`TEMPORAL_NULL_ASSUMPTION`), so this page, the download notes and
+	// the MCP's honesty block cannot drift apart; `warn: false` because the test is valid and it is
+	// the READING that has to be bounded, which is what this section's notes are for.
+	if (B > 0) {
+		notes.push({
+			id: 'exchangeable',
+			lead: TEMPORAL_NULL_ASSUMPTION.lead,
+			rest: TEMPORAL_NULL_ASSUMPTION.rest,
+			warn: false
+		});
+	}
 
 	notes.push({
 		id: 'rng',

@@ -32,6 +32,14 @@ export {
 	sortDatingWarnings,
 	datingWarning
 } from './codes.js';
+export {
+	DATING_MODEL_KEYS,
+	DATING_SIGNAL_ALPHA,
+	datingClockSignal,
+	datingHeadline,
+	isDegenerateInterval,
+	isUnboundedInterval
+} from './headline.js';
 export { verifyCodingAlignment, starsToGaps, coverageHoldout } from './alignment.js';
 export { selectClockModel, admitEnsembleCandidates } from './select.js';
 export { TAXON_COLUMNS, RECORD_KEYS, datingTaxonRecords, rankTaxonRows, buildDatingRecord } from './record.js';
@@ -46,4 +54,12 @@ export {
 	sliceRows,
 	sliceSymmetric
 } from './modelFits.js';
-export { datingJsonText, datingCsvText, datingDownloads, DATING_FLOAT_KEYS, DATING_INT_KEYS } from './results.js';
+export {
+	datingJsonText,
+	datingCsvText,
+	datingDownloads,
+	datingDownloadNotes,
+	datingReferenceCommand,
+	DATING_FLOAT_KEYS,
+	DATING_INT_KEYS
+} from './results.js';
