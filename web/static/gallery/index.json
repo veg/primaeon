@@ -1,8 +1,8 @@
 {
 	"schema_version": 3,
-	"generated_at": "2026-09-07T21:33:41.531Z",
+	"generated_at": "2026-09-13T00:52:59.553Z",
 	"engine": {
-		"commit": "2078867",
+		"commit": "3e4d965",
 		"reference_version": "1.0.0",
 		"hyphaeon_js_version": "1.0.0"
 	},
@@ -104,24 +104,24 @@
 				"attributed_sites": 5,
 				"artifacts_masked": 0,
 				"timings": {
-					"prepare": 0.019787874999999986,
-					"infer": 0.12307737499999996,
-					"gene": 0.008454292000000009,
-					"epistasis": 0.1045555,
-					"attribute": 0.028062832999999954,
-					"filter": 0.004688458000000083,
-					"dms": 2.780128417,
-					"total": 3.0926199160000003
+					"prepare": 0.014874416999999994,
+					"infer": 0.11307225,
+					"gene": 0.010813374999999951,
+					"epistasis": 0.10668841699999995,
+					"attribute": 0.02960637500000007,
+					"filter": 0.004267708000000084,
+					"dms": 2.796024,
+					"total": 3.098910458
 				},
-				"runtime_sec": 3.093
+				"runtime_sec": 3.1
 			},
 			"prebake": {
-				"at": "2026-09-07T21:30:55.259Z",
+				"at": "2026-09-13T00:49:15.201Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "35cfb030a09ba21c5776d7dd82cb9944f9eab3a06139fb4d52e38d818c68fe4b",
+				"stamp": "c3b59059e4f62616c3f03df5bf89a9619fa4e565223a2bc18e8ff0605ad0cef4",
 				"storage": {
 					"stripped": [
 						"loaded",
@@ -136,27 +136,27 @@
 					},
 					{
 						"name": "sites",
-						"at": 0.17
+						"at": 0.15
 					},
 					{
 						"name": "gene",
-						"at": 0.17
+						"at": 0.16
 					},
 					{
 						"name": "epistasis",
-						"at": 0.28
+						"at": 0.27
 					},
 					{
 						"name": "attribution",
-						"at": 0.31
+						"at": 0.3
 					},
 					{
 						"name": "filter",
-						"at": 0.31
+						"at": 0.3
 					},
 					{
 						"name": "dms",
-						"at": 3.09
+						"at": 3.1
 					}
 				]
 			}
@@ -239,24 +239,24 @@
 				"attributed_sites": 2,
 				"artifacts_masked": 0,
 				"timings": {
-					"prepare": 0.010353208999999879,
-					"infer": 0.05797941700000001,
-					"gene": 0.0034045420000002194,
-					"epistasis": 0.01684454199999982,
-					"attribute": 0.01675458299999991,
-					"filter": 0.0017679590000002463,
-					"dms": 9.586725915999999,
-					"total": 9.707945459000001
+					"prepare": 0.011914082999999664,
+					"infer": 0.05775270899999987,
+					"gene": 0.0034548329999997806,
+					"epistasis": 0.018748207999999978,
+					"attribute": 0.02049829200000022,
+					"filter": 0.0017748750000000655,
+					"dms": 9.650982041999999,
+					"total": 9.777515
 				},
-				"runtime_sec": 9.708
+				"runtime_sec": 9.778
 			},
 			"prebake": {
-				"at": "2026-09-07T21:31:05.001Z",
+				"at": "2026-09-13T00:49:25.014Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "c61751fbb7da8ef48ec31894a962e409d9cad0b016ecf28fff85e0871d80d59b",
+				"stamp": "c276bc74abd6de5a278aa7784c49bff56719b74db08ad5a9ffe3f023a2aec4d5",
 				"storage": {
 					"stripped": [
 						"loaded",
@@ -275,7 +275,7 @@
 					},
 					{
 						"name": "gene",
-						"at": 0.09
+						"at": 0.08
 					},
 					{
 						"name": "epistasis",
@@ -287,11 +287,11 @@
 					},
 					{
 						"name": "filter",
-						"at": 0.12
+						"at": 0.13
 					},
 					{
 						"name": "dms",
-						"at": 9.71
+						"at": 9.78
 					}
 				]
 			}
@@ -377,24 +377,24 @@
 				"attributed_sites": 5,
 				"artifacts_masked": 1,
 				"timings": {
-					"prepare": 0.2455992499999993,
-					"infer": 0.8686673329999994,
-					"gene": 0.0016955000000016297,
-					"epistasis": 0.04814141700000073,
-					"attribute": 3.105686625,
-					"filter": 0.7274059579999994,
-					"dms": 13.413395499999998,
-					"total": 18.425771125
+					"prepare": 0.2302390409999989,
+					"infer": 0.8686640000000007,
+					"gene": 0.0014200000000000727,
+					"epistasis": 0.04573829099999966,
+					"attribute": 3.114227916,
+					"filter": 0.7359826669999966,
+					"dms": 13.390166708,
+					"total": 18.401387417
 				},
-				"runtime_sec": 18.426
+				"runtime_sec": 18.402
 			},
 			"prebake": {
-				"at": "2026-09-07T21:31:23.446Z",
+				"at": "2026-09-13T00:49:43.427Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "af7fc4b81695bd4bbb579cf3c74f38477eb53fe11ebc48f3791cc135226e294b",
+				"stamp": "c017fe76d0e927e51d5b679e09879b23eeca33e0dc186cc5e198bd21a1bab2ae",
 				"storage": {
 					"stripped": [
 						"loaded",
@@ -405,23 +405,23 @@
 				"sections": [
 					{
 						"name": "diagnostics",
-						"at": 0.26
+						"at": 0.24
 					},
 					{
 						"name": "sites",
-						"at": 1.13
+						"at": 1.11
 					},
 					{
 						"name": "gene",
-						"at": 1.13
+						"at": 1.11
 					},
 					{
 						"name": "epistasis",
-						"at": 1.18
+						"at": 1.16
 					},
 					{
 						"name": "attribution",
-						"at": 4.28
+						"at": 4.27
 					},
 					{
 						"name": "filter",
@@ -429,7 +429,7 @@
 					},
 					{
 						"name": "dms",
-						"at": 18.43
+						"at": 18.4
 					}
 				]
 			}
@@ -515,24 +515,24 @@
 				"attributed_sites": 8,
 				"artifacts_masked": 0,
 				"timings": {
-					"prepare": 0.3755747080000001,
-					"infer": 1.4269524170000005,
-					"gene": 0.0025147910000014235,
-					"epistasis": 0.0648572920000006,
-					"attribute": 2.754557208999999,
-					"filter": 0.017248374999995576,
-					"dms": 61.2415505,
-					"total": 65.933190708
+					"prepare": 0.3423997079999972,
+					"infer": 1.4272654169999988,
+					"gene": 0.002261749999997846,
+					"epistasis": 0.05937250000000495,
+					"attribute": 3.971503582999998,
+					"filter": 0.01976575000000594,
+					"dms": 112.61374491699999,
+					"total": 118.483936875
 				},
-				"runtime_sec": 65.933
+				"runtime_sec": 118.484
 			},
 			"prebake": {
-				"at": "2026-09-07T21:32:29.408Z",
+				"at": "2026-09-13T00:51:41.935Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "8f913537e510075cc95e0911054f487180f23b0cb5a71a61cf491cc985a8abad",
+				"stamp": "d0564c53389a822e5fa57ec4a10971d815e4d2912f7b45b6ac05ecad879b1b10",
 				"storage": {
 					"stripped": [
 						"loaded",
@@ -543,31 +543,31 @@
 				"sections": [
 					{
 						"name": "diagnostics",
-						"at": 0.42
+						"at": 0.39
 					},
 					{
 						"name": "sites",
-						"at": 1.85
+						"at": 1.82
 					},
 					{
 						"name": "gene",
-						"at": 1.85
+						"at": 1.82
 					},
 					{
 						"name": "epistasis",
-						"at": 1.92
+						"at": 1.88
 					},
 					{
 						"name": "attribution",
-						"at": 4.67
+						"at": 5.85
 					},
 					{
 						"name": "filter",
-						"at": 4.69
+						"at": 5.87
 					},
 					{
 						"name": "dms",
-						"at": 65.93
+						"at": 118.48
 					}
 				]
 			}
@@ -650,24 +650,24 @@
 				"attributed_sites": 7,
 				"artifacts_masked": 0,
 				"timings": {
-					"prepare": 0.17316687499999533,
-					"infer": 1.4020934169999963,
-					"gene": 0.0019911250000004656,
-					"epistasis": 0.031536707999999636,
-					"attribute": 4.487708916000003,
-					"filter": 0.007117666000005556,
-					"dms": 65.91255987499999,
-					"total": 72.09484333399999
+					"prepare": 0.17883800000001793,
+					"infer": 1.199210625000007,
+					"gene": 0.0024818749999976717,
+					"epistasis": 0.05336562500000582,
+					"attribute": 3.7681574580000015,
+					"filter": 0.00529154199999175,
+					"dms": 72.315155083,
+					"total": 77.589413417
 				},
-				"runtime_sec": 72.095
+				"runtime_sec": 77.59
 			},
 			"prebake": {
-				"at": "2026-09-07T21:33:41.530Z",
+				"at": "2026-09-13T00:52:59.553Z",
 				"surface": "node-server",
 				"node": "v22.22.0",
 				"threads": 8,
 				"artifact_verified": true,
-				"stamp": "a8509f525993b7c3ecea399c0a266fd16d4fd3e339908b7668f02e289335ebc4",
+				"stamp": "9d6cf294107a82d7a2109e71984bef88c2bcad8a71c659783ff2e8f4fe7e7d85",
 				"storage": {
 					"stripped": [
 						"loaded",
@@ -678,31 +678,31 @@
 				"sections": [
 					{
 						"name": "diagnostics",
-						"at": 0.25
+						"at": 0.24
 					},
 					{
 						"name": "sites",
-						"at": 1.65
+						"at": 1.44
 					},
 					{
 						"name": "gene",
-						"at": 1.66
+						"at": 1.45
 					},
 					{
 						"name": "epistasis",
-						"at": 1.69
+						"at": 1.5
 					},
 					{
 						"name": "attribution",
-						"at": 6.17
+						"at": 5.27
 					},
 					{
 						"name": "filter",
-						"at": 6.18
+						"at": 5.27
 					},
 					{
 						"name": "dms",
-						"at": 72.09
+						"at": 77.59
 					}
 				]
 			}
