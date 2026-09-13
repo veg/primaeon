@@ -41,6 +41,38 @@ export interface GalleryExample {
 	reference_runtime_sec: number | null;
 }
 
+/**
+ * One row of examples.json's `dated` array — the /time catalogue.
+ *
+ * A dated example is not a gallery entry: nothing is prebaked for it, because /time reads the dates
+ * out of the file in the page and the run a reader starts is their own. So this row carries no
+ * `reference_runtime_sec` and no record id; what it carries instead is `date_rule` and `expect`,
+ * which are a CLAIM about what the review stage should say — asserted by the route's own test, so a
+ * change to the ingest that silently reclassifies an example fails there rather than in front of a
+ * reader.
+ */
+export interface DatedExample {
+	/** Stable id, equal to the file stem in `HyphAeon/examples/`. */
+	id: string;
+	name: string;
+	gene: string;
+	description: string;
+	regime: string;
+	alignment: string;
+	/** Newick file, or null when the example has no tree at all (D22 takes the TN93 path). */
+	tree: string | null;
+	format: 'fasta' | 'nexus';
+	paper: { taxa: number; codons: number };
+	/**
+	 * The `rule` id the ingest should match on most rows. Pinned to a real rule by
+	 * `dated.test.ts` — the first draft of the catalogue invented `header_year_suffix`, which no
+	 * rule table defines, and the page showed that claim in a tooltip where nobody would catch it.
+	 */
+	date_rule: string;
+	/** What the review is expected to report, in a reader's words. */
+	expect: string;
+}
+
 export type TreeSource = 'file' | 'embedded';
 
 /**

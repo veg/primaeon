@@ -65,6 +65,7 @@ export const DATING_DIAGNOSTIC_CODES = Object.freeze([
 	'DATING_CLADE_ATTENUATED',
 	'DATING_SPLINE_PREFERRED',
 	'DATING_SPLINE_NO_INTERVAL',
+	'DATING_NO_CLOCK_SIGNAL',
 	'DATING_UNBOUNDED_ANTIQUITY',
 	'DATING_ENSEMBLE_RESYMMETRISED',
 	'DATING_ENSEMBLE_IGNORES_SELECTED',
@@ -195,10 +196,32 @@ export const DATING_MESSAGES = Object.freeze({
 		'p = {p}, ΔAIC = {daic}). That model puts the ancestor at {tmrca}.',
 	SPLINE_NO_INTERVAL:
 		'The spline clock has no interval to show. Its bootstrap never runs upstream — ' +
-		'`dating.py:1917` passes numpy\'s `rcond=` to `scipy.linalg.lstsq`, whose keyword is `cond=`, ' +
+		'`dating.py:1912` passes numpy\'s `rcond=` to `scipy.linalg.lstsq`, whose keyword is `cond=`, ' +
 		'so every replicate raises inside a bare `except` and all four of its intervals collapse to ' +
 		'their point estimates. A zero-width 95 % interval is not an interval and must not be drawn ' +
 		'as one.',
+	/**
+	 * THE CODE THIS VOCABULARY DID NOT HAVE. `DATING_UNBOUNDED_ANTIQUITY` below reports the SHAPE of
+	 * the interval — no lower bound — and says nothing about the regression that produced it; there
+	 * was no code at all for "this clock has no signal", so a run on sequences with no temporal
+	 * structure printed a declarative ancestor date with nothing beside it. REPRODUCED on 40
+	 * pseudorandom coding sequences with dated headers and an explicit root: t_mrca 1934.12, ci_mrca
+	 * [-Infinity, 1972.26], R² 0.070, slope p 0.104, Fieller g 1.474.
+	 *
+	 * NOT A REFUSAL, deliberately: `hyphaeon dating` prints a date here and refusing would diverge
+	 * from the reference in the worst direction. The date is reported with its refutation attached
+	 * instead — `datingHeadline` in `headline.js` returns `quotable: false` and the sentence, and
+	 * every surface renders it in the same breath as the number.
+	 *
+	 * The test is the slope F-test at 0.05, which is Fieller's `g >= 1` written the other way round;
+	 * `p_value` rather than `g` because `g` exists only under `--ci-method fieller`.
+	 */
+	NO_CLOCK_SIGNAL:
+		'The clock rate is not distinguishable from zero at 95 %: the slope of divergence against sampling ' +
+		'date has p = {p} and accounts for {pct} % of the spread (R² {r2}). The ancestor date below divides ' +
+		'an intercept by that slope, so it is whatever the intercept happens to be, and its interval has no ' +
+		'lower bound — these data are consistent with an arbitrarily old ancestor. Read it as a refuted ' +
+		'number, not an estimate. `hyphaeon dating` prints the same date and says none of this.',
 	UNBOUNDED_ANTIQUITY:
 		'The interval has no lower bound: the clock rate is not distinguishable from zero at 95 % ' +
 		'(Fieller g = {g} ≥ 1), so the data are consistent with an arbitrarily old ancestor. The ' +

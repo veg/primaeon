@@ -225,7 +225,7 @@ interval.
 
 All replicated deliberately; each is now visible as a diagnostic rather than dropped.
 
-- **`dating.py:1917` — the spline bootstrap never runs.** `la.lstsq(b_X, b_d, rcond=None)` where
+- **`dating.py:1912` — the spline bootstrap never runs.** `la.lstsq(b_X, b_d, rcond=None)` where
   `la` is `scipy.linalg`, whose keyword is `cond`. Verified on scipy 1.16.2: all 500 replicates
   raise `TypeError` inside a bare `except Exception: pass`, so all four spline confidence intervals
   collapse to their point estimates. korber publishes a **zero-width 95 % interval**

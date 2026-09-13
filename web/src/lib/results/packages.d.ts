@@ -382,6 +382,64 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		run: DatingRun,
 		options?: { stem?: string }
 	): Array<{ name: string; type: string; text: string }>;
+
+	/** Phase 6 review X2/X4: which ancestor date a surface quotes, and whether it may quote it flatly. */
+	export interface DatingHeadline {
+		key: 'ols' | 'pgls' | 'spline';
+		model: Record<string, unknown>;
+		activeKey: string;
+		/** True when this differs from the reference's own top-level `t_mrca`. */
+		departed: boolean;
+		/** False when the date must be rendered with `refutation` in the same breath. */
+		quotable: boolean;
+		refutation: string | null;
+		signal: { hasSignal: boolean; p: number; r2: number; g: number | null; alpha: number } | null;
+	}
+	export const DATING_SIGNAL_ALPHA: number;
+	export const DATING_MODEL_KEYS: readonly string[];
+	export function isDegenerateInterval(ci: readonly number[] | null | undefined): boolean;
+	export function isUnboundedInterval(ci: readonly number[] | null | undefined): boolean;
+	export function datingClockSignal(
+		record: Record<string, unknown>
+	): { hasSignal: boolean; p: number; r2: number; g: number | null; alpha: number } | null;
+	export function datingHeadline(record: Record<string, unknown> | null | undefined): DatingHeadline | null;
+
+	/** Phase 6 review X6: `temporalReferenceCommand`'s counterpart, and the notes that travel with the files. */
+	export function datingReferenceCommand(
+		run: DatingRun,
+		options?: Record<string, unknown>,
+		names?: { alignment?: string; dates?: string | null },
+		ingest?: unknown
+	): {
+		command: string;
+		reproduces: boolean;
+		caveats: string[];
+		headline: { key: string; activeKey: string; departed: boolean; quotable: boolean } | null;
+	};
+	export function datingDownloadNotes(
+		run: DatingRun,
+		options?: { predictionMethod?: boolean; includeProvenance?: boolean }
+	): string[];
+}
+
+/**
+ * The temporal pillar's VOCABULARY ONLY — codes, thresholds and the sentences a surface renders.
+ * A separate subpath from `@veg/hyphaeon-runtime/temporal` because that one reaches `predict.js`
+ * and therefore onnxruntime; this one imports nothing but the date layer's own import-free codes,
+ * so the `/time` route can print what the pillar means before any button is pressed.
+ */
+declare module '@veg/hyphaeon-runtime/temporal/codes' {
+	export const TEMPORAL_SCHEMA_VERSION: number;
+	export const TEMPORAL_DIAGNOSTIC_CODES: readonly string[];
+	export const TEMPORAL_REFUSALS: Readonly<Record<string, string>>;
+	export const TEMPORAL_THRESHOLDS: Readonly<Record<string, number>>;
+	export const TEMPORAL_MESSAGES: Readonly<Record<string, string>>;
+	export const TEMPORAL_REFERENCE_RULES: readonly string[];
+	export const TEMPORAL_BEYOND_REFERENCE_RULES: readonly string[];
+	/** Phase 6 review X1: what the date-shuffling null assumes, in one place all three surfaces read. */
+	export const TEMPORAL_NULL_ASSUMPTION: Readonly<{ lead: string; rest: string }>;
+	export function fillMessage(template: string, values: Record<string, unknown>): string;
+	export function nameSample(names: readonly string[]): string;
 }
 
 declare module '@veg/hyphaeon-js' {

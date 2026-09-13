@@ -34,7 +34,7 @@
  *   everything downstream of it is a different pseudorandom generator, which is a different NUMBER.
  *   Both are named to a reader; neither is papered over.
  *
- * FOUR THINGS A READER MUST BE TOLD, which is why `temporalDownloadNotes` exists beside the bytes:
+ * FIVE THINGS A READER MUST BE TOLD, which is why `temporalDownloadNotes` exists beside the bytes:
  *
  *   1. `_sites_summary.csv` is EVERY codon in site order 1...L, which is the opposite convention to
  *      the on-screen table (candidates only, sweeps first). Both are right; only one of them can be
@@ -50,6 +50,14 @@
  *      on the acceptance run — which is a p-value printed for a test that was not run. Upstream
  *      (temporal.py:620-621), replicated exactly, and flagged here and at `run.js`'s `spreadPerm`
  *      because the reference answered this same objection for `p_static` with NaN and not here.
+ *      THE KEY TO WHICH IS WHICH IS `classification`, NOT `p_perm`, and the note used to say
+ *      otherwise: a tested candidate that every shuffle beat scores exactly 1.0 too. Measured on
+ *      H5N1 at B = 200, 399 of 566 rows read 1.0 against 398 non-candidates. `temporalPPermNote`
+ *      is the corrected sentence and `{stage1Column: true}` writes the mask into the file itself.
+ *   5. WHAT THE NULL ASSUMES: it shuffles sampling DATES across sequences, so it treats them as
+ *      exchangeable and controls for nothing about shared ancestry. `TEMPORAL_NULL_ASSUMPTION` in
+ *      `codes.js` carries the whole argument, and the same two strings reach the record's warning
+ *      list, this note list and the `/time` page's honesty block.
  *
  * THE REPRODUCTION LINE IS NOT ALWAYS HONEST, AND SAYS SO. `temporalReferenceCommand`'s own
  * contract is written at that function; the short version is that `reproduces` is about SETTINGS AND
@@ -69,7 +77,7 @@ import {
 	TEMPORAL_SUMMARY_KEYS
 } from '@veg/hyphaeon-js';
 
-import { TEMPORAL_THRESHOLDS } from './codes.js';
+import { TEMPORAL_NULL_ASSUMPTION, TEMPORAL_THRESHOLDS } from './codes.js';
 
 export { TEMPORAL_SITES_COLUMNS, TEMPORAL_CURVES_COLUMNS, TEMPORAL_WAVES_COLUMNS, TEMPORAL_SUMMARY_KEYS };
 
@@ -81,10 +89,18 @@ export const TEMPORAL_FILE_SUFFIXES = Object.freeze({
 	summary: '_summary.json'
 });
 
-/** `_sites_summary.csv`: one row per codon, site order, 27 columns. */
-export function temporalSitesCsvText(record) {
+/**
+ * `_sites_summary.csv`: one row per codon, site order, 27 columns.
+ *
+ * `{ stage1Column: true }` APPENDS A TWENTY-EIGHTH, `stage1`, which is 1 at a codon the null
+ * actually tested and 0 at one it never reached. It is off by default and must stay off by default:
+ * the reference writes 27 columns and a file with 28 does not diff against `hyphaeon temporal`.
+ * It exists because the note beside these files makes a claim the 27 columns can only half keep —
+ * see `temporalDownloadNotes`, and the measurement there.
+ */
+export function temporalSitesCsvText(record, options = {}) {
 	const c = record.sites;
-	return temporalSitesCsv({
+	const text = temporalSitesCsv({
 		L: record.codons_total,
 		refAas: c.ref_aa,
 		derivedAas: c.derived_aa,
@@ -111,6 +127,19 @@ export function temporalSitesCsvText(record) {
 		loadings: c.wave_loadings,
 		K: TEMPORAL_THRESHOLDS.waveCount
 	});
+	if (!options.stage1Column) return text;
+	// Appended rather than threaded through the library's writer, because the writer's whole job is
+	// to be byte-equal to pandas on the reference's own 27 columns and an app-side column has no
+	// business inside it. The mask is `sites.stage1`; a record taken before stage one has none, and
+	// then every row reads 0, which is true of that record.
+	const mask = c.stage1 ?? null;
+	const lines = text.split('\n');
+	const last = lines.length - 1;
+	// The writers end with a trailing newline, so the final element is the empty string after it.
+	const tail = lines[last] === '' ? 1 : 0;
+	lines[0] += ',stage1';
+	for (let i = 1; i < lines.length - tail; i++) lines[i] += `,${mask && mask[i - 1] ? 1 : 0}`;
+	return lines.join('\n');
 }
 
 /**
@@ -382,9 +411,42 @@ export function temporalReferenceCommand(record, names = {}) {
 	return { command: parts.join(' '), reproduces, caveats };
 }
 
+/**
+ * WHICH ROWS OF `_sites_summary.csv` CARRY A MEASURED `p_perm`, and which carry the reference's
+ * fill. Exported on its own because three surfaces have to say the same thing about it and one of
+ * them (the MCP's honesty block) says it outside the download list.
+ *
+ * THE CLAIM THIS REPLACES was that a candidate is told from an untested codon by `p_perm`: 1.0
+ * means untested, anything else means measured. That is wrong in one direction and the file cannot
+ * keep it. MEASURED on `examples/H5N1_HA_geo.fasta` at `-B 200` (98 sequences, 566 codons, 168
+ * stage-one candidates): 399 rows read exactly 1.0 against 398 non-candidates, because a candidate
+ * every one of the 200 shuffles beat scores `(1 + 200) / 201 = 1.0` exactly. The column that IS the
+ * key is `classification`, which partitions the file four ways with the candidate/non-candidate
+ * split running straight through the middle of it, and it is in every row of every run.
+ *
+ * The RECORD has `sites.stage1` and that is the mask a surface returning JSON should carry; a
+ * reader holding only the CSV has no such key unless it was written with `{stage1Column: true}`.
+ *
+ * @param {object} record
+ * @returns {string}
+ */
+export function temporalPPermNote(record) {
+	const untested = Math.max(0, record.codons_total - record.stage1_candidates);
+	return (
+		`\`p_perm\` and \`q_perm\` are 1.0 at the ${untested} codon(s) that never reached stage two, which is a ` +
+		'p-value printed for a test that was not run. That is the reference\'s own fill (temporal.py:620-621), ' +
+		'reproduced so the files diff clean, and it is not a measurement. THE COLUMN THAT TELLS THE TWO APART IS ' +
+		'`classification`, not `p_perm`: `INVARIABLE` and `FLAT_NO_SIGNAL` are codons the null never tested, ' +
+		'`TEMPORAL_NOISE` and `CONFIRMED_SWEEP` are candidates it did. A 1.0 in `p_perm` does NOT mean untested — ' +
+		'a tested candidate that every shuffle beat scores (1 + B) / (B + 1) = 1.0 exactly, and one does: measured ' +
+		'on H5N1 at B = 200, 399 of 566 rows read 1.0 against 398 non-candidates. Read `p_perm` and `q_perm` only ' +
+		`at the ${record.stage1_candidates} row(s) whose \`classification\` is a candidate label, or take the file with ` +
+		'`stage1Column` and read the appended 1/0 mask directly.'
+	);
+}
+
 /** The notes that must travel with the files. See the header. */
 export function temporalDownloadNotes(record) {
-	const untested = Math.max(0, record.codons_total - record.stage1_candidates);
 	return [
 		`\`${TEMPORAL_FILE_SUFFIXES.sites}\` is every one of the ${record.codons_total} codons in site order — the opposite ` +
 			`convention to the table on this page, which shows the ${record.stage1_candidates} candidates with the sweeps first.`,
@@ -398,10 +460,10 @@ export function temporalDownloadNotes(record) {
 		'`_curves.csv` writes `selection_intensity` and `sweep_velocity` from the same array, so the two columns are ' +
 			'identical in every row. That is an upstream bug (temporal.py:807-808) reproduced on purpose so the file ' +
 			'diffs clean against `hyphaeon temporal`; there is one quantity there, not two.',
-		`\`p_perm\` and \`q_perm\` are 1.0 at the ${untested} codon(s) that never reached stage two, which is a ` +
-			'p-value printed for a test that was not run. That is the reference\'s own fill (temporal.py:620-621), ' +
-			'reproduced so the files diff clean, and it is not a measurement: read those two columns only at the ' +
-			`${record.stage1_candidates} candidate codon(s).`,
+		temporalPPermNote(record),
+		// X1: what the null assumes, in the same words the page and the record use. One constant,
+		// three surfaces; see `TEMPORAL_NULL_ASSUMPTION` in `codes.js`.
+		`${TEMPORAL_NULL_ASSUMPTION.lead} ${TEMPORAL_NULL_ASSUMPTION.rest}`,
 		'`_waves.csv` and the four `Wave_k_loading` columns carry a sign this page fixes by convention and the ' +
 			'reference does not (D28). A wave and its negative are the same mode; nothing else in these files reads a sign.'
 	];
@@ -414,9 +476,9 @@ export function temporalDownloadNotes(record) {
  * @param {{prefix?: string}} [options]
  * @returns {Array<{name: string, mime: string, text: string}>}
  */
-export function temporalDownloads(record, { prefix = 'temporal' } = {}) {
+export function temporalDownloads(record, { prefix = 'temporal', stage1Column = false } = {}) {
 	return [
-		{ name: `${prefix}${TEMPORAL_FILE_SUFFIXES.sites}`, mime: 'text/csv', text: temporalSitesCsvText(record) },
+		{ name: `${prefix}${TEMPORAL_FILE_SUFFIXES.sites}`, mime: 'text/csv', text: temporalSitesCsvText(record, { stage1Column }) },
 		{ name: `${prefix}${TEMPORAL_FILE_SUFFIXES.curves}`, mime: 'text/csv', text: temporalCurvesCsvText(record) },
 		{ name: `${prefix}${TEMPORAL_FILE_SUFFIXES.waves}`, mime: 'text/csv', text: temporalWavesCsvText(record) },
 		{ name: `${prefix}${TEMPORAL_FILE_SUFFIXES.summary}`, mime: 'application/json', text: temporalSummaryJsonText(record) }

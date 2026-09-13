@@ -91,6 +91,7 @@ import {
 	nameSample,
 	sortDatingWarnings
 } from './codes.js';
+import { DATING_SIGNAL_ALPHA } from './headline.js';
 import { buildDatingRecord, datingTaxonRecords } from './record.js';
 import { admitEnsembleCandidates, selectClockModel } from './select.js';
 
@@ -449,6 +450,24 @@ export function runDating(args = {}) {
 				'warn',
 				fillMessage(DATING_MESSAGES.MRCA_AFTER_EARLIEST_SAMPLE, { tmrca: (ols.t_ref - ols.d0 / ols.mu).toFixed(1), earliest }),
 				{ earliest }
+			)
+		);
+	}
+	// THE CLOCK ITSELF, before any statement about an interval's shape. `DATING_UNBOUNDED_ANTIQUITY`
+	// below reports that the Fieller interval has no lower bound; this reports WHY, in the
+	// regression's own vocabulary, and it fires under the delta and linear intervals too, where
+	// there is no `fieller_g` to test. `headline.js` carries the whole argument and the reproduction.
+	if (ols.status === 'OK' && Number.isFinite(ols.p_value) && ols.p_value >= DATING_SIGNAL_ALPHA) {
+		warnings.push(
+			datingWarning(
+				'DATING_NO_CLOCK_SIGNAL',
+				'warn',
+				fillMessage(DATING_MESSAGES.NO_CLOCK_SIGNAL, {
+					p: Number(ols.p_value).toPrecision(3),
+					pct: (Number(ols.r2) * 100).toFixed(1),
+					r2: Number(ols.r2).toFixed(3)
+				}),
+				{ p_value: ols.p_value, r2: ols.r2, fieller_g: Number.isFinite(ols.fieller_g) ? ols.fieller_g : null, alpha: DATING_SIGNAL_ALPHA }
 			)
 		);
 	}

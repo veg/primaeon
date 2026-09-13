@@ -109,6 +109,7 @@ import { pathToFileURL } from "node:url";
 import { diagnose as libraryDiagnose, extractTree } from "@veg/hyphaeon-js";
 import { resolveModels } from "./models.js";
 import { JOB_TIMEOUT_MS, NATIVE_ANALYSES } from "./caps.js";
+import { DATING_LATENT_NEEDS_MODEL, dateGate, dateReview, datingHonesty, refusalHint, refusalOf, temporalHonesty, TIME_REFUSAL_CODES } from "./time.js";
 
 const PKG = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const require = createRequire(import.meta.url);
@@ -119,7 +120,26 @@ export { NATIVE_ANALYSES };
 export const MDS_SIGN = "canonical";
 
 /** cli.py `--max-species` defaults per subcommand: None (no cap) except busted's 512. */
-const MAX_SPECIES_DEFAULT = Object.freeze({ meme: Infinity, busted: undefined, epistasis: Infinity, dms: Infinity, phenotype: Infinity });
+const MAX_SPECIES_DEFAULT = Object.freeze({
+  meme: Infinity,
+  busted: undefined,
+  epistasis: Infinity,
+  dms: Infinity,
+  phenotype: Infinity,
+  // cli.py:1850 / :1922 — `-s/--max-species` defaults to None on both time subcommands.
+  //
+  // TEMPORAL'S CAP IS TIME-BLIND AND RAISING IT IS NOT A FREE WIN (D27). Above the cap the library
+  // reduces by Faith's phylogenetic diversity after a stride prefilter, which knows nothing about
+  // sampling date and can remove the early part of an epidemic — exactly the part a sweep is
+  // measured against. So this surface does what the reference does, keeps every taxon, and leaves
+  // MAX_TAXA (1,000, src/caps.js) as the submission refusal; a caller who wants the cap asks for
+  // it with `max_species` and the record stamps `primaeon.taxon_cap: "applied"`, the reproduction
+  // line gains `-s <taxa_total>` and `temporalReferenceCommand` adds its own caveat.
+  temporal: Infinity,
+  // `dating` never reaches prepareRun at all: runDating parses the alignment itself, over every
+  // sequence, because the reference's dating pass runs with max_species=None.
+  dating: Infinity
+});
 
 export class EngineError extends Error {
   /**
@@ -219,6 +239,28 @@ export function loadRuntime() {
       toReportRecord: await optional("toReportRecord", "report.js"),
       // Phase 3 (optional at load)
       runPhenotype: await optional("runPhenotype", "phenotype.js"),
+      // Phase 6 (optional at load): the date layer, the clock and temporal selection. Resolved the
+      // same way as every Phase 2/3 name so a runtime checkout that predates them yields the named
+      // RUNTIME_OUTDATED server error from `requireRuntimeFn` instead of a TypeError inside a run.
+      //
+      // `ingestDates` / `taxaForDates` ARE ALSO resolved here, even though src/time.js imports them
+      // statically from the `./dates` subpath: a tool that only reviews dates must not pay for the
+      // runtime's main entry, and the two pillars that DO load a model should still fail with a
+      // named error rather than an import crash on an old checkout.
+      ingestDates: await optional("ingestDates", "dates/ingest.js"),
+      taxaForDates: await optional("taxaForDates", "dates/ingest.js"),
+      alignDatesToRun: await optional("alignDatesToRun", "dates/ingest.js"),
+      runDating: await optional("runDating", "dating/run.js"),
+      datingDownloads: await optional("datingDownloads", "dating/results.js"),
+      runDatingModelPass: await optional("runDatingModelPass", "datingNeural.js"),
+      runTemporal: await optional("runTemporal", "temporal/run.js"),
+      temporalReferenceCommand: await optional("temporalReferenceCommand", "temporal/results.js"),
+      temporalDownloadNotes: await optional("temporalDownloadNotes", "temporal/results.js"),
+      temporalPPermNote: await optional("temporalPPermNote", "temporal/results.js"),
+      temporalDownloads: await optional("temporalDownloads", "temporal/results.js"),
+      temporalNullBudget: await optional("temporalNullBudget", "temporal/null.js"),
+      siteRow: await optional("siteRow", "temporal/record.js"),
+      candidateSiteIndices: await optional("candidateSiteIndices", "temporal/record.js"),
       version
     };
   })();
@@ -372,6 +414,53 @@ export function mapOptions(analysis, options = {}, extra = {}) {
     if (has("max_perm_p")) out.maxPermP = options.max_perm_p;
     if (has("seed")) out.seed = options.seed;
   }
+  if (analysis === "dating") {
+    // cli.py:1895-1926 -> runDating's keywords. `--no-optimize-root`, `--ridge`, `--tune-ridge`,
+    // `--bootstrap`, `--loocv`, `--plot*`, `--alluvial*` and `--color-by` have no port and are not
+    // in the schema, so nothing can be recorded-and-dropped here. `--beast` is refused by the date
+    // layer (DATES_BEAST_XML_UNSUPPORTED) rather than accepted and ignored.
+    if (has("root_taxon")) out.rootTaxon = options.root_taxon;
+    if (has("decay_gamma")) out.decayGamma = options.decay_gamma;
+    if (has("clock_model")) out.clockModel = options.clock_model;
+    if (has("ci_method")) out.ciMethod = options.ci_method;
+    if (has("distance_mode")) out.distanceMode = options.distance_mode;
+    if (Array.isArray(options.excluded_taxa) && options.excluded_taxa.length) out.excludedTaxa = options.excluded_taxa;
+    if (options.allow_stop_codons === false) out.allowStopCodons = false;
+    if (options.no_auto_trim === true) out.autoTrimTrailing = false;
+    // `--clock-model power` is in the CLI's `choices` and is NOT ported (PLAN-TEMPORAL D33). It is
+    // kept out of the tool's enum so the schema refuses it before a run starts; if one arrives
+    // anyway it is recorded and not applied rather than silently answered with `auto`.
+    if (options.clock_model === "power") {
+      notApplied.push("clock_model");
+      delete out.clockModel;
+    }
+  }
+  if (analysis === "temporal") {
+    // cli.py:1823-1850 -> runTemporal's `options`, keyword for keyword.
+    if (has("time_units")) out.timeUnits = options.time_units;
+    if (has("sweep_mode")) out.sweepMode = options.sweep_mode;
+    if (options.keep_duplicates === true) out.keepDuplicates = true;
+    if (has("time_points")) out.numTimePoints = options.time_points;
+    if (has("bandwidth")) out.bandwidth = options.bandwidth;
+    if (has("n_permutations")) out.permutations = options.n_permutations;
+    if (has("perm_alpha")) out.permAlpha = options.perm_alpha;
+    if (has("min_r2")) out.minR2Fpca = options.min_r2;
+    if (has("tau_peak")) out.tauPeak = options.tau_peak;
+    if (has("tau_auc")) out.tauAuc = options.tau_auc;
+    if (has("root_taxon")) out.rootTaxon = options.root_taxon;
+    if (has("seed")) out.seed = options.seed;
+    // D28 and WAVE_SIGN.md. The reference has NO convention and writes its solver's raw singular
+    // vectors; this build fixes one. `lapack` is refused in the schema for the same reason
+    // `mds_sign: "lapack"` is: a tool that accepted it would promise numbers this build does not
+    // compute. Recorded on the record as `waves.sign` either way.
+    if (has("wave_sign")) out.waveSign = options.wave_sign;
+    if (options.score_invariable_sites === false) out.scoreInvariableSites = false;
+    // The null's own budget vocabulary is the runtime's (TEMPORAL_PERM_BUDGET_DEFAULT 5.0e10,
+    // runtime/src/temporal/null.js). This surface has already sized the run against its own caps,
+    // so a caller may lift it; the default is left to the runtime.
+    if (has("perm_work_budget")) out.workBudget = options.perm_work_budget;
+    if (has("batch_size")) out.batchSize = options.batch_size;
+  }
   if (extra.alignmentName) out.alignmentName = extra.alignmentName;
   if (extra.treeName !== undefined) out.treeName = extra.treeName;
   return { runtime: out, variant, notApplied };
@@ -388,6 +477,20 @@ export function mapOptions(analysis, options = {}, extra = {}) {
  * invocation that reproduces what this surface did (`cliOptionsFor` below adds it).
  */
 export function referenceCommand(analysis, options = {}, names = {}) {
+  if (analysis === "dating" || analysis === "temporal") {
+    // THESE TWO DO NOT GET AN ARGV ARRAY. Their reproduction line is a
+    // `{command, reproduces, caveats}` OBJECT — the runtime's `temporalReferenceCommand` and, since
+    // phase 6's review moved it there too, the runtime's `datingReferenceCommand` — because a bare string makes
+    // a reproducibility promise neither pillar can keep: temporal's null draws from a different
+    // generator than the reference's on EVERY run that draws at all, and dating's date set is read
+    // by a wider parser than the reference has. See src/time.js, decision 5. Throwing here rather
+    // than returning a plausible array is deliberate: a second builder that could disagree with
+    // the first is exactly the failure this split avoids.
+    throw new EngineError("server", "referenceCommand does not build a line for hyphaeon_" + analysis + "; use the {command, reproduces, caveats} builder.", {
+      hint: "Both are the runtime's: temporalReferenceCommand(record) and datingReferenceCommand(run, options, names, ingest), re-exported from src/time.js.",
+      code: "RUNTIME_OUTDATED"
+    });
+  }
   const argv = ["hyphaeon", analysis];
   const has = (k) => options[k] !== undefined && options[k] !== null;
   if (analysis === "evaluate") {
@@ -590,8 +693,40 @@ const INPUT_PATTERNS = [
   /EvaluationError/i,
   /nPermutations must be|seed must be/i,
   /site\(s\) out of range|sites? .* out of range/i,
-  /cancelled/i
+  /cancelled/i,
+  // Phase 6. The two time pillars RETURN their refusals (handled by `timeRefusal` below), but they
+  // THROW a RangeError for a bad OPTION — `ciMethod` (dating/run.js:226), `distanceMode`
+  // (dating/run.js:126), `distanceMode: 'latent'` with no model pass (:284) — and an Error for a
+  // date vector whose length does not match the run (temporal/run.js:187) or an unknown `inputs`
+  // key (temporal/run.js:745). Every one of those is the CALLER's, and without these patterns they
+  // fall through to the server class and tell a caller with a typo to "report it to the operator",
+  // which is precisely the mistake Phase 3 made for TN93 and Phase 4 fixed.
+  /is not one of|is not implemented|distanceMode|ciMethod/i,
+  /date vector has \d+ entries/i,
+  /unknown `inputs` key/i,
+  /pass a `session` handle|pass the library LoadedAlignment/i,
+  /the dating graph|taxa\.onnx|BACKBONE, not/i
 ];
+
+/**
+ * A refusal RETURNED by `ingestDates`, `runDating` or `runTemporal` as an EngineError.
+ *
+ * EVERY ONE OF THESE IS `kind: "input"`. Each is a property of the caller's metadata or alignment
+ * and none of them changes if the operator restarts the server, so the generic server hint
+ * ("nothing about the submitted data will change this") would be exactly backwards — the Phase 3
+ * TN93 mistake, repeated across thirty more codes. The hint comes from src/time.js's own table so
+ * it names the METADATA fix (a date column, a pattern, more sampling spread) rather than the
+ * alignment fix the generic input hint gives.
+ *
+ * @param {{code: string, message: string, data?: object}} refusal from `refusalOf`
+ * @returns {EngineError}
+ */
+export function timeRefusal(refusal) {
+  return new EngineError("input", refusal.message, { code: refusal.code, hint: refusalHint(refusal.code) });
+}
+
+/** `EngineError.code` when `use_model` was asked for and this build declares no dating graph. */
+export const DATING_GRAPH_UNAVAILABLE = "DATING_GRAPH_UNAVAILABLE";
 
 /** `EngineError.code` for the one tree-free refusal an alignment can earn. */
 export const TN93_UNCOMPUTABLE = "TN93_UNCOMPUTABLE";
@@ -647,6 +782,23 @@ export function classifyEngineError(err) {
   }
   const tn93 = tn93Refusal(message, err);
   if (tn93) return tn93;
+  // THE ONE RUNTIME MESSAGE THAT NAMES ITS OWN ARGUMENT. `runDating` throws a RangeError for
+  // `distanceMode: 'latent'` with no model pass that says "pass `neural`, the object
+  // runDatingModelPass returns" (runtime/src/dating/run.js:282) — a function and an argument no
+  // tool caller has, with no code on it. src/tools.js refuses the pair before the pillar runs;
+  // this is the backstop for any other path that reaches it, so the caller still gets a code and
+  // a hint naming the two arguments that exist.
+  if (/needs the dating graph/i.test(message)) {
+    return new EngineError(
+      "input",
+      "`distance_mode: \"latent\"` needs the model pass: the latent root is a position in the model's own representation space, and this run made none (use_model is false).",
+      { cause: err, code: DATING_LATENT_NEEDS_MODEL, hint: refusalHint(DATING_LATENT_NEEDS_MODEL) }
+    );
+  }
+  // A refusal code that reached here inside a thrown message (a runtime that raises rather than
+  // returns, or a wrapper that rethrew) is still the caller's data, not the engine's.
+  const timeCode = TIME_REFUSAL_CODES.find((c) => message.includes(c));
+  if (timeCode) return new EngineError("input", message, { cause: err, code: timeCode, hint: refusalHint(timeCode) });
   if (name === "EvaluationError" || INPUT_PATTERNS.some((re) => re.test(message))) {
     return new EngineError("input", "HyphAeon could not process this input: " + message, {
       cause: err,
@@ -737,6 +889,15 @@ export function createEngine(opts = {}) {
    * @param {{bustedHead?: boolean}} [o]
    */
   async function session(variant, o = {}) {
+    // MEMOISED ON variant + threads, and the taxa graph is loaded onto the SAME handle rather than
+    // under a second key: `createSession`'s handle owns `loadTaxaGraph()` and keeps its own `taxa`
+    // memo, so a second key here would load the backbone twice. What must never happen is handing
+    // `runDatingModelPass` the BACKBONE — its `mean_root_attns` is the root token's attention ROW
+    // and its `root_repr` the root token's VECTOR, where the dating pillar needs the taxon-by-taxon
+    // block and the per-taxon states, and neither is derivable from the other. The runtime checks
+    // the loaded graph's declared output names and throws if it was given the wrong one
+    // (runtime/src/datingNeural.js:113-121); this branch returns the taxa handle explicitly so that
+    // check is a backstop and not the only guard.
     const key = variant + "|" + threads;
     let p = sessions.get(key);
     if (!p) {
@@ -754,6 +915,28 @@ export function createEngine(opts = {}) {
       });
     }
     const handle = await p;
+    if (o.taxaGraph) {
+      // A manifest that declares no `taxa_onnx_sha256` is a fact about the BUILD, not a run
+      // failure: `loadTaxaGraph()` returns null and the caller says so in its own words. A FAILED
+      // load is different and is not memoised on the handle by the runtime, so the next call retries.
+      const taxa = await handle.loadTaxaGraph();
+      if (!taxa) {
+        throw new EngineError(
+          "server",
+          "This build declares no dating graph for the `" + variant + "` variant: models/manifest.json carries no " +
+            "taxa_onnx_sha256, so `" + variant + "_taxa.onnx` was never exported and the model-based clock estimators " +
+            "(attention PGLS, latent root search) cannot run here.",
+          {
+            code: DATING_GRAPH_UNAVAILABLE,
+            hint:
+              "Re-run hyphaeon_dating with use_model: false for the model-free (TN93 root-to-tip) estimate, which is this " +
+              "tool's default and a different answer rather than a degraded one. To get the model-based estimators, the " +
+              "operator must export the graph (`hyphaeon export-onnx` writes <variant>_taxa.onnx and its hash); " +
+              "list_models reports `dating_graph` per variant so a client can check before asking."
+          }
+        );
+      }
+    }
     if (o.bustedHead && !handle.head && !handle.headError) {
       try {
         await handle.loadHead();
@@ -792,7 +975,29 @@ export function createEngine(opts = {}) {
         runEpistasis: typeof rt.runEpistasis === "function",
         runDms: typeof rt.runDms === "function",
         runEverything: typeof rt.runEverything === "function",
-        runPhenotype: typeof rt.runPhenotype === "function"
+        runPhenotype: typeof rt.runPhenotype === "function",
+        ingestDates: typeof rt.ingestDates === "function",
+        runDating: typeof rt.runDating === "function",
+        runDatingModelPass: typeof rt.runDatingModelPass === "function",
+        runTemporal: typeof rt.runTemporal === "function",
+        temporalReferenceCommand: typeof rt.temporalReferenceCommand === "function"
+      };
+      // WHETHER THE MODEL-BASED CLOCK CAN RUN AT ALL, per variant, read from the manifest and
+      // WITHOUT loading a graph. `hyphaeon_dating use_model: true` needs <variant>_taxa.onnx, and a
+      // build exported before that graph existed (or with --skip-taxa-graph) declares no hash for
+      // it. Saying so here means a client can tell in advance instead of discovering it inside a run.
+      try {
+        const m = JSON.parse(readFileSync(resolved.path, "utf8"));
+        out.dating_graph = Object.fromEntries(
+          Object.entries((m && m.variants) || {}).map(([name, v]) => [name, v && v.taxa_onnx_sha256 ? "declared" : "absent"])
+        );
+      } catch {
+        out.dating_graph = null;
+      }
+      out.date_layer = {
+        engine: "in-process (runtime/src/dates), no model",
+        sources: ["fasta headers", "nextstrain auspice json", "name-to-date json map", "csv/tsv table", "caller regex"],
+        beast_xml: "refused (DATES_BEAST_XML_UNSUPPORTED): the reference reads one, this build does not"
       };
     } catch (err) {
       out.reason = "The HyphAeon runtime could not be loaded: " + ((err && err.message) || err);
@@ -827,13 +1032,251 @@ export function createEngine(opts = {}) {
     });
   }
 
+
+  /**
+   * The two Phase-6 time pillars, behind one function because they share everything that is hard:
+   * the date layer, the returned-not-thrown refusal, and a reproduction line that is an object.
+   *
+   * WHAT IS DIFFERENT FROM EVERY OTHER BRANCH IN `run`:
+   *
+   *  - THE DATES ARE INGESTED HERE, ONCE, and the `DateIngest` object — not a taxon->value map —
+   *    is what reaches the pillar. `resolveTemporalDates` accepts a map and returns `byRule: null`
+   *    for one on purpose, so a run fed a map prints `beyond_reference: {count: 0}`, a claim the
+   *    input cannot support, and D31's whole rule table is lost. src/time.js, decision 3.
+   *  - A REFUSAL IS RETURNED, NOT THROWN. `{ok: false, refusal, warnings}` handed to
+   *    `rt.jsonSafe` would become a SUCCESSFUL tool result whose body says nothing ran, with a full
+   *    provenance block and no isError. `refusalOf` + `timeRefusal` convert it to an input-class
+   *    EngineError with the refusal's own code.
+   *  - `runDating` PARSES THE ALIGNMENT ITSELF and never sees a `loaded`: the reference's dating
+   *    pass runs over every sequence with `max_species=None` and `prune_duplicates=False`, because
+   *    the covariance is centred over everything and only then sliced. Feeding it the report's
+   *    capped, duplicate-collapsed `loaded` would give a different estimate, not an approximation
+   *    of the same one (runtime/src/datingNeural.js, notes 2 and 3).
+   *  - `runTemporal` DOES need `prepareRun` and a session, and its `inputs` keys are whitelisted:
+   *    `alignment | tree | dates` and a typo THROWS (temporal/run.js `assertInputNames`), because
+   *    `??` used to turn one into a summary file that could not say what it analysed.
+   */
+  async function runTimePillar({ analysis, rt, req, options, toolOptions, mapped, names, treeGiven, surface, progress, onProgress, signal, session: sessionFor, t0 }) {
+    const alignmentName = names.alignment;
+    const treeName = names.tree;
+    const datesName = names.dates_file || null;
+
+    // --- the date layer, once ----------------------------------------------------------------
+    const ingestDatesFn = requireRuntime(rt, "ingestDates", "dates/ingest.js");
+    const taxaForDatesFn = requireRuntime(rt, "taxaForDates", "dates/ingest.js");
+    const ingest = ingestDatesFn({
+      taxa: taxaForDatesFn(req.alignment),
+      source: typeof req.dates_file === "string" && req.dates_file.length ? req.dates_file : null,
+      sourceName: datesName,
+      sourceKind: toolOptions.date_source_kind || "auto",
+      timeUnits: toolOptions.time_units ?? null,
+      strainCol: toolOptions.strain_col ?? null,
+      dateCol: toolOptions.date_col ?? null,
+      delimiter: toolOptions.delimiter ?? null,
+      dateRegex: toolOptions.date_pattern ?? null,
+      regexFlags: toolOptions.date_pattern_flags ?? "",
+      archival1959: toolOptions.archival_1959 === true,
+      headerFallback: toolOptions.header_fallback !== false
+    });
+    if (!ingest.ok) {
+      const refuse = ingest.warnings.find((w) => w.severity === "refuse");
+      throw timeRefusal({
+        code: (refuse && refuse.code) || "DATES_NONE",
+        message: (refuse && refuse.message) || "No sequence could be dated.",
+        data: (refuse && refuse.data) || {}
+      });
+    }
+    // The two questions the browser puts to a human and a tool call cannot ask. src/time.js,
+    // decisions 1 and 2. The gate is applied HERE, before any graph is loaded and before the
+    // pillar runs, and its overrides are recorded in provenance.
+    const gate = dateGate(ingest, toolOptions);
+    if (!gate.ok) {
+      const first = gate.blocking[0];
+      throw new EngineError("input", first.message, { code: first.code, hint: first.hint });
+    }
+    const dateReviewBlock = dateReview(ingest, { rows: false });
+
+    let result;
+    let baseProvenance;
+    let loaded = null;
+    let reference;
+    const warnings = [];
+
+    if (analysis === "dating") {
+      const runDating = requireRuntime(rt, "runDating", "dating/run.js");
+      let neural = null;
+      let modelUnavailableReason = null;
+      if (toolOptions.use_model === true) {
+        // `use_model` is a REQUEST, never an availability accident: `resolveDistanceMode('auto',
+        // hasModel)` answers `latent` with a model pass and `tn93` without, and the two are
+        // different answers on the same data (measured upstream on korber: t_mrca 1938.77 against
+        // 1926.81, twelve years apart, with the whole warning set changing). A build with no dating
+        // graph throws DATING_GRAPH_UNAVAILABLE from `session()` rather than quietly answering with
+        // the other estimator. src/time.js, decision 4.
+        const runPass = requireRuntime(rt, "runDatingModelPass", "datingNeural.js");
+        const handle = await sessionFor(mapped.variant, { taxaGraph: true });
+        const taxaHandle = await handle.loadTaxaGraph();
+        neural = await runPass({ alignmentText: req.alignment, session: taxaHandle, manifest: handle.manifest, progress, signal });
+      } else {
+        modelUnavailableReason = "use_model was not requested; this run is the model-free (root-to-tip over TN93 distances) estimate.";
+      }
+      const out = runDating(
+        Object.assign({}, mapped.runtime, {
+          alignmentText: req.alignment,
+          alignmentName,
+          dates: ingest,
+          neural,
+          modelUnavailableReason,
+          timeUnits: ingest.time_units,
+          progress,
+          signal
+        })
+      );
+      const refusal = refusalOf(out);
+      if (refusal) throw timeRefusal(refusal);
+      const honesty = datingHonesty(out, toolOptions, { alignment: alignmentName, dates: datesName }, ingest);
+      reference = honesty.reference_command;
+      result = rt.jsonSafe({
+        analysis: "dating",
+        ok: true,
+        record: out.record,
+        taxa_summary: out.rows,
+        date_review: dateReviewBlock,
+        honesty,
+        warnings: out.warnings
+      });
+      baseProvenance = {
+        is_surrogate: false,
+        surrogate_for: null,
+        model_variant: neural ? mapped.variant : null,
+        artifact_sha256: null,
+        seed: null,
+        preprocessing: {
+          // D34: this pillar takes no tree on any surface, and `runDating` never calls
+          // `prepareRun`, so there is no LoadedAlignment to reconcile against. Recorded rather than
+          // inferred, so `stampTreeSource`'s reconciliation is never asked a question it cannot
+          // answer from a load that did not happen.
+          tree_source: "tn93",
+          tree_free: { reason: "pillar-is-tree-free", taxa_order: null },
+          tree_provided: treeGiven,
+          taxa_in_alignment: out.record.taxa_count,
+          taxa_used: Array.isArray(out.rows) ? out.rows.length : null,
+          branch_lengths_estimated: false,
+          tn93_saturated_pairs: null,
+          date_source: ingest.source,
+          date_units: ingest.time_units,
+          date_coverage: ingest.coverage,
+          date_gate: gate
+        },
+        warnings: out.warnings
+      };
+      if (treeGiven) {
+        warnings.push({
+          code: "OPTION_NOT_APPLIED",
+          severity: "warn",
+          message:
+            "A tree was supplied and the clock pillar does not take one: PLAN-TEMPORAL D34 declines the reference's " +
+            "`--distance-mode tree`, so this run used " + (out.distanceMode || "tn93") + " distances as it would have without it.",
+          data: { option: "tree" }
+        });
+      }
+    } else {
+      const runTemporal = requireRuntime(rt, "runTemporal", "temporal/run.js");
+      const prepareRun = requireRuntime(rt, "prepareRun", "pipeline.js");
+      const provenanceBlock = requireRuntime(rt, "provenanceBlock", "pipeline.js");
+      const handle = await sessionFor(mapped.variant, {});
+      const prep = await prepareRun({
+        alignmentText: req.alignment,
+        treeText: treeGiven ? req.tree : null,
+        options: mapped.runtime,
+        progress,
+        signal,
+        defaultMaxSpecies: Infinity
+      });
+      loaded = prep.loaded;
+      const out = await runTemporal({
+        loaded: prep.loaded,
+        dates: ingest,
+        session: handle.backbone,
+        options: mapped.runtime,
+        // ONLY these three keys exist and a typo is fatal upstream (assertInputNames). `dates` is
+        // the sole source of `-d` on the reproduction line, which is why the tool carries the
+        // metadata file's NAME as an option even though its text is an input.
+        inputs: { alignment: alignmentName, tree: treeName, dates: datesName },
+        provenance: { surface },
+        progress,
+        onProgress,
+        signal
+      });
+      const refusal = refusalOf(out);
+      if (refusal) throw timeRefusal(refusal);
+      const record = rt.jsonSafe(out);
+      const honesty = temporalHonesty(record, rt);
+      reference = honesty.reference_command;
+      result = { analysis: "temporal", ok: true, record, date_review: dateReviewBlock, honesty };
+      const diagnosed =
+        typeof rt.diagnoseWarnings === "function"
+          ? rt.diagnoseWarnings({ alignmentText: req.alignment, treeArg: prep.treeArg, loaded: prep.loaded, speciesCap: prep.speciesCap, runtimeWarnings: prep.warnings, enabled: true })
+          : prep.warnings;
+      baseProvenance = provenanceBlock({
+        surface,
+        session: handle.backbone,
+        surrogateFor: "no HyPhy counterpart (per-site selection trajectories through calendar time)",
+        seed: record.primaeon ? record.primaeon.seed : null,
+        elapsedSec: (Date.now() - t0) / 1000,
+        options: mapped.runtime,
+        preprocessing: prep.preprocessing,
+        warnings: diagnosed,
+        inputs: { alignment: alignmentName, tree: treeName, dates: datesName }
+      });
+      baseProvenance.preprocessing = Object.assign({}, baseProvenance.preprocessing, {
+        date_source: ingest.source,
+        date_units: ingest.time_units,
+        date_coverage: ingest.coverage,
+        date_gate: gate
+      });
+      baseProvenance.permutations = record.permutations;
+      baseProvenance.temporal_stage = record.stage;
+      baseProvenance.null_state = honesty.null_state;
+    }
+
+    const provenance = Object.assign({}, rt.jsonSafe(baseProvenance || {}), {
+      surface,
+      engine: "in-process",
+      hyphaeon_mcp_version: PKG.version,
+      hyphaeon_runtime_version: rt.version,
+      threads,
+      mds_sign: MDS_SIGN,
+      // AN OBJECT, NOT AN ARGV ARRAY, and deliberately so: see src/time.js decision 5 and
+      // `referenceCommand`'s own guard. `reproduces` is false on every temporal run whose null drew
+      // at all (a different generator, D17) and on every dating run whose dates came from headers
+      // (a wider parser than the reference's), and `caveats` names which.
+      reference_command: reference,
+      elapsed_sec: (Date.now() - t0) / 1000,
+      options: Object.assign({}, options)
+    });
+    if (analysis === "temporal") stampTreeSource(provenance, loaded, { treeGiven, alignmentText: req.alignment });
+    provenance.warnings = Array.isArray(provenance.warnings) ? [...provenance.warnings] : [];
+    for (const key of mapped.notApplied) {
+      provenance.warnings.push({
+        code: "OPTION_NOT_APPLIED",
+        severity: "warn",
+        message: "Option `" + key + "` was recorded but not applied: the in-process runtime does not implement it (see the tool's description).",
+        data: { option: key, value: options[key] }
+      });
+    }
+    provenance.warnings.push(...warnings);
+    return { result, provenance };
+  }
+
   /**
    * Run one native pillar.
    *
    * @param {object} req
-   * @param {"meme"|"busted"|"epistasis"|"dms"|"evaluate"} req.analysis
+   * @param {"meme"|"busted"|"epistasis"|"dms"|"phenotype"|"evaluate"|"dating"|"temporal"} req.analysis
    * @param {string} [req.alignment]
    * @param {string} [req.tree]
+   * @param {string} [req.dates_file]    date metadata TEXT (Auspice JSON, JSON map or CSV/TSV) for the time pillars
    * @param {string} [req.prediction]
    * @param {string} [req.meme_result]
    * @param {object} [req.options]         the tool's options (CLI names)
@@ -845,9 +1288,17 @@ export function createEngine(opts = {}) {
    */
   async function run(req) {
     const { analysis, options = {}, surface = "mcp-stdio", progress } = req;
-    if (!NATIVE_ANALYSES.includes(analysis) || analysis === "analyze") {
+    if (!NATIVE_ANALYSES.includes(analysis) || analysis === "analyze" || analysis === "dates") {
       throw new EngineError("input", "Analysis '" + analysis + "' is not served by engine.run.", {
-        hint: analysis === "analyze" ? "Use engine.analyze." : "Known analyses: " + NATIVE_ANALYSES.filter((a) => a !== "analyze").join(", ") + "."
+        hint:
+          analysis === "analyze"
+            ? "Use engine.analyze."
+            : analysis === "dates"
+              ? // The date layer runs no model and must not pay for one: hyphaeon_dates goes
+                // straight to src/time.js's `ingestFor` over the runtime's `./dates` subpath and
+                // never reaches this engine, so a checkout with no models/ still serves it.
+                "hyphaeon_dates runs the date layer directly (src/time.js), with no engine and no graph."
+              : "Known analyses: " + NATIVE_ANALYSES.filter((a) => a !== "analyze" && a !== "dates").join(", ") + "."
       });
     }
     const t0 = Date.now();
@@ -898,11 +1349,42 @@ export function createEngine(opts = {}) {
         names.phenotype_file = names.phenotype_file || options.phenotype_file_name || "phenotype.csv";
         toolOptions = Object.assign({}, options, { phenotype_file: req.phenotype_file, phenotype_file_name: names.phenotype_file });
       }
+      // Same rule for the date layer's metadata document (the phenotype_file precedent, and the
+      // reason it is a precedent): a caller's Auspice JSON can be megabytes, and an option is
+      // copied into the job store and into `provenance.options`. Only its NAME is an option — and
+      // the name is load-bearing rather than decoration, because it is the only source of `-d` on
+      // the reproduction line.
+      if (typeof req.dates_file === "string" && req.dates_file.trim()) {
+        names.dates_file = names.dates_file || options.dates_file_name || "metadata.csv";
+      }
       const mapped = mapOptions(analysis, toolOptions, {
         defaultVariant: env.HYPHAEON_VARIANT,
         alignmentName,
         treeName
       });
+      // BEFORE ANY GRAPH IS LOADED. `hyphaeon_dating` is model-free by default and the whole point
+      // of that default is that it costs no model byte: the runtime's `./dating` subtree imports no
+      // manifest, no session and no predict.js (measured: 93 ms of import, zero onnxruntime modules
+      // loaded). A dispatch placed after `session()` would have loaded a 7 MB graph to run an 85 ms
+      // regression, which is a different tool from the one advertised.
+      if (analysis === "dating" || analysis === "temporal") {
+        return await runTimePillar({
+          analysis,
+          rt,
+          req,
+          options,
+          toolOptions,
+          mapped,
+          names: Object.assign({}, names, { alignment: alignmentName, tree: treeName }),
+          treeGiven,
+          surface,
+          progress,
+          onProgress: req.onProgress,
+          signal: guard.signal,
+          session,
+          t0
+        });
+      }
       const handle = await session(mapped.variant, { bustedHead: analysis === "busted" });
       const common = {
         alignmentText: req.alignment,
@@ -1265,7 +1747,16 @@ export function createEngine(opts = {}) {
     }
   }
 
-  return { run, analyze, status, session, models, threads, close };
+  /**
+   * The resolved runtime function bag. Exposed so `get_results section=` can page a stored
+   * TemporalRecord with the runtime's OWN `siteRow`, `candidateSiteIndices`,
+   * `temporalReferenceCommand` and `temporalDownloadNotes` rather than a second implementation in
+   * the tool layer: a record is paged long after the run that produced it, and two builders of the
+   * same reproduction line are exactly the disagreement src/time.js decision 5 avoids.
+   */
+  const runtimeBag = () => runtime();
+
+  return { run, analyze, status, session, models, threads, close, runtimeBag };
 }
 
 /**

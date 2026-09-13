@@ -31,6 +31,33 @@ export function example(name) {
   };
 }
 
+/**
+ * An example from the sibling HyphAeon checkout (or HYPHAEON_EXAMPLES_DIR), the same resolution
+ * mcp/test/helpers.js uses. The time pillars' examples live there rather than in the web gallery:
+ * the gallery holds the five selection demos, and korber / H5N1 / H1N1 are the DATED sets.
+ */
+export function engineExamplesDir() {
+  const candidates = [process.env.HYPHAEON_EXAMPLES_DIR, path.resolve(REPO, "../HyphAeon/examples")].filter(Boolean);
+  for (const c of candidates) if (existsSync(c)) return c;
+  return null;
+}
+
+/** `{alignment, tree?, dates_file?, names}` for one engine example; `null` when the checkout is absent. */
+export function engineExample(name, { tree, dates } = {}) {
+  const dir = engineExamplesDir();
+  if (!dir || !existsSync(path.join(dir, name + ".fasta"))) return null;
+  const out = { alignment: readFileSync(path.join(dir, name + ".fasta"), "utf8"), names: { alignment: name + ".fasta" } };
+  if (tree && existsSync(path.join(dir, tree))) {
+    out.tree = readFileSync(path.join(dir, tree), "utf8");
+    out.names.tree = tree;
+  }
+  if (dates && existsSync(path.join(dir, dates))) {
+    out.dates_file = readFileSync(path.join(dir, dates), "utf8");
+    out.names.dates_file = dates;
+  }
+  return out;
+}
+
 export function modelsDir() {
   if (process.env.HYPHAEON_MODELS_DIR) return process.env.HYPHAEON_MODELS_DIR;
   for (const c of [path.join(REPO, "web/static/models"), path.resolve(REPO, "../HyphAeon/models")]) {
@@ -65,7 +92,7 @@ export { silentLogger };
  * Read an SSE stream from a listening server until `done` (or the connection closes).
  * @returns {Promise<Array<{event: string, data: any}>>}
  */
-export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000 } = {}) {
+export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000, onEvent } = {}) {
   return new Promise((resolve, reject) => {
     const events = [];
     const req = http.get(baseUrl + pathname, { headers: { Accept: "text/event-stream" } }, (res) => {
@@ -88,7 +115,10 @@ export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000 
             else if (line.startsWith("data:")) data += line.slice(5).trim();
           }
           if (!data) continue;
-          events.push({ event, data: JSON.parse(data) });
+          // `bytes` is what actually crossed the wire for this event, which is the thing a test
+          // about a streaming null has to be able to assert on.
+          events.push({ event, data: JSON.parse(data), bytes: data.length });
+          if (onEvent) onEvent(events[events.length - 1], events);
           if (event === until) {
             req.destroy();
             resolve(events);

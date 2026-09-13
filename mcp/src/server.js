@@ -66,7 +66,20 @@ export const INSTRUCTIONS =
   "summary plus a job id: page them with get_results section=..., and read hyphaeon://report/{id}. " +
   "The per-pillar tools (hyphaeon_meme, hyphaeon_busted, hyphaeon_epistasis, hyphaeon_dms, " +
   "hyphaeon_phenotype, hyphaeon_evaluate) mirror the CLI one option at a time; hyphaeon_validate " +
-  "checks an alignment without running the model. Results are rankings evaluated against MEME, " +
+  "checks an alignment without running the model. " +
+  "THE TIME PILLARS, for sequences that carry sampling dates: call hyphaeon_dates FIRST — it runs no " +
+  "model, costs milliseconds and reports which sequence got a date and by what rule — then " +
+  "hyphaeon_dating (the molecular clock and MRCA date; model-free by default, and `use_model` is a " +
+  "DIFFERENT estimator rather than a better one) and hyphaeon_temporal (per-site selection " +
+  "trajectories through calendar time with a permutation null). Both REFUSE a date set whose dates " +
+  "are mostly bare numbers read out of sequence names, and one that leaves sequences undated, until " +
+  "you pass the named override: the browser asks a human those two questions and a tool call has " +
+  "nobody to ask. hyphaeon_temporal always runs as a job and its record is never inline (megabytes of " +
+  "trajectories): read it with get_results section=<summary|sites|curves|waves|permutations|dates|" +
+  "candidates|warnings|honesty|provenance>, and read `honesty.null_state` before quoting any negative " +
+  "finding — a null that is still running or was stopped is not a finished result. These two pillars' " +
+  "`provenance.reference_command` is a {command, reproduces, caveats} object rather than the argv " +
+  "array the others carry, because neither can promise a reproduction. Results are rankings evaluated against MEME, " +
   "not truth: rank is strong, scale is compressed, calibration depends on tree regime. Every " +
   "result carries a provenance block: surface \"mcp-stdio\" / \"mcp-http\" means the numbers were " +
   "computed in this process by the JavaScript port — every tool, phenotype included, since Phase 3; " +

@@ -593,6 +593,25 @@ export async function runTemporal({
 				}
 			: null
 	});
+	// WHAT THE NULL ASSUMES, on every run that actually drew one. It is not a defect of this run and
+	// it is not conditional on anything the run measured, so it is emitted whenever a `p_perm` exists
+	// to be over-read and never when there is none to. The whole argument, and what may and may not
+	// be said, is at `TEMPORAL_NULL_ASSUMPTION` in `codes.js`; `temporalDownloadNotes` repeats it to
+	// a reader who takes the CSVs away, and the `/time` page renders it as a standing honesty note,
+	// all three from that one constant.
+	if (nullBlock.completed > 0) {
+		warnings.push(
+			temporalWarning('TEMPORAL_NULL_ASSUMES_EXCHANGEABLE', 'info', TEMPORAL_MESSAGES.NULL_ASSUMES_EXCHANGEABLE, {
+				permutes: 'sampling dates across sequences',
+				holds_fixed: 'the per-sequence attribution at each candidate codon',
+				controls_for: [],
+				does_not_control_for: ['shared ancestry (phylogenetic non-independence)'],
+				upstream: 'temporal.py:657-661',
+				dated_sequences: N,
+				draws: nullBlock.completed
+			})
+		);
+	}
 	if (nullBlock.skipped) {
 		warnings.push(temporalWarning('TEMPORAL_NULL_SKIPPED', 'warn', nullBlock.reason, { C, N, T, work: nullBlock.work, budget: nullBlock.budget }));
 	} else if (nullBlock.cancelled) {

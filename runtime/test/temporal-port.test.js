@@ -94,9 +94,16 @@ import {
 	TEMPORAL_PERM_STAT_UNITS,
 	TEMPORAL_REFERENCE_RULES,
 	TEMPORAL_REFUSALS,
+	TEMPORAL_NULL_ASSUMPTION,
 	TEMPORAL_SITES_COLUMNS,
 	TEMPORAL_SUMMARY_KEYS,
+	TEMPORAL_TAXON_CAPS,
+	temporalTaxonCap,
+	TEMPORAL_TAXON_CEILING,
+	TEMPORAL_TAXON_COST,
 	TEMPORAL_THRESHOLDS,
+	temporalInferSeconds,
+	temporalTaxonPlan,
 	candidateNnz,
 	chunkFor,
 	runTemporal,
@@ -1569,5 +1576,110 @@ describe('the reproduction line, in the states that used to lie', () => {
 		// A block that cannot say how many draws it made is a block with no permutation numbers.
 		expect(reproduces).toBe(false);
 		expect(caveats.join(' ')).toContain('completed no shuffles');
+	});
+});
+
+// =================================================================================================
+// Phase 6's review: what the null assumes, how a candidate is told from an untested codon, and the
+// per-surface taxon policy. X1, X5 and X3.
+// =================================================================================================
+
+describe('the review findings this phase closed', () => {
+	it('X1: says what the date-shuffling null assumes, on every run that drew one', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 10 });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 20 } });
+		const w = r.warnings.find((x) => x.code === 'TEMPORAL_NULL_ASSUMES_EXCHANGEABLE');
+		expect(w, 'the null drew 20 shuffles and the record must say what they assume').toBeTruthy();
+		// The claim itself, and the two halves of it that must both be present: what is permuted, and
+		// what that does not control for. Anything softer is the silence the finding was about.
+		expect(w.message).toMatch(/exchangeable/);
+		expect(w.message).toMatch(/descent|ancestry/);
+		expect(w.message).toMatch(/temporal\.py:657/);
+		expect(w.data.does_not_control_for).toContain('shared ancestry (phylogenetic non-independence)');
+		expect(w.severity).toBe('info');
+		// One source for the sentence, so the page, the downloads and the MCP cannot drift.
+		expect(w.message).toBe(`${TEMPORAL_NULL_ASSUMPTION.lead} ${TEMPORAL_NULL_ASSUMPTION.rest}`);
+		expect(temporalDownloadNotes(r).join(' ')).toContain(TEMPORAL_NULL_ASSUMPTION.lead);
+		// And NOT on a run with no null: there is no p to over-read.
+		const none = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 20, workBudget: 1 } });
+		expect(none.permutations.completed).toBe(0);
+		expect(none.warnings.some((x) => x.code === 'TEMPORAL_NULL_ASSUMES_EXCHANGEABLE')).toBe(false);
+	});
+
+	it('X5: `p_perm` 1.0 is not the key to who was tested, and the note no longer says it is', async () => {
+		const { loaded, dates, predict } = stubRun({ L: 10, invariable: [0, 1] });
+		const r = await runTemporal({ loaded, dates, predict, options: { numTimePoints: 12, permutations: 20 } });
+		const notes = temporalDownloadNotes(r).join(' ');
+		// The column that IS in the file and DOES carry the distinction.
+		expect(notes).toContain('`classification`');
+		expect(notes).toMatch(/INVARIABLE.*FLAT_NO_SIGNAL/);
+		// And the measured counter-example to the obvious reading.
+		expect(notes).toMatch(/399 of 566/);
+		// The opt-in column, which is the other half of "make the CSV carry the distinction".
+		const plain = parseCsvText(temporalSitesCsvText(r));
+		expect(plain.header).not.toContain('stage1');
+		expect(plain.header).toEqual([...TEMPORAL_SITES_COLUMNS]);
+		const marked = parseCsvText(temporalSitesCsvText(r, { stage1Column: true }));
+		expect(marked.header[marked.header.length - 1]).toBe('stage1');
+		expect(marked.rows.length).toBe(plain.rows.length);
+		for (let i = 0; i < marked.rows.length; i++) {
+			expect(marked.rows[i][marked.header.length - 1]).toBe(r.sites.stage1[i] ? '1' : '0');
+		}
+		// Default OFF everywhere it could reach a file, so the byte-equality claim survives.
+		expect(temporalDownloads(r)[0].text).toBe(temporalSitesCsvText(r));
+		expect(temporalDownloads(r, { stage1Column: true })[0].text).toBe(temporalSitesCsvText(r, { stage1Column: true }));
+	});
+
+	it('X3: the taxon policy and its cost live in the runtime, one object for three surfaces', () => {
+		// The browser caps and the two server-side surfaces do not, which is the reference's own
+		// default; the ceiling is PLAN.md's and is the same number for all three.
+		expect(TEMPORAL_TAXON_CAPS.browser).toBe(TEMPORAL_THRESHOLDS.browserTaxonCap);
+		expect(TEMPORAL_TAXON_CAPS.browser).toBe(256);
+		expect(TEMPORAL_TAXON_CAPS.mcp).toBeNull();
+		expect(TEMPORAL_TAXON_CAPS.server).toBeNull();
+		expect(TEMPORAL_TAXON_CEILING).toBe(1000);
+		// AND THE TABLE IS KEYED BY THE STRINGS THE SURFACES ACTUALLY STAMP. Its first version was
+		// keyed by four nicknames, of which only `browser` is ever passed: `provenance.surface` is
+		// `web-time`, `mcp-stdio`, `mcp-http` or `node-server`. Every non-browser lookup missed and
+		// fell through to the runtime default — to the right value, today, which is exactly why the
+		// miss was invisible. If a cap ever stops being null this assertion is what carries it.
+		for (const [stamped, nickname] of [
+			['web-time', 'browser'],
+			['mcp-stdio', 'mcp'],
+			['mcp-http', 'mcp'],
+			['node-server', 'server']
+		]) {
+			expect(Object.prototype.hasOwnProperty.call(TEMPORAL_TAXON_CAPS, stamped), stamped).toBe(true);
+			expect(temporalTaxonCap(stamped), stamped).toBe(TEMPORAL_TAXON_CAPS[nickname]);
+		}
+		// An unknown surface still gets the runtime's policy, never the browser's.
+		expect(temporalTaxonCap('something-else')).toBe(TEMPORAL_TAXON_CAPS.runtime);
+		// The measured table, and the two facts the policy turns on: memory does not grow with N,
+		// and the per-codon-sequence rate falls, so a linear rate constant is a local anchor only.
+		const first = TEMPORAL_TAXON_COST[0];
+		const last = TEMPORAL_TAXON_COST[TEMPORAL_TAXON_COST.length - 1];
+		expect(last.taxa / first.taxa).toBeGreaterThan(15);
+		expect(last.peakRssMb).toBeLessThan(2 * first.peakRssMb);
+		const rate = (row) => (row.taxa * row.codons) / row.inferSeconds;
+		expect(rate(last)).toBeLessThan(rate(first) / 3);
+		// And the interpolation reproduces every measured row exactly.
+		for (const row of TEMPORAL_TAXON_COST) {
+			expect(temporalInferSeconds(row.taxa, row.codons).seconds).toBeCloseTo(row.inferSeconds, 9);
+		}
+		// The plan: the browser downsamples and says so, the MCP does not, both refuse above 1,000.
+		const browser = temporalTaxonPlan({ surface: 'browser', taxa: 900, codons: 566 });
+		expect(browser.capApplies).toBe(true);
+		expect(browser.refuse).toBe(false);
+		expect(browser.reason).toMatch(/time-blind/);
+		const mcp = temporalTaxonPlan({ surface: 'mcp', taxa: 900, codons: 566 });
+		expect(mcp.capApplies).toBe(false);
+		expect(mcp.cap).toBeNull();
+		for (const surface of ['browser', 'mcp', 'server', 'runtime']) {
+			expect(temporalTaxonPlan({ surface, taxa: 1001, codons: 566 }).refuse).toBe(true);
+			expect(temporalTaxonPlan({ surface, taxa: 1000, codons: 566 }).refuse).toBe(false);
+		}
+		// An unknown surface gets the runtime's policy, never the browser's: a caller that silently
+		// downsampled because it misspelled its own name is the failure this guards.
+		expect(temporalTaxonPlan({ surface: 'nope', taxa: 900, codons: 566 }).cap).toBeNull();
 	});
 });

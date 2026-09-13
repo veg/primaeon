@@ -42,7 +42,7 @@
  * The
  * curvature test does prefer the spline here, and the section says so in full (`clockNote`), with
  * the spline's date and the test that chose it. But the spline has no interval at all: its
- * bootstrap raises on every replicate upstream (`dating.py:1917` hands numpy's `rcond=` to
+ * bootstrap raises on every replicate upstream (`dating.py:1912` hands numpy's `rcond=` to
  * `scipy.linalg.lstsq`, whose keyword is `cond=`), so all four of its intervals collapse to their
  * point estimates, and a zero-width 95 % interval must never be drawn as an interval. An estimate
  * that cannot be argued with is not the one to headline, so the headline is the straight line —
@@ -54,6 +54,16 @@
  * and positive-width, so the page quotes the generalised fit and agrees with the CLI's own
  * top-level `t_mrca`. The only model the rule ever refuses is the spline, and only because of the
  * dead bootstrap. `headlineOf().departed` is what the section prints the departure sentence from.
+ *
+ * SINCE PHASE 6'S REVIEW THE RULE IS THE RUNTIME'S, not this file's. It was browser-only logic the
+ * MCP and the server never saw, so those two headlined `record.t_mrca` — the spline, here — and one
+ * run answered with two different ancestor dates depending on which surface was asked.
+ * `runtime/src/dating/headline.js` is the single copy; `headlineOf` calls it and widens the result
+ * into this file's `ModelRecord` types. That move also brought the question the rule never asked:
+ * WHETHER THE CLOCK HAS ANY SIGNAL. A fit on sequences with no temporal structure still produces a
+ * date and this section still stated it — reproduced on 40 pseudorandom sequences at R² 0.070,
+ * slope p 0.104 — so `headlineOf().quotable` is now false there and `verdictSentence` leads with
+ * the refutation instead of the date. Nothing is refused: `hyphaeon dating` prints the number too.
  *
  * THE ENSEMBLE IS NOT A SECOND ANSWER. `dating.py:2916` converts each interval to a standard error
  * by `(hi − lo) / (2 × 1.96)` and re-forms a symmetric one, which applied to a deliberately skewed
@@ -77,6 +87,8 @@
  * to one decimal; per-sequence dates to one; residuals to two; z to two; rates and RMSE to four
  * significant figures in scientific notation with real superscripts; R² to three decimals.
  */
+
+import { datingHeadline, isDegenerateInterval } from '@veg/hyphaeon-runtime/dating';
 
 import type { DatingResult, TaxonDatingRow, TimeUnits } from './types';
 
@@ -345,9 +357,14 @@ export function isUnbounded(ci: readonly number[] | null): boolean {
 	return Boolean(ci && ci.length === 2 && !Number.isFinite(ci[0]) && Number.isFinite(ci[1]));
 }
 
-/** True when an interval is `[x, x]` — a point estimate wearing an interval's shape. */
+/**
+ * True when an interval is `[x, x]` — a point estimate wearing an interval's shape.
+ * The predicate is the runtime's since phase 6's review, because `datingHeadline` decides with it
+ * and a page that disagreed with the rule about what a degenerate interval IS would quote a
+ * different fit from the MCP on the same record.
+ */
 export function isDegenerate(ci: readonly number[] | null): boolean {
-	return Boolean(ci && ci.length === 2 && Number.isFinite(ci[0]) && ci[0] === ci[1]);
+	return isDegenerateInterval(ci);
 }
 
 export interface HeadlineModel {
@@ -358,6 +375,10 @@ export interface HeadlineModel {
 	departed: boolean;
 	/** The model the reference selected, always — named even when it is the one quoted. */
 	activeKey: ModelKey;
+	/** False when the date may not be stated as a finding; `refutation` is then not optional. */
+	quotable: boolean;
+	/** The sentence that must be rendered in the same breath as the date, or null. */
+	refutation: string | null;
 }
 
 /**
@@ -373,16 +394,22 @@ export interface HeadlineModel {
  * one the phase-3 rule could not produce.
  */
 export function headlineOf(run: DatingResult): HeadlineModel | null {
-	const activeKey = (String(run.record.active_model ?? 'ols') as ModelKey) || 'ols';
-	const ols = modelOf(run, 'ols');
-	const active = modelOf(run, activeKey) ?? ols;
-	const usable = (m: ModelRecord | null) =>
-		Boolean(m && Number.isFinite(Number(m.t_mrca)) && !isDegenerate(pair(m, 'ci_mrca')));
-	if (usable(active)) return { key: activeKey, model: active as ModelRecord, departed: false, activeKey };
-	if (ols && Number.isFinite(Number(ols.t_mrca))) {
-		return { key: 'ols', model: ols, departed: activeKey !== 'ols', activeKey };
-	}
-	return active ? { key: activeKey, model: active, departed: false, activeKey } : null;
+	// THE RULE MOVED TO THE RUNTIME at phase 6's review and this is now the call, not the copy. It
+	// moved because the MCP and the server headlined `record.t_mrca` — the reference's own
+	// `active_model`, spline and all — while this page refused to, so one run produced two different
+	// ancestor dates depending on which surface a reader asked. `runtime/src/dating/headline.js`
+	// carries the argument, and it also answers the question this rule never asked: whether the
+	// clock has any signal at all (`quotable` / `refutation`, X4).
+	const head = datingHeadline(run.record as Record<string, unknown>);
+	if (!head) return null;
+	return {
+		key: head.key as ModelKey,
+		model: head.model as ModelRecord,
+		departed: head.departed,
+		activeKey: head.activeKey as ModelKey,
+		quotable: head.quotable,
+		refutation: head.refutation
+	};
 }
 
 /**
@@ -550,8 +577,17 @@ export function verdictSentence(run: DatingResult, units: TimeUnits): string {
 	// three estimates the sentence was quoting — least squares being the default is exactly why it
 	// has to say so.
 	const which = head ? `, by ${MODEL_SHORT[head.key]},` : '';
+	// X4: A FIT WITH NO CLOCK SIGNAL STILL PRODUCES A DATE, and this sentence used to state it
+	// flatly. The refutation is the runtime's (`datingHeadline().refutation`), it leads rather than
+	// trails, and the date follows it as a reported number instead of as a finding. The reference
+	// prints the date too, so nothing is refused; what changes is that the sentence can be read.
+	const lede =
+		head && !head.quotable
+			? `${head.refutation} The number itself: these ${fit} sequences${which} would place a common ancestor ${where} ` +
+				`${yr(n(m, 't_mrca'))}, ${interval}.`
+			: `These ${fit} sequences${which} share a common ancestor ${where} ${yr(n(m, 't_mrca'))}, ${interval}.`;
 	return (
-		`These ${fit} sequences${which} share a common ancestor ${where} ${yr(n(m, 't_mrca'))}, ${interval}. ` +
+		`${lede} ` +
 		`The clock runs at ${sci(rate)} substitutions per site per ${unitWord(units)} and accounts for ` +
 		`${Math.round(n(m, 'r2') * 100)} % of the spread in divergence (R² ${num(n(m, 'r2'), 3)}). ` +
 		`Divergence is measured to ${rootSentence(run)}.`

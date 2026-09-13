@@ -42,6 +42,29 @@ export const TOOL_ROWS: readonly ToolRow[] = [
 		returns: 'Trait association per site, PARS signature, trait sectors, permulation p.',
 		note: 'The trait is a preset, a foreground list or pattern, or an inline trait table (phenotype_file); permulations need a tree with branch lengths.'
 	},
+	{
+		name: 'hyphaeon_dates',
+		kind: 'analysis',
+		returns:
+			'The date review stage as data: which rule dated each sequence, what did not match, what was imputed, and whether the set carries a clock at all.',
+		// "Runs no model" would be the natural sentence, and e2e/smoke.spec.ts forbids the bare word
+		// `Runs` anywhere in this table: Phase 3 had a "Runs" COLUMN that marked tools bridged to the
+		// Python reference, and the assertion that keeps it deleted cannot tell a column from a verb.
+		note: 'Loads no model and no graph — milliseconds. Call it first: it reports the two gates the two pillars below refuse on (dates read mostly as bare numbers in a sequence name, and sequences that carry none).'
+	},
+	{
+		name: 'hyphaeon_dating',
+		kind: 'analysis',
+		returns: 'The molecular clock: rate, MRCA date with its interval, the spline adjudication, and a per-taxon table of residuals and outliers.',
+		note: 'Model-free by default, and takes no tree (D34). use_model adds the second ONNX artifact and a different estimator — on the bundled korber example the two ancestor dates are twelve years apart, so the mode is quoted with the date.'
+	},
+	{
+		name: 'hyphaeon_temporal',
+		kind: 'analysis',
+		returns:
+			'Per-site selection trajectories through calendar time, a permutation null, four fPCA wave modes, and a four-way classification against the static call.',
+		note: 'Always a job; the record is megabytes and is read one section at a time. Every section carries the honesty block: which of the null\'s four states this run is in, that p_perm is 1.0 at untested codons by the reference\'s own fill, and that the wave shares move with the null.'
+	},
 	{ name: 'hyphaeon_evaluate', kind: 'analysis', returns: 'Concordance of a meme CSV with a HyPhy MEME JSON: correlations, ROC-AUC, PPV, FPR, confusion matrices.' },
 	{ name: 'job_status', kind: 'control', returns: 'Phase, progress and warnings of a queued run.' },
 	{ name: 'get_results', kind: 'control', returns: 'A completed job\'s result, shaped with fields, top or summary_only.' },

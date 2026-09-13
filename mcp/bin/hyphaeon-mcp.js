@@ -12,9 +12,17 @@
  *
  * EVERY tool runs in this process (src/engine.js over onnxruntime-node; provenance.surface
  * "mcp-stdio"): hyphaeon_analyze (the whole report), hyphaeon_meme, hyphaeon_busted,
- * hyphaeon_epistasis, hyphaeon_dms, hyphaeon_phenotype and hyphaeon_evaluate. Since Phase 3
- * nothing spawns a subprocess — no Python, no WebAssembly tree tool — so the only thing this
- * process needs on disk is the models directory (PLAN.md 8, phase 3; D16, D22).
+ * hyphaeon_epistasis, hyphaeon_dms, hyphaeon_phenotype, hyphaeon_evaluate and, since Phase 6, the
+ * time pillars — hyphaeon_dates, hyphaeon_dating and hyphaeon_temporal. Since Phase 3 nothing
+ * spawns a subprocess — no Python, no WebAssembly tree tool — so the only thing this process needs
+ * on disk is the models directory (PLAN.md 8, phase 3; D16, D22).
+ *
+ * TWO OF THOSE NEED NO MODELS AT ALL. `hyphaeon_dates` runs the runtime's `./dates` subtree, which
+ * imports no manifest, no session and no `predict.js` (measured: 93 ms of module import, zero
+ * onnxruntime modules loaded), and `hyphaeon_dating` loads a graph only when `use_model` is set —
+ * so a checkout with no models directory still serves both, and says so rather than failing at the
+ * first call. `hyphaeon_dating use_model: true` needs a SECOND artifact, `<variant>_taxa.onnx`;
+ * `list_models` reports `dating_graph` per variant so a client can tell before it asks.
  *
  * Environment: HYPHAEON_MODELS_DIR (manifest.json and the graphs; default web/static/models,
  * then the sibling HyphAeon/models), HYPHAEON_VARIANT (default model variant),
