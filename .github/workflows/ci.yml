@@ -98,7 +98,13 @@ env:
   # repository's suites loads them, so every check stayed green while the parity job below — which
   # runs the Python reference with HYPHAEON_WEIGHTS and HF_HUB_OFFLINE=1 — lost all 23 of its
   # reference runs at startup (measured on run 34714101215).
-  ENGINE_REF: phase-5d
+  #
+  # phase-5e adds one more thing the parity job needs: the harness used to assume a missing .nwk
+  # meant "the CLI will extract the embedded tree", which is true of RHO and of nothing else. The
+  # dated examples have no tree at all, so the reference command formed for them could not run and
+  # the job exited 2 on six failed reference runs (34729264726). Those examples now get only their
+  # --use-tn93 reference, which is the only run this app's surfaces make for them under D22.
+  ENGINE_REF: phase-5e
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on
