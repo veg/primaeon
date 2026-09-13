@@ -81,6 +81,11 @@ import { createSession } from '../src/createSession.js';
 import { runDatingModelPass } from '../src/datingNeural.js';
 import { loadTaxaGraph, releaseSessions, runTaxaSites } from '../src/session-node.js';
 import { parseManifest, pickVariant, taxaGraphArch, taxaOutputNames, TAXA_OUTPUT_NAMES } from '../src/manifest.js';
+// The distance engine, resolved once for the whole file. `runDating` and `runDatingModelPass` both
+// compute TN93 matrices (the pass's square one is a MODEL INPUT), and since @veg/hyphaeon-js's
+// JavaScript TN93 was deleted a run without an engine refuses rather than computing them itself.
+// Under Node the loader finds runtime/vendor/tn93/ and verifies its sha256 before instantiating.
+import { resolveTn93Options } from '../src/tn93-wasm.js';
 import {
 	DATING_NEURAL_MAX_TAXA,
 	NOT_BUILT,
@@ -161,6 +166,8 @@ const ABS_FIELD = /divergence_residual|root_divergence|fitted_divergence|\bd0$|s
 const manifestText = HAS_GRAPH ? readFileSync(join(MODELS, 'manifest.json'), 'utf8') : '{}';
 const alignmentText = HAS_EXAMPLE ? readFileSync(join(EXAMPLES, 'korber_env_gp160.fasta'), 'utf8') : '';
 
+const TN93 = (await resolveTn93Options({ shape: 'cross' })).tn93Options;
+
 let shared = null;
 async function chain() {
 	if (shared) return shared;
@@ -178,7 +185,8 @@ async function chain() {
 			dates,
 			rootTaxon: 'CONSENSUS',
 			distanceMode: mode,
-			neural: pass
+			neural: pass,
+			tn93Options: TN93
 		});
 	}
 	shared = { session, taxa, pass, seqs, dates, runs };
@@ -522,7 +530,8 @@ suite('a run without the dating graph is phase 3, exactly', () => {
 			alignmentText,
 			dates,
 			rootTaxon: 'CONSENSUS',
-			modelUnavailableReason: 'this build declares no dating graph'
+			modelUnavailableReason: 'this build declares no dating graph',
+			tn93Options: TN93
 		});
 		expect(run.ok).toBe(true);
 		expect(run.record.distance_mode).toBe('tn93');
@@ -539,7 +548,7 @@ suite('a run without the dating graph is phase 3, exactly', () => {
 
 	it('reproduces phase 3\'s own numbers, which the model must not have moved', async () => {
 		const { dates } = await chain();
-		const run = runDating({ alignmentText, dates, rootTaxon: 'CONSENSUS' });
+		const run = runDating({ alignmentText, dates, rootTaxon: 'CONSENSUS', tn93Options: TN93 });
 		// `hyphaeon dating --method ols`, the model-free acceptance run: unchanged by phase 4.
 		expect(run.record.ols.t_mrca).toBeCloseTo(1893.91095511759, 6);
 		expect(run.record.spline.t_mrca).toBeCloseTo(1938.7746674292187, 4);
@@ -549,7 +558,7 @@ suite('a run without the dating graph is phase 3, exactly', () => {
 
 	it('refuses `latent` without a model rather than approximating a root in its space', async () => {
 		const { dates } = await chain();
-		expect(() => runDating({ alignmentText, dates, rootTaxon: 'CONSENSUS', distanceMode: 'latent' })).toThrow(
+		expect(() => runDating({ alignmentText, dates, rootTaxon: 'CONSENSUS', distanceMode: 'latent', tn93Options: TN93 })).toThrow(
 			/latent' needs the dating graph/
 		);
 	});
@@ -561,7 +570,7 @@ suite('a run without the dating graph is phase 3, exactly', () => {
 		// the wrong training set. Replicating that would be a date that is wrong and says nothing.
 		const { pass, dates } = await chain();
 		const short = { ...pass, taxa: pass.taxa.slice(0, -1), N: pass.N };
-		const run = runDating({ alignmentText, dates, rootTaxon: 'CONSENSUS', distanceMode: 'tn93', neural: short });
+		const run = runDating({ alignmentText, dates, rootTaxon: 'CONSENSUS', distanceMode: 'tn93', neural: short, tn93Options: TN93 });
 		expect(run.ok).toBe(true);
 		expect(run.record.pgls).toBeNull();
 		expect(run.warnings.find((w) => w.code === 'DATING_MODEL_TAXA_MISSING')).toBeTruthy();
@@ -577,7 +586,8 @@ suite('a run without the dating graph is phase 3, exactly', () => {
 		const run = runDating({
 			sequences: many,
 			dates: new Map([...many.keys()].map((t, i) => [t, 2000 + i * 0.01])),
-			neural: { ...pass, taxa: [...many.keys()], N: many.size }
+			neural: { ...pass, taxa: [...many.keys()], N: many.size },
+			tn93Options: TN93
 		});
 		expect(run.ok).toBe(false);
 		expect(run.refusal).toBe('DATING_MODEL_TOO_MANY_TAXA');

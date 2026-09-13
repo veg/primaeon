@@ -27,6 +27,10 @@
 </script>
 <script lang="ts">
 	import { treeFreeLabel, treeSourceLabel } from '$lib/api';
+	// One set of words for the engine, shared with the clock pillar's own panels (time/dating.ts):
+	// 'wasm' is veg/tn93's compiled build, 'custom' a provider a caller handed in, and there is no
+	// longer a JavaScript port to offer — only a record written before its removal can name one.
+	import { tn93EngineWords } from '$lib/time/dating';
 	import type { MemeRecord } from '$lib/results/types';
 	import { MCP_ADD_LINE, mcpSnippet } from '$lib/results/mcpSnippet';
 	import { downloadText, fileStem, resultCsvText, resultJsonText } from '$lib/results/downloads';
@@ -146,7 +150,7 @@
 						· {(pre.tn93_saturated_pairs as number).toLocaleString()} pair{pre.tn93_saturated_pairs === 1 ? '' : 's'} at the saturation sentinel
 					{/if}
 					{#if pre.tn93_engine}
-						· computed by {pre.tn93_engine === 'wasm' ? "veg/tn93's compiled code (WebAssembly)" : 'the JavaScript port of the tn93 package'}
+						· computed by {tn93EngineWords(pre.tn93_engine)}
 					{/if}
 				</dd>
 				{#if pre.display_tree_source}

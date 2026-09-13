@@ -19,7 +19,7 @@ import { classifyRun, workFor, MAX_SYNC_WORK } from "../src/caps.js";
 import { example } from "./helpers.js";
 
 describe("parseAlignment is the library's dataset.py mirror", () => {
-  it("reads FASTA, takes the first header token, strips quotes, maps U to T, stops at an embedded tree", () => {
+  it("reads FASTA, takes the first header token, strips quotes, maps U to T, stops at an embedded tree", async () => {
     // dataset.py:106 takes the first whitespace token of the header and strips quotes, so
     // `>'seq one'` is the name `seq`; the library replicates it and this pins it on this surface.
     const text = ">'seq one' extra\nauggca\nAUG\n>seq_two\nATGGCAATG\n((seq one,seq_two));\n";
@@ -33,7 +33,7 @@ describe("parseAlignment is the library's dataset.py mirror", () => {
     expect(hasEmbeddedTree(">a\nATG\n")).toBe(false);
   });
 
-  it("reads PHYLIP sequential (rows need more than 10 sequence characters, dataset.py:80)", () => {
+  it("reads PHYLIP sequential (rows need more than 10 sequence characters, dataset.py:80)", async () => {
     const text = "3 12\nA ATGGCAATGAAA\nB ATGGCAATCAAA\nC ATGGCTATGAAA\n";
     const p = parseAlignment(text);
     expect(p.format).toBe("phylip");
@@ -42,7 +42,7 @@ describe("parseAlignment is the library's dataset.py mirror", () => {
     expect(parseAlignment("3 9\nA ATGGCAATG\nB ATGGCAATC\nC ATGGCTATG\n").format).not.toBe("phylip");
   });
 
-  it("reads NEXUS with quoted names and interleaved rows", () => {
+  it("reads NEXUS with quoted names and interleaved rows", async () => {
     const text = "#NEXUS\nBEGIN DATA;\nDIMENSIONS NTAX=2 NCHAR=6;\nFORMAT DATATYPE=DNA;\nMATRIX\n'a_b' ATG\n'c'   ATG\n'a_b' GCA\n'c'   GCC\n;\nEND;\n";
     const p = parseAlignment(text);
     expect(p.format).toBe("nexus");
@@ -52,7 +52,7 @@ describe("parseAlignment is the library's dataset.py mirror", () => {
     ]);
   });
 
-  it("returns unknown for garbage and never throws", () => {
+  it("returns unknown for garbage and never throws", async () => {
     expect(parseAlignment("hello world").format).toBe("unknown");
     expect(parseAlignment("").sequences).toEqual([]);
     expect(parseAlignment(">\nATG\n").sequences).toEqual([]); // dataset.py:107 raises; here: no sequences
@@ -60,7 +60,7 @@ describe("parseAlignment is the library's dataset.py mirror", () => {
 });
 
 describe("CODES", () => {
-  it("publishes every library code plus the two app codes, and none of the three D22 retired", () => {
+  it("publishes every library code plus the two app codes, and none of the three D22 retired", async () => {
     for (const c of DIAGNOSTIC_CODES) expect(CODES).toHaveProperty(c);
     // The library's codes, the app codes, and — since Phase 6 — the date layer's own thirty-one
     // plus this surface's three (two date gates and the dating distance-mode pair). Since the
@@ -78,7 +78,7 @@ describe("CODES", () => {
     for (const gone of ["TREE_MISSING", "BRANCH_LENGTHS_MISSING", "TN93_UNAVAILABLE"]) expect(CODES).not.toHaveProperty(gone);
   });
 
-  it("every pillar is native: there is no bridged list left", () => {
+  it("every pillar is native: there is no bridged list left", async () => {
     expect([...NATIVE_ANALYSES].sort()).toEqual(["analyze", "busted", "dates", "dating", "dms", "epistasis", "evaluate", "meme", "phenotype", "temporal"]);
   });
 
@@ -87,7 +87,7 @@ describe("CODES", () => {
 
     // `dates` reads sequence NAMES: no codon is parsed, no matrix is built, no graph is loaded.
     // Quoting the library's model-pass cost here would promise a forward pass it never makes.
-    const dates = diagnose({ alignment, analysis: "dates" });
+    const dates = await diagnose({ alignment, analysis: "dates" });
     expect(dates.summary.work).toBe(0);
     expect(dates.summary.engine).toBe("in-process (no model)");
     expect(dates.summary.estimated_seconds).toBeLessThan(0.5);
@@ -98,24 +98,24 @@ describe("CODES", () => {
 
     // `dating`'s default path is O(taxa x codons) and model-free; `use_model` is opt-in and this
     // tool has no flag for it, so it sizes the default and says which default it sized.
-    const dating = diagnose({ alignment, analysis: "dating" });
+    const dating = await diagnose({ alignment, analysis: "dating" });
     expect(dating.summary.engine).toBe("in-process (no model unless use_model)");
     expect(dating.summary.work).toBe(workFor("dating", dating.summary.codons, dating.summary.sequence_count));
     expect(dating.summary.work).toBeLessThan(workFor("meme", dating.summary.codons, dating.summary.sequence_count));
     expect(dating.warnings.find((w) => w.code === "RUN_MODE").message).toMatch(/by default, loads NO model/);
 
     // `temporal` is ALWAYS a job however small the input, because its record is megabytes.
-    const temporal = diagnose({ alignment, analysis: "temporal" });
+    const temporal = await diagnose({ alignment, analysis: "temporal" });
     expect(temporal.summary.mode).toBe("job");
     const tMode = temporal.warnings.find((w) => w.code === "RUN_MODE");
     expect(tMode.data.mode).toBe("job");
     expect(tMode.message).toMatch(/ALWAYS returns a job id/);
     expect(tMode.message).toMatch(/never the record/);
     // And its estimate carries the null, which the library's one-pass figure does not know about.
-    expect(temporal.summary.estimated_seconds).toBeGreaterThan(diagnose({ alignment, analysis: "meme" }).summary.estimated_seconds);
+    expect(temporal.summary.estimated_seconds).toBeGreaterThan((await diagnose({ alignment, analysis: "meme" })).summary.estimated_seconds);
   });
 
-  it("treeSourceFrom names what the run will record", () => {
+  it("treeSourceFrom names what the run will record", async () => {
     expect(treeSourceFrom({ treeGiven: true })).toBe("user");
     expect(treeSourceFrom({ treeGiven: false, embedded: true })).toBe("embedded");
     expect(treeSourceFrom({ treeGiven: false, embedded: false })).toBe("tn93");
@@ -127,7 +127,7 @@ describe("diagnose on the bundled examples", () => {
   it("camelid: a topology-only tree goes tree-free (no_branch_lengths), at INFO, for every pillar", async () => {
     const alignment = await example("camelid.fasta");
     const tree = await example("camelid.nwk");
-    const out = diagnose({ alignment, tree });
+    const out = await diagnose({ alignment, tree });
     const w = out.warnings.find((x) => x.code === "TREE_FREE_TN93");
     expect(w).toBeDefined();
     expect(w.severity).toBe("info");
@@ -145,7 +145,7 @@ describe("diagnose on the bundled examples", () => {
 
     // Every pillar, phenotype included, is in-process and sees the same decision.
     for (const analysis of ["meme", "busted", "epistasis", "dms", "phenotype", "analyze"]) {
-      const each = diagnose({ alignment, tree, analysis });
+      const each = await diagnose({ alignment, tree, analysis });
       expect(each.summary.engine, analysis).toBe("in-process");
       expect(each.summary.tree_source, analysis).toBe("tn93");
       expect(each.ok, analysis).toBe(true);
@@ -159,7 +159,7 @@ describe("diagnose on the bundled examples", () => {
   it("bat_oas1: a chronogram in Mya gets DISTANCE_RESCALED (dataset.py:678-681)", async () => {
     const alignment = await example("bat_oas1.fasta");
     const tree = await example("bat_oas1.nwk");
-    const out = diagnose({ alignment, tree });
+    const out = await diagnose({ alignment, tree });
     const w = out.warnings.find((x) => x.code === "DISTANCE_RESCALED");
     expect(w).toBeDefined();
     expect(w.severity).toBe("warn");
@@ -177,7 +177,7 @@ describe("diagnose on the bundled examples", () => {
   });
 
   it("Smc6 is clean apart from the shallow-tree regime note", async () => {
-    const out = diagnose({ alignment: await example("Smc6.fasta"), tree: await example("Smc6.nwk") });
+    const out = await diagnose({ alignment: await example("Smc6.fasta"), tree: await example("Smc6.nwk") });
     expect(out.ok).toBe(true);
     expect(out.summary.format).toBe("fasta");
     expect(out.summary.sequence_count).toBe(20);
@@ -191,7 +191,7 @@ describe("diagnose on the bundled examples", () => {
   });
 
   it("RHO: NEXUS with an embedded tree, 710 sequences, over the taxon cap", async () => {
-    const out = diagnose({ alignment: await example("RHO.fasta"), analysis: "phenotype" });
+    const out = await diagnose({ alignment: await example("RHO.fasta"), analysis: "phenotype" });
     expect(out.summary.format).toBe("nexus");
     expect(out.summary.sequence_count).toBe(710);
     expect(out.summary.tree_source).toBe("embedded");
@@ -205,7 +205,7 @@ describe("diagnose refusals and modes", () => {
 
   it("ACCEPTS an alignment with no tree (D22): TREE_FREE_TN93 at info, never a refusal", async () => {
     const alignment = await example("bat_oas1.fasta");
-    const r1 = diagnose({ alignment });
+    const r1 = await diagnose({ alignment });
     expect(r1.ok).toBe(true);
     const w = r1.warnings.find((x) => x.code === "TREE_FREE_TN93");
     expect(w.severity).toBe("info");
@@ -214,33 +214,59 @@ describe("diagnose refusals and modes", () => {
     expect(r1.warnings.map((x) => x.code)).not.toContain("TREE_MISSING");
 
     // use_tn93 forces the same path on an alignment whose tree IS usable.
-    const withTree = diagnose({ alignment, tree: await example("bat_oas1.nwk") });
+    const withTree = await diagnose({ alignment, tree: await example("bat_oas1.nwk") });
     expect(withTree.summary.tree_source).toBe("user");
     expect(withTree.warnings.map((x) => x.code)).not.toContain("TREE_FREE_TN93");
-    const forced = diagnose({ alignment, tree: await example("bat_oas1.nwk"), use_tn93: true });
+    const forced = await diagnose({ alignment, tree: await example("bat_oas1.nwk"), use_tn93: true });
     expect(forced.ok).toBe(true);
     expect(forced.summary.tree_source).toBe("tn93");
     expect(forced.warnings.find((x) => x.code === "TREE_FREE_TN93").data.reason).toBe("requested");
 
     // Every pillar behaves the same; none of them can refuse for want of a tree any more.
     for (const analysis of ["meme", "busted", "epistasis", "dms", "phenotype", "analyze"]) {
-      const each = diagnose({ alignment, analysis });
+      const each = await diagnose({ alignment, analysis });
       expect(each.ok, analysis).toBe(true);
       expect(each.summary.tree_source, analysis).toBe("tn93");
       expect(each.warnings.map((x) => x.code), analysis).not.toContain("TN93_UNAVAILABLE");
     }
   });
 
+  it("computes its tree-free distances with the engine the RUN uses, and says which", async () => {
+    // THE DEFECT THIS PINS. `diagnose()` does a full model-level load of its own, so a tree-free
+    // check computes the whole N x N TN93 matrix before any tool runs — and it computed it with the
+    // library's JavaScript port while every pillar that followed used veg/tn93's compiled build.
+    // Nothing failed; the check was simply slower than the run it was checking. MEASURED per
+    // process, median of 7: camelid 212 taxa, alignment only, 200 ms compiled against 373 ported.
+    const alignment = await example("camelid.fasta");
+    const treeFree = await diagnose({ alignment });
+    expect(treeFree.summary.tree_source).toBe("tn93");
+    // camelid is well above the loader's measured break-even, so `auto` must take the compiled one.
+    expect(treeFree.summary.tn93_engine).toBe("wasm");
+
+    // A run WITH a tree computes no matrix at all, so there is no engine to name — null, never a
+    // default label, because a default here would be a claim about work that never happened.
+    const withTree = await diagnose({ alignment: await example("bat_oas1.fasta"), tree: await example("bat_oas1.nwk") });
+    expect(withTree.summary.tree_source).toBe("user");
+    expect(withTree.summary.tn93_engine).toBeNull();
+
+    // The diagnosis does not move with the engine — MEASURED directly against `diagnoseUpload` with
+    // each engine forced, on all five bundled examples: identical warning codes and severities and
+    // a byte-identical summary. This surface has no engine argument to force, so what it can assert
+    // is that the tree-free decision itself is unchanged and still INFO rather than a refusal.
+    expect(treeFree.ok).toBe(true);
+    expect(treeFree.warnings.find((w) => w.code === "TREE_FREE_TN93").severity).toBe("info");
+  });
+
   it("a tree TEXT that will not parse is still an error: a bad tree is not a missing one", async () => {
     const alignment = await example("bat_oas1.fasta");
-    const out = diagnose({ alignment, tree: "this is not newick" });
+    const out = await diagnose({ alignment, tree: "this is not newick" });
     expect(out.warnings.map((w) => w.code)).toContain("TREE_UNPARSEABLE");
   });
 
   it("sizes the report (analyze) like meme and says how the call answers", async () => {
     const alignment = await example("bat_oas1.fasta");
     const tree = await example("bat_oas1.nwk");
-    const out = diagnose({ alignment, tree, analysis: "analyze" });
+    const out = await diagnose({ alignment, tree, analysis: "analyze" });
     expect(out.ok).toBe(true);
     expect(out.summary.engine).toBe("in-process");
     expect(out.summary.work).toBe(351 * 18 * 18);
@@ -249,19 +275,19 @@ describe("diagnose refusals and modes", () => {
     expect(out.warnings.find((w) => w.code === "RUN_MODE").message).toMatch(/DMS section/);
   });
 
-  it("refuses alignment taxa that have no tree tip", () => {
+  it("refuses alignment taxa that have no tree tip", async () => {
     const alignment = ">a\nATGAAATTT\n>b\nATGAAATTC\n>c\nATGAAGTTT\n>d\nATGCAATTT\n";
     const tree = "((a:0.1,b:0.1):0.05,(c:0.1,zzz:0.1):0.05);";
-    const body = diagnose({ alignment, tree });
+    const body = await diagnose({ alignment, tree });
     expect(body.ok).toBe(false);
     expect(body.warnings.find((w) => w.code === "TAXA_NOT_IN_TREE").severity).toBe("refuse");
     expect(body.warnings.find((w) => w.code === "TIPS_NOT_IN_ALIGNMENT")).toBeDefined();
   });
 
-  it("refuses fewer than three taxa and flags frame and stop problems", () => {
+  it("refuses fewer than three taxa and flags frame and stop problems", async () => {
     const alignment = ">a\nATGTAAAAATTTA\n>b\nATGTAGAAATTTA\n";
     const tree = "(a:0.1,b:0.1);";
-    const body = diagnose({ alignment, tree });
+    const body = await diagnose({ alignment, tree });
     const codes = body.warnings.map((w) => w.code);
     expect(body.ok).toBe(false);
     expect(codes).toContain("TOO_FEW_TAXA");
@@ -269,32 +295,32 @@ describe("diagnose refusals and modes", () => {
     expect(codes).toContain("IN_FRAME_STOPS");
   });
 
-  it("a topology-only synthetic tree goes tree-free; negative lengths are still flagged", () => {
-    const out = diagnose({ alignment: seqs(4, 10), tree: "((t0,t1),(t2,t3));" });
+  it("a topology-only synthetic tree goes tree-free; negative lengths are still flagged", async () => {
+    const out = await diagnose({ alignment: seqs(4, 10), tree: "((t0,t1),(t2,t3));" });
     const w = out.warnings.find((x) => x.code === "TREE_FREE_TN93");
     expect(w).toBeDefined();
     expect(w.data.reason).toBe("no_branch_lengths");
     expect(out.summary.tree_source).toBe("tn93");
-    const neg = diagnose({ alignment: seqs(4, 10), tree: "((t0:0.1,t1:-0.1):0.1,(t2:0.1,t3:0.1):0.1);" });
+    const neg = await diagnose({ alignment: seqs(4, 10), tree: "((t0:0.1,t1:-0.1):0.1,(t2:0.1,t3:0.1):0.1);" });
     expect(neg.warnings.map((w) => w.code)).toContain("NEGATIVE_BRANCH_LENGTHS");
     expect(neg.summary.tree_source).toBe("user");
   });
 
-  it("takes the job path above the synchronous codon cap and refuses above the hard caps", () => {
+  it("takes the job path above the synchronous codon cap and refuses above the hard caps", async () => {
     const n = 4;
     const tree = "((t0:0.1,t1:0.1):0.1,(t2:0.1,t3:0.1):0.1);";
-    const job = diagnose({ alignment: seqs(n, 13000), tree });
+    const job = await diagnose({ alignment: seqs(n, 13000), tree });
     expect(job.ok).toBe(true);
     expect(job.summary.mode).toBe("job");
     expect(job.warnings.find((w) => w.code === "RUN_MODE").data.mode).toBe("job");
-    const dms = diagnose({ alignment: seqs(n, 3001), tree, analysis: "dms" });
+    const dms = await diagnose({ alignment: seqs(n, 3001), tree, analysis: "dms" });
     expect(dms.ok).toBe(false);
     expect(dms.warnings.find((w) => w.code === "CAPS_EXCEEDED").severity).toBe("refuse");
   });
 });
 
 describe("caps", () => {
-  it("sizes by the longest sequence and takes the job path above the sync codon cap", () => {
+  it("sizes by the longest sequence and takes the job path above the sync codon cap", async () => {
     expect(workFor("meme", 351, 18)).toBe(351 * 18 * 18);
     expect(workFor("dms", 351, 18)).toBe(351 * 18 * 18 * 19);
     expect(classifyRun("meme", { codons: 351, taxa: 18 })).toMatchObject({ ok: true, mode: "sync" });
@@ -321,7 +347,7 @@ describe("the date gate: validate answers the question the time tools will be as
   it("refuses an undated alignment for `dating` and `temporal`, and says which code and what to do", async () => {
     const alignment = await example("Smc6.fasta");
     for (const analysis of ["dating", "temporal"]) {
-      const out = diagnose({ alignment, analysis });
+      const out = await diagnose({ alignment, analysis });
       expect(out.ok, analysis).toBe(false);
       const refusals = out.warnings.filter((w) => w.severity === "refuse");
       expect(refusals.length, analysis).toBeGreaterThan(0);
@@ -332,31 +358,31 @@ describe("the date gate: validate answers the question the time tools will be as
     }
     // The same file for a pillar with no date layer is unaffected: this gate is not a new refusal
     // for everyone, it is the date tools' own.
-    expect(diagnose({ alignment, analysis: "meme" }).ok).toBe(true);
+    expect((await diagnose({ alignment, analysis: "meme" })).ok).toBe(true);
   });
 
   it("`dates` reports the same gates at INFO, because reporting them is that tool's job", async () => {
     const h1n1 = await example("H1N1_2009_pandemic.fasta");
-    const review = diagnose({ alignment: h1n1, analysis: "dates" });
+    const review = await diagnose({ alignment: h1n1, analysis: "dates" });
     const undated = review.warnings.find((w) => w.code === "DATES_UNDATED_PRESENT");
     expect(undated).toBeDefined();
     expect(undated.severity).toBe("info");
     expect(review.ok).toBe(true);
     // The two analyses refuse the identical fact, with the override named.
-    const run = diagnose({ alignment: h1n1, analysis: "temporal" });
+    const run = await diagnose({ alignment: h1n1, analysis: "temporal" });
     const blocked = run.warnings.find((w) => w.code === "DATES_UNDATED_PRESENT");
     expect(blocked.severity).toBe("refuse");
     expect(blocked.data.override).toBe("drop_undated");
     expect(run.ok).toBe(false);
     // ... and accept it when the caller says so, which is what the run will do with the same flag.
-    const overridden = diagnose({ alignment: h1n1, analysis: "temporal", dates: { drop_undated: true } });
+    const overridden = await diagnose({ alignment: h1n1, analysis: "temporal", dates: { drop_undated: true } });
     expect(overridden.warnings.some((w) => w.code === "DATES_UNDATED_PRESENT" && w.severity === "refuse")).toBe(false);
     expect(overridden.ok).toBe(true);
     expect(overridden.summary.dates.coverage.dated).toBe(95);
     expect(overridden.summary.dates.gate.applied).toContain("DATES_UNDATED_PRESENT");
   });
 
-  it("refuses a dated set with too few sequences at EACH pillar's own threshold", () => {
+  it("refuses a dated set with too few sequences at EACH pillar's own threshold", async () => {
     // Four dated sequences: enough to regress (three), not enough to survey (five,
     // temporal.py:474). One alignment, two answers, and each one says which number it used.
     const four =
@@ -364,11 +390,11 @@ describe("the date gate: validate answers the question the time tools will be as
       ">b_2002\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCG\n" +
       ">c_2003\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCA\n" +
       ">d_2004\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCT\n";
-    const dating = diagnose({ alignment: four, analysis: "dating" });
+    const dating = await diagnose({ alignment: four, analysis: "dating" });
     expect(dating.warnings.some((w) => w.code === "DATING_TOO_FEW_DATED")).toBe(false);
     expect(dating.summary.dates.coverage.dated).toBe(4);
 
-    const temporal = diagnose({ alignment: four, analysis: "temporal" });
+    const temporal = await diagnose({ alignment: four, analysis: "temporal" });
     const refusal = temporal.warnings.find((w) => w.code === "TEMPORAL_TOO_FEW_DATED");
     expect(temporal.ok).toBe(false);
     expect(refusal.severity).toBe("refuse");
@@ -378,13 +404,13 @@ describe("the date gate: validate answers the question the time tools will be as
     expect(temporal.summary.dates.min_dated_taxa).toBe(5);
   });
 
-  it("validating with the run's own date arguments is validating the run: the pattern is applied", () => {
+  it("validating with the run's own date arguments is validating the run: the pattern is applied", async () => {
     const named = ">iso|2001.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCC\n>iso|2002.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCG\n>iso|2003.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCA\n>iso|2004.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCT\n>iso|2005.5|x\nATGAAACCCGGGTTTAAACCCGGGTTTAAACCG\n";
-    const withPattern = diagnose({ alignment: named, analysis: "temporal", dates: { date_pattern: "\\|(\\d{4}\\.\\d)\\|" } });
+    const withPattern = await diagnose({ alignment: named, analysis: "temporal", dates: { date_pattern: "\\|(\\d{4}\\.\\d)\\|" } });
     expect(withPattern.ok).toBe(true);
     expect(withPattern.summary.dates.coverage.dated).toBe(5);
     // A pattern that cannot compile is refused here as the run would refuse it, with its own code.
-    const bad = diagnose({ alignment: named, analysis: "temporal", dates: { date_pattern: "(" } });
+    const bad = await diagnose({ alignment: named, analysis: "temporal", dates: { date_pattern: "(" } });
     expect(bad.ok).toBe(false);
     expect(bad.warnings.map((w) => w.code)).toContain("DATE_REGEX_INVALID");
   });

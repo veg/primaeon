@@ -179,10 +179,14 @@ serve<AnalyzeWorkerRequest, AnalyzeWorkerResponse>(async (req, ctx) => {
 			treeSource: req.treeSource,
 			alignmentName: req.inputs.alignmentName,
 			treeName: req.inputs.treeName,
-			// The compiled TN93 (veg/tn93 v1.0.17) when the page served it, else the library's
-			// JavaScript: `prepareRun` falls back on any load failure and records which ran in
-			// `preprocessing.tn93_engine`. Only a tree-free run reaches either.
-			...(req.tn93Base ? { tn93Wasm: tn93Sources(req.tn93Base) } : { tn93Engine: 'js' })
+			// The compiled TN93 (veg/tn93 v1.0.17), which is the only TN93 there is: @veg/hyphaeon-js
+			// computes no distance of its own any more, so these URLs are not a preference. They are
+			// spread in when the page served them and omitted when it did not, because only a
+			// TREE-FREE run loads the engine — an upload with usable branch lengths is unaffected, and
+			// one without gets the loader's refusal (TN93_ENGINE_UNAVAILABLE, stage `no_sources`)
+			// rather than a silently different set of numbers. `preprocessing.tn93_engine` records
+			// which engine ran.
+			...(req.tn93Base ? { tn93Wasm: tn93Sources(req.tn93Base) } : {})
 		},
 		onSection: (name, payload, meta) => ctx.section(name, payload, Boolean(meta?.final))
 	})) as unknown as AnalyzeResponse['record'];

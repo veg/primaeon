@@ -18,6 +18,36 @@ declare module '@veg/hyphaeon-runtime' {
 	export interface RuntimeProgress {
 		(phase: string, done: number, total: number, message: string): void;
 	}
+	/**
+	 * The library's `diagnose()` with the distance engine this product actually runs handed in
+	 * (runtime/src/pipeline.js). `diagnose` does a full model-level load of its own, so a tree-free
+	 * check computes the WHOLE N x N TN93 matrix — on every upload, on a debounce — and since
+	 * @veg/hyphaeon-js computes no TN93 distance of its own it cannot do that at all without an
+	 * engine: bare `diagnose` throws `Tn93EngineRequiredError` on a tree-free input. This never
+	 * throws. When the compiled build cannot be loaded it reports a `refuse`-level
+	 * `TN93_ENGINE_UNAVAILABLE` row instead, and `tn93_engine_error` carries the detail.
+	 */
+	export function diagnoseUpload(args: {
+		alignmentText: string;
+		treeText?: string | null;
+		maxSpecies?: number;
+		taxaLimit?: number;
+		useTn93?: boolean;
+		/** `'auto'` and `'wasm'` are synonyms; there is no `'js'` — the port was deleted. */
+		tn93Engine?: 'auto' | 'wasm';
+		tn93Wasm?: { glueUrl: string; wasmUrl: string; manifestUrl: string } | null;
+		tn93Options?: Record<string, unknown> | null;
+	}): Promise<{
+		ok: boolean;
+		/** `diagnose()`'s own warnings, verbatim — the same objects at the same severities. */
+		warnings: import('@veg/hyphaeon-js').Diagnostic[];
+		summary: Record<string, unknown>;
+		/** 'wasm' | 'custom' on a tree-free check; null when a tree supplied the distances, when
+		 * the upload was too large to load, or when no engine could be reached. */
+		tn93_engine: string | null;
+		/** The refusal's detail (stage, release, files, both hashes, hint), or null. */
+		tn93_engine_error: Record<string, unknown> | null;
+	}>;
 	export interface RuntimeSessionHandle {
 		session: unknown;
 		ort: unknown;
@@ -170,12 +200,64 @@ declare module '@veg/hyphaeon-runtime' {
 		session: RuntimeSessionHandle;
 		manifest?: Manifest | null;
 		batchSize?: number;
+		/**
+		 * The pass builds a SQUARE TN93 matrix and feeds it to the graph as an input, so the engine
+		 * that computes it is part of the forward pass rather than a diagnostic. `'auto'` (the
+		 * default) and `'wasm'` both mean veg/tn93's compiled code, which is the only TN93 there is;
+		 * a build that will not load ends the pass rather than substituting anything. `tn93Wasm`
+		 * carries the browser's URLs — Node finds its own vendored copy.
+		 */
+		tn93Engine?: 'auto' | 'wasm';
+		tn93Wasm?: { glueUrl: string; wasmUrl: string; manifestUrl: string } | null;
+		tn93Options?: Record<string, unknown> | null;
 		progress?: RuntimeProgress;
 		signal?: AbortSignal;
 	}): Promise<import('@veg/hyphaeon-runtime/dating').DatingModelPass>;
 	export const TAXA_OUTPUT_NAMES: readonly string[];
 	export function taxaOutputNames(manifest?: Manifest | null): string[];
 	export function taxaGraphArch(manifest?: Manifest | null): { rowLayers: number; embedDim: number };
+}
+
+/**
+ * The compiled TN93 loader. It is a subpath of its own because it is a LEAF: it reaches
+ * `@veg/hyphaeon-js` and `manifest.js` and nothing else, so a worker that only dates an alignment
+ * can have veg/tn93's own code without dragging the runtime's main entry into its bundle.
+ */
+declare module '@veg/hyphaeon-runtime/tn93-wasm' {
+	/** The one refusal for "the compiled engine is not available"; `code` is TN93_ENGINE_UNAVAILABLE. */
+	export class Tn93EngineUnavailableError extends Error {
+		code: 'TN93_ENGINE_UNAVAILABLE';
+		stage: string;
+		files: string[];
+		release: string | null;
+		expectedSha256: string | null;
+		actualSha256: string | null;
+		hint: string;
+		toDetail(): Record<string, unknown>;
+	}
+	export function isTn93EngineUnavailable(err: unknown): boolean;
+	export const TN93_JS_ENGINE_REMOVED: string;
+	export function resolveTn93Options(args?: {
+		/** `'auto'` and `'wasm'` are synonyms for the vendored compiled build; there is no third. */
+		engine?: 'auto' | 'wasm';
+		/** Browser URLs for the vendored build; Node finds `runtime/vendor/tn93/` itself. */
+		wasm?: { glueUrl: string; wasmUrl: string; manifestUrl: string } | Record<string, unknown> | null;
+		/** `tn93Options` the caller already holds (matchMode, or its own provider). */
+		options?: Record<string, unknown> | null;
+		/**
+		 * Which of the library's two hooks this is for. They are called with DIFFERENT argument
+		 * lists and read with different strides, so the wrong one answers silently and wrongly;
+		 * the providers refuse the other's call shape rather than trusting the caller.
+		 */
+		shape?: 'square' | 'cross';
+	}): Promise<{
+		tn93Options: Record<string, unknown>;
+		tn93Engine: 'wasm' | 'custom';
+	}>;
+	export function tn93WasmOptions(args?: Record<string, unknown>): Promise<Record<string, unknown>>;
+	export function tn93CrossWasmOptions(args?: Record<string, unknown>): Promise<Record<string, unknown>>;
+	export function libraryHonoursProvider(): boolean;
+	export function libraryHonoursCrossProvider(): boolean;
 }
 
 declare module '@veg/hyphaeon-runtime/web' {

@@ -93,6 +93,18 @@
 	const treeFreeReason = $derived(model?.treePlan.kind === 'tree-free' ? model.treePlan.reason : null);
 	const canRun = $derived(browserReady && !starting && !diagnosisPending && model !== null && model.canRun);
 	const refused = $derived(diagnosis !== null && !diagnosisPending && model !== null && !model.canRun);
+	/**
+	 * A REFUSAL THAT IS NOT ABOUT THE READER'S DATA. veg/tn93's compiled build is the only TN93 in
+	 * the product (@veg/hyphaeon-js computes none of its own), and in a browser it is three files
+	 * fetched from `static/tn93/` and checked against their sha256. When that fails, a tree-free
+	 * upload cannot be measured at all — and nothing on this form can change it: no taxon cap, no
+	 * reference sequence, no variant. Telling a reader to "adjust the inputs" here would send them to
+	 * edit an alignment that is perfectly fine, so the page says whose fault it is instead. The
+	 * refusal's own message carries the stage, the vendored release and both hashes.
+	 */
+	const engineUnavailable = $derived(
+		(model?.blocking ?? []).some((w) => w.code === 'TN93_ENGINE_UNAVAILABLE')
+	);
 	const runDisabledReason = $derived(
 		!browserReady
 			? 'Web Workers and IndexedDB are required; this browser has neither.'
@@ -197,7 +209,10 @@
 				treeText: t.trim() ? t : null,
 				maxSpecies: cap,
 				treeSource: t.trim() ? 'user' : 'unknown',
-				prescreen: true
+				prescreen: true,
+				// The same compiled TN93 the run itself will use: a tree-free diagnosis computes the
+				// whole distance matrix, and it ran on the JavaScript port until this was passed.
+				tn93Base: new URL(`${base}/tn93/`, location.href).href
 			});
 			if (seq !== diagnosisSeq) return;
 			diagnosis = response.diagnosis;
@@ -333,9 +348,15 @@
 		{/if}
 	{:else}
 		<p class="eyebrow">Analyze</p>
-		<h1>{refused ? 'The inputs need a change' : 'Upload an alignment'}</h1>
+		<h1>{engineUnavailable ? 'This installation cannot run a tree-free analysis' : refused ? 'The inputs need a change' : 'Upload an alignment'}</h1>
 		<p class="intro">
-			{#if refused}
+			{#if engineUnavailable}
+				Nothing is wrong with your alignment. The distance engine this page needs — veg/tn93's compiled
+				build, served from this origin and checked against its sha256 — could not be loaded, and there is no
+				second implementation to fall back to, so an alignment with no usable tree cannot be measured here at
+				all. The refusal below names the file and what the check found. An upload whose tree carries branch
+				lengths is unaffected and still runs.
+			{:else if refused}
 				The checks below refused this dataset as it stands. Adjust the inputs or the two settings that can
 				unblock it, and run again; everything else is set from the diagnostics and can be changed on the report.
 			{:else}
@@ -396,7 +417,7 @@
 			{/if}
 
 			<fieldset class="options" disabled={starting}>
-				<legend>Settings that can unblock a refusal</legend>
+				<legend>{engineUnavailable ? 'Settings (none of these can unblock a missing engine)' : 'Settings that can unblock a refusal'}</legend>
 				<label class="field">
 					<span>Reference sequence</span>
 					<select bind:value={reference} disabled={names.length === 0} onchange={() => (referenceTouched = true)}>

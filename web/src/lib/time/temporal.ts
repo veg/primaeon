@@ -73,7 +73,7 @@
 import { TEMPORAL_NULL_ASSUMPTION, TEMPORAL_THRESHOLDS } from '@veg/hyphaeon-runtime/temporal/codes';
 
 import { readsAs } from './dateReview';
-import { num, sci, yr } from './dating';
+import { num, sci, tn93EngineWords, yr } from './dating';
 import type { TimeUnits } from './types';
 
 const EM_DASH = '—';
@@ -268,6 +268,46 @@ export interface TemporalRefusal {
 
 /** The state this section is in, and the one the components switch on. */
 export type TemporalState = 'blocked' | 'offered' | 'running' | 'landed' | 'refused';
+
+/**
+ * `prepareRun`'s preprocessing block, as much of it as this section says out loud.
+ *
+ * WHY THE SECTION HOLDS THIS AT ALL. The temporal pillar's first step is `prepareRun`, which on a
+ * tree-free run computes a pairwise TN93 matrix and RECORDS which engine computed it
+ * (`preprocessing.tn93_engine`, runtime/src/pipeline.js). The worker used to drop that block on the
+ * floor, so this page chose an engine and then could not say which one it had chosen — the same
+ * defect `primaeon.tn93_engine` was added to the dating pillar to close. The record `runTemporal`
+ * returns carries no equivalent field, so it travels beside the record (protocol.ts
+ * `TemporalResponse.preprocessing`) rather than inside it.
+ */
+export interface TemporalPreprocessing {
+	tree_source: string | null;
+	tree_free: { reason: string; taxa_order?: unknown } | null;
+	/** 'wasm' | 'js' | 'custom' on a tree-free run; null when a tree supplied the distances. */
+	tn93_engine: string | null;
+	taxa_used?: number;
+	taxa_in_alignment?: number;
+}
+
+/**
+ * Where the distances the model was given came from, in the reader's words — read off the run's own
+ * preprocessing block and never inferred from the option that was asked for. `null` when the worker
+ * sent nothing, so the page prints no claim rather than a default one.
+ *
+ * The engine phrasings are `tn93EngineWords` in dating.ts, shared so this page, the ancestor-date
+ * section and the selection report's `ProvenancePanel` cannot drift into three descriptions of one
+ * fact.
+ */
+export function distanceProvenance(pre: TemporalPreprocessing | null | undefined): string | null {
+	if (!pre) return null;
+	if (!pre.tree_free) {
+		return 'Distances came from the branch lengths of the tree you supplied; no TN93 matrix was computed.';
+	}
+	return (
+		'There was no tree with usable branch lengths, so the model was given pairwise TN93 distances ' +
+		`(the reference's own \`--use-tn93\`), computed in this browser by ${tn93EngineWords(pre.tn93_engine)}.`
+	);
+}
 
 /**
  * Whether this record's shuffles are still being drawn: some draws are in, and the labels that

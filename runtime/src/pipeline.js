@@ -68,7 +68,7 @@
  * §2, hard truth 1). Nothing here presents the output as a completed selection analysis.
  */
 
-import { tn93WasmOptions } from './tn93-wasm.js';
+import { isTn93EngineUnavailable, resolveTn93Options } from './tn93-wasm.js';
 import {
 	loadAlignmentAndTree,
 	parseAlignmentSequences,
@@ -80,6 +80,7 @@ import {
 	memeSiteRecords,
 	attributionsOneIndexed,
 	diagnose,
+	DIAGNOSTIC_THRESHOLDS,
 	TN93_MATCH_MODE,
 	MAX_SPECIES_DEFAULT,
 	MAX_SPECIES_CAP as LIBRARY_MAX_SPECIES_CAP
@@ -486,31 +487,27 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 	await yieldToLoop();
 
 	// --- the distance engine, tree-free runs only ------------------------------------------------
-	// `tn93Engine` picks who computes the pairwise numbers: 'wasm' is veg/tn93's own compiled code
-	// (runtime/src/tn93-wasm.js, vendored build), 'js' is the library's port of the tn93 package,
-	// 'auto' (the default) takes the compiled one and falls back to the port with a warning if it
-	// cannot be loaded. The two agree entry for entry on every bundled example; the compiled one is
-	// about five times faster at 476 taxa (181 ms against 887 ms) and the gap widens with N^2.
-	// Everything downstream of the raw numbers stays in the library either way (see tn93-wasm.js).
+	// WHO COMPUTES THE PAIRWISE NUMBERS: veg/tn93's own compiled build (runtime/src/tn93-wasm.js,
+	// vendored and sha256-verified), or a provider the caller supplied and this file does not vouch
+	// for ('custom'). There is no third answer and no fallback: @veg/hyphaeon-js computes no TN93
+	// distance at all any more, so a build that will not load is a REFUSAL — `resolveTn93Options`
+	// raises `Tn93EngineUnavailableError` (code TN93_ENGINE_UNAVAILABLE, with the stage, the release
+	// and the hashes) and this run ends there rather than scoring numbers from somewhere else.
+	// Everything downstream of the raw numbers stays in the library (see tn93-wasm.js).
 	let tn93Options = options.tn93Options;
-	let tn93Engine = 'js';
-	if (policy.useTn93 && options.tn93Engine !== 'js' && !options.tn93Options?.pairwiseDistances) {
-		try {
-			const wasm = await tn93WasmOptions(options.tn93Wasm ?? {});
-			tn93Options = { ...(options.tn93Options ?? {}), ...wasm };
-			tn93Engine = 'wasm';
-		} catch (err) {
-			if (options.tn93Engine === 'wasm') throw err;
-			warnings.push(
-				warning(
-					'TN93_ENGINE_FALLBACK',
-					'info',
-					'The compiled TN93 could not be loaded, so distances were computed in JavaScript. ' +
-						'The two agree on every alignment measured; this run was only slower.',
-					{ error: String(err?.message ?? err) }
-				)
-			);
-		}
+	let tn93Engine = null;
+	if (policy.useTn93) {
+		// `resolveTn93Options` is the ONE decision, shared with `runDating`'s callers and
+		// `runDatingModelPass`; before it existed those three resolved nothing and computed their
+		// distances in JavaScript while the product's provenance said otherwise.
+		const resolved = await resolveTn93Options({
+			engine: options.tn93Engine ?? 'auto',
+			wasm: options.tn93Wasm ?? {},
+			options: options.tn93Options ?? null,
+			shape: 'square'
+		});
+		tn93Options = resolved.tn93Options;
+		tn93Engine = resolved.tn93Engine;
 	}
 
 	let loaded;
@@ -627,8 +624,9 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		tree_provided: policy.treeSupplied,
 		tree_free: treeFree ? { reason: treeFree.reason, taxa_order: treeFree.taxaOrder } : null,
 		tn93_saturated_pairs: n.tn93SaturatedPairs,
-		/** Who computed the pairwise distances on a tree-free run: veg/tn93's compiled code, or the
-		 * library's port of the tn93 package. `null` when the run used a tree. */
+		/** Who computed the pairwise distances on a tree-free run: `'wasm'` is veg/tn93's compiled
+		 * code, `'custom'` a provider the caller handed in. `null` when the run used a tree — and
+		 * only then, since a tree-free run with no engine cannot reach this block at all. */
 		tn93_engine: treeFree ? tn93Engine : null,
 		branch_lengths_missing: n.branchLengthsMissing,
 		/** D22: nothing estimates branch lengths any more. Kept so the block's shape does not move. */
@@ -642,7 +640,7 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		unknown_codon_fraction: n.unknownCodonFraction,
 		in_frame_stops: n.inFrameStops
 	};
-	return {
+	const out = {
 		loaded,
 		names,
 		rawSeqs,
@@ -657,6 +655,33 @@ export async function prepareRun({ alignmentText, treeText, options = {}, progre
 		warnings,
 		preprocessing
 	};
+	/**
+	 * THE RESOLVED ENGINE, HANDED BACK SO THE SECOND LOAD GETS THE SAME ONE — AND HIDDEN FROM EVERY
+	 * SERIALISER ON THE WAY.
+	 *
+	 * WHY IT IS HERE. The report's FILTER section re-loads the cleaned alignment (filter.js:618) and
+	 * that load computes its own TN93 matrix. Since @veg/hyphaeon-js's JavaScript TN93 was deleted it
+	 * does not merely compute that matrix more slowly without this object: it throws
+	 * `Tn93EngineRequiredError` in section 6 of a report whose other five sections have already run.
+	 * `analyze.js` reads `prep.tn93Options` and forwards it to `runAlignmentFilter`.
+	 *
+	 * WHY IT IS NON-ENUMERABLE, which is the part that is not decoration. `analyze.js` passes the
+	 * whole prep result to `runMeme` as `options.prepared`, and `submittedOptions` copies the options
+	 * into `provenance.options` — so an ENUMERABLE `pairwiseDistances` ends up inside a record that
+	 * the browser then posts from its worker, and `postMessage` rejects the whole report with
+	 * "(...)=>{...} could not be cloned". MEASURED: that is exactly how the two tree-free e2e flows
+	 * failed, four minutes each, with the sites section marked `failed`. Non-enumerable keeps
+	 * `prep.tn93Options` readable by name while `Object.entries`, spread, `JSON.stringify` and
+	 * `structuredClone` all skip it, so no record gains a field and none carries a function.
+	 * `null` on a run that used a tree, where no TN93 matrix is computed anywhere.
+	 */
+	Object.defineProperty(out, 'tn93Options', {
+		value: policy.useTn93 ? (tn93Options ?? null) : null,
+		enumerable: false,
+		writable: true,
+		configurable: true
+	});
+	return out;
 }
 
 /**
@@ -691,6 +716,145 @@ export function diagnoseWarnings({ alignmentText, treeArg, loaded, speciesCap, r
 		out.push(warning('DIAGNOSTICS_FAILED', 'info', `diagnose() failed: ${err?.message ?? err}`));
 	}
 	return out;
+}
+
+/**
+ * `diagnose()` FOR A STANDALONE UPLOAD, with the distance engine this product actually runs.
+ *
+ * WHY THIS EXISTS. `diagnose()` does a full model-level load of its own (diagnostics.js:659) and a
+ * tree-free load computes the whole N×N TN93 matrix. Inside a run that is already avoided:
+ * `diagnoseWarnings` above hands `parsed: loaded`, the matrix the pipeline already computed with
+ * the resolved engine. The FOUR STANDALONE callers had no such thing (web `prep.worker.ts`,
+ * `mcp/src/tools.js`, `mcp/src/validate.js`, `server/src/validate.js`), and this is what they call
+ * instead. It was written when the library still had a JavaScript TN93 and those four were quietly
+ * computing their matrices with it; now that the port is deleted the same wiring is what keeps
+ * them working at all, because `diagnose` on a tree-free upload throws `Tn93EngineRequiredError`
+ * without an engine.
+ *
+ * IT ASKS THE LIBRARY FOR NOTHING IT DOES NOT ALREADY OFFER. `diagnose` now takes `tn93Options`
+ * itself (forwarded to its own load) and has always taken `parsed`; this passes BOTH — the load is
+ * done here so the result can be reused, and `tn93Options` goes along so that a path where `parsed`
+ * ends up null still has an engine rather than throwing.
+ *
+ * THE LOAD IS ATTEMPTED ONLY WHERE `diagnose` WOULD DO ONE ANYWAY, and only where it would compute
+ * TN93 at all: the D22 decision is `decideTreePolicy`'s, and the taxon-limit gate is `diagnose`'s
+ * own `canLoad` (diagnostics.js:667 — over the limit it REFUSES without loading, so loading here
+ * would both waste the work and hand it a `parsed` it never asked for, changing what it reports).
+ * A load that throws is swallowed and `parsed` stays null: `diagnose` then loads for itself, with
+ * the same engine, and turns a saturated matrix into its own TN93_SATURATED_PAIRS refusal, which is
+ * the behaviour this function must not quietly take away. `tn93_engine` is null in that case,
+ * because the engine's matrix is not the one the diagnosis was made from.
+ *
+ * AND WHEN THE ENGINE ITSELF CANNOT BE LOADED, THIS REPORTS RATHER THAN THROWS. `diagnose`'s
+ * contract is that it never raises: it is the function a surface runs on an upload precisely to
+ * find out what is wrong with it, and a page that showed a stack trace instead of a panel would be
+ * a worse answer than a panel that says the engine is missing. So `Tn93EngineUnavailableError` is
+ * caught and returned as a `refuse`-level `TN93_ENGINE_UNAVAILABLE` row carrying the error's whole
+ * detail (stage, release, files, both hashes, the hint), with `ok: false` and whatever summary
+ * could still be produced. It is NOT reported as TN93_SATURATED_PAIRS: that would tell a reader
+ * their alignment is too divergent to measure when in fact nothing measured it. (The library draws
+ * the same line, re-throwing `Tn93EngineRequiredError` ahead of its own catch.)
+ *
+ * @param {object} args
+ * @param {string} args.alignmentText
+ * @param {string|null} [args.treeText]
+ * @param {number} [args.maxSpecies] the cap the model run will use; `diagnose`'s own default
+ * @param {number} [args.taxaLimit] PLAN.md §3.5's hard limit; `diagnose`'s own default
+ * @param {boolean} [args.useTn93] force the tree-free path, exactly as `diagnose`'s own argument
+ * @param {'auto'|'wasm'} [args.tn93Engine] `'auto'` and `'wasm'` are synonyms; `'js'` is rejected
+ *   (`resolveTn93Options`), because the JavaScript port it named no longer exists
+ * @param {object} [args.tn93Wasm] loader arguments; a browser passes URLs, Node needs nothing
+ * @param {object|null} [args.tn93Options] options the caller already holds (matchMode, or a provider)
+ * @returns {Promise<object>} `diagnose`'s own `{ok, warnings, summary}` plus `tn93_engine`
+ *   (`'wasm' | 'custom' | null`) and `tn93_engine_error` (the refusal's detail object, or null)
+ */
+export async function diagnoseUpload({
+	alignmentText,
+	treeText = null,
+	maxSpecies = MAX_SPECIES_CAP,
+	taxaLimit = DIAGNOSTIC_THRESHOLDS.taxaLimit,
+	useTn93 = false,
+	tn93Engine = 'auto',
+	tn93Wasm = null,
+	tn93Options = null
+}) {
+	const text = String(alignmentText ?? '');
+	const treeArg = treeArgument(treeText);
+	const policy = decideTreePolicy(text, treeArg, { useTn93 });
+
+	/** @type {object|null} */
+	let loaded = null;
+	/** @type {string|null} */
+	let engine = null;
+	/** @type {object|null} */
+	let engineOptions = null;
+	/** @type {object|null} */
+	let engineError = null;
+
+	if (policy.useTn93) {
+		let taxaCount = 0;
+		try {
+			taxaCount = parseAlignmentSequences(text).size;
+		} catch {
+			taxaCount = 0; // unparseable: `diagnose` says so, and there is nothing to load
+		}
+		// The number of unordered pairs the load will compute, passed so a surface can REPORT what the
+		// engine cost on a request that has no model inference to hide it in. It does not choose the
+		// engine: veg/tn93's compiled build is the only one there is (tn93-wasm.js's header says why),
+		// and a diagnose of 18 taxa pays its ~90 ms deliberately.
+		const n = Math.min(taxaCount, maxSpecies ?? taxaCount);
+		try {
+			const resolved = await resolveTn93Options({
+				engine: tn93Engine ?? 'auto',
+				wasm: tn93Wasm ?? {},
+				options: tn93Options ?? null,
+				pairs: (n * (n - 1)) / 2
+			});
+			engineOptions = resolved.tn93Options;
+			if (taxaCount > 0 && taxaCount <= taxaLimit) {
+				try {
+					// diagnostics.js:662, verbatim but for `tn93Options`.
+					loaded = loadAlignmentAndTree(text, treeText === null || treeText === undefined ? null : String(treeText), {
+						maxSpecies,
+						pruneDuplicates: true,
+						useTn93,
+						tn93Options: engineOptions
+					});
+					engine = resolved.tn93Engine;
+				} catch {
+					loaded = null;
+					engine = null;
+				}
+			}
+		} catch (err) {
+			// The engine itself: a refusal to report, never a throw out of a diagnosis.
+			if (!isTn93EngineUnavailable(err)) throw err;
+			engineError = err.toDetail();
+		}
+	}
+
+	if (engineError) {
+		// `diagnose` would reach the tree-free load and throw the library's own
+		// `Tn93EngineRequiredError`, so it is asked for the text-level half only — everything it can
+		// say about an alignment it cannot measure — and the refusal is put at the head of the list.
+		const refusal = warning('TN93_ENGINE_UNAVAILABLE', 'refuse', String(engineError.message), engineError);
+		let partial = { ok: false, warnings: [], summary: {} };
+		try {
+			partial = diagnose({ alignmentText: text, treeText, parsed: null, maxSpecies, taxaLimit, useTn93 });
+		} catch {
+			// Expected on a tree-free upload: there is no diagnosis to be had without an engine.
+		}
+		return {
+			ok: false,
+			warnings: [refusal, ...partial.warnings.filter((w) => w.code !== 'TN93_ENGINE_UNAVAILABLE')],
+			summary: partial.summary ?? {},
+			tn93_engine: null,
+			tn93_engine_error: engineError
+		};
+	}
+
+	const d = diagnose({ alignmentText: text, treeText, parsed: loaded, maxSpecies, taxaLimit, useTn93, tn93Options: engineOptions ?? {} });
+	return { ...d, tn93_engine: engine, tn93_engine_error: null };
 }
 
 /** Everything in `options` that can be serialised, for the provenance block. */

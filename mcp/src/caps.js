@@ -113,8 +113,8 @@ export const ANALYZE_INLINE_MAX_BYTES = 256 * 1024;
  * The analyses that run the network and therefore fall under the work caps.
  *
  * `dating` is here CONDITIONALLY and that is the point of the note: its default path is model-free
- * (a root-to-tip regression over TN93 distances, O(N x L), measured at 85 ms on the 143-sequence
- * korber example), and `use_model: true` adds one forward pass over every codon through
+ * (a root-to-tip regression over TN93 distances, O(N x L), measured at 43 ms end to end on the 143-sequence korber example (median of 9, date ingest plus `runDating`, darwin/x64 Node 22, with veg/tn93's compiled build computing the root-to-tip distances as every surface now does; 36 ms with the library's JavaScript port — the RECTANGULAR hook is the one shape where the compiled engine is marginally slower, and runtime/src/tn93-wasm.js says why)),
+ * and `use_model: true` adds one forward pass over every codon through
  * `<variant>_taxa.onnx` (measured upstream at 9.4-17.1 s on the same file — 88% of the wall clock).
  * `workFor` below switches on that option rather than on the analysis name.
  */
@@ -184,8 +184,9 @@ export function workFor(analysis, codons, taxa, options = {}) {
   // MAX_ALIGNMENT_CHARS, which the schema enforces before the string is touched.
   if (analysis === "dates") return 0;
   // Dating's default path is a root-to-tip regression over pairwise TN93 distances: O(N x L)
-  // character work plus an N x N distance matrix, NOT a per-site forward pass (measured: 85 ms on
-  // korber's 143 x 981, against 2.0e7 "units" if L x N^2 were applied to it). `use_model` adds one
+  // character work plus an N x N distance matrix, NOT a per-site forward pass (measured: 43 ms on
+  // korber's 143 x 981 with the compiled TN93 the pillar now uses, 36 ms with the library's port,
+  // against 2.0e7 "units" if L x N^2 were applied to it). `use_model` adds one
   // forward pass over every codon through the taxa graph, which IS L x N^2.
   if (analysis === "dating") return options.useModel === true ? base : codons * taxa;
   return base;
@@ -329,8 +330,10 @@ export function estimateSeconds(analysis, codons, taxa) {
   // (H5N1 6 ms, korber 3 ms, H1N1 9 ms, H5N1 + a metadata CSV 24 ms), which rounds to zero against
   // a 1.5 s model start-up this analysis never pays.
   if (analysis === "dates") return 0.05;
-  // MEASURED: korber's model-free clock is 85 ms end to end (143 sequences x 981 codons), so the
-  // model-free path is the parse plus arithmetic and nothing else. With `use_model` the taxa-graph
+  // MEASURED: korber's model-free clock is 43 ms end to end (143 sequences x 981 codons, median of
+  // 9, with veg/tn93's compiled build; 36 ms with the library's JavaScript port), so the model-free
+  // path is the parse plus arithmetic and nothing else, and the 0.2 s below is an order of
+  // magnitude of headroom over either engine rather than a figure either one can move. With `use_model` the taxa-graph
   // pass dominates (9.4 s on the same file upstream, 88% of the wall clock) and the work term is
   // the ordinary per-site one, so the ordinary coefficient applies.
   if (analysis === "dating") return work === codons * taxa ? 0.2 : 1.5 + 2e-4 * codons + 2.1e-7 * work;

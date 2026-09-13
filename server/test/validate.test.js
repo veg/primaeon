@@ -75,6 +75,15 @@ describe("POST /api/v1/validate", () => {
     expect(forced.body.ok).toBe(true);
     expect(forced.body.summary.tree_source).toBe("tn93");
     expect(forced.body.warnings.find((w) => w.code === "TREE_FREE_TN93").data.reason).toBe("requested");
+    // AND IT SAYS WHICH TN93 COMPUTED IT. `/validate`'s tree-free check does a model-level load, so
+    // it builds the whole N x N matrix before a job is accepted — and it built it with the library's
+    // JavaScript port while every accepted job used veg/tn93's compiled build. bat_oas1's 18 taxa
+    // are below the loader's measured break-even (44 ms compiled against 14 ported), so `js` is the
+    // right answer HERE and the point of the assertion is that the field is populated from the run
+    // rather than left absent: a null on a tree-free check would mean nothing was resolved at all.
+    expect(["wasm", "js", "custom"]).toContain(forced.body.summary.tn93_engine);
+    // A run with a usable tree computes no matrix, so there is no engine to name.
+    expect(withTree.body.summary.tn93_engine).toBeNull();
   });
 
   it("refuses two sequences with a refuse-level warning", async () => {

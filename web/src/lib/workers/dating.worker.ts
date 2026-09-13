@@ -3,11 +3,25 @@
  *
  * WHY THIS FILE EXISTS, AND WHY IT IS A FOURTH WORKER RATHER THAN A REQUEST ON THE ANALYZE ONE.
  * The analyze worker exists to keep ONE warm, hash-verified ORT session and the prepared tensors
- * every pillar reads; this run touches none of that. It loads no manifest, no graph and no
- * WebAssembly — its whole import graph is `@veg/hyphaeon-runtime/dating`, which reaches
- * `@veg/hyphaeon-js` and nothing else — and putting it on the analyze worker would drag ORT's
- * ~20 MB of WASM into a route whose entire claim is that it costs no model byte. `e2e/time.spec.ts`
- * asserts that claim by watching the network, and this file is the mechanism that makes it true.
+ * every pillar reads; this run touches none of that. It loads no manifest and no graph — the only
+ * thing it fetches is the 250 KB compiled TN93 named below, not the ~20 MB of ORT WASM and 7-8 MB
+ * of graph that putting this on the analyze worker would drag into a route whose entire claim is
+ * that it costs no MODEL byte. `e2e/time.spec.ts` asserts that claim by watching the network for
+ * `*.onnx` and `ort-*.wasm`, and this file is the mechanism that makes it true.
+ *
+ * WHY IT FETCHES THE COMPILED TN93 AT ALL. Root-to-tip divergence here IS a TN93 distance
+ * (`computeTreeFreeDivergences` -> `tn93CrossDistanceMatrix`), and until this was fixed this worker
+ * computed it with the library's JavaScript port while `web/src/lib/viz/ProvenancePanel.svelte`
+ * stood ready to say the compiled engine had run. That port no longer exists in either package
+ * (runtime/src/tn93-wasm.js's header has the decision and the reason), so the three files under
+ * `static/tn93/` are not an optimisation here: WITHOUT THEM THIS ROUTE CANNOT PRODUCE A DATE AT
+ * ALL. `tn93Base` is therefore required in practice — `/time` sets it on every request — and a
+ * missing base, a failed fetch or a sha256 mismatch is a refusal the page renders as such, with the
+ * loader's stage, the vendored release and both hashes, rather than a slower run.
+ * MEASURED (korber, 143 sequences x 2,943 nt, Node): the rectangular matrix is 142 comparisons,
+ * not 143^2, so the compiled engine is 13.2 ms against the deleted port's 4.2 — the one shape where
+ * it was slower, because the fixed cost of two FASTA files and a CLI invocation dominates 142 pairs.
+ * That is the price of one engine across the product, and it was accepted deliberately.
  *
  * WHY A WORKER AT ALL, AND WHAT THE RUN ACTUALLY COSTS — measured, because the obvious guess is
  * wrong. `compute_tree_free_divergences` measures divergence to ONE root, so it is N comparisons of
@@ -35,11 +49,32 @@
  */
 
 import { runDating } from '@veg/hyphaeon-runtime/dating';
+import { resolveTn93Options } from '@veg/hyphaeon-runtime/tn93-wasm';
 import { serve } from './serve';
 import type { DatingRequest, DatingResponse } from './protocol';
 
-serve<DatingRequest, DatingResponse>((payload, ctx) => {
+/** Where the page serves the compiled TN93 from; strings only, as temporal.worker.ts does. */
+function tn93Sources(base: string): { glueUrl: string; wasmUrl: string; manifestUrl: string } {
+	const prefix = base.replace(/\/+$/, '');
+	return { glueUrl: `${prefix}/tn93.mjs`, wasmUrl: `${prefix}/tn93.wasm`, manifestUrl: `${prefix}/MANIFEST.json` };
+}
+
+serve<DatingRequest, DatingResponse>(async (payload, ctx) => {
 	const started = Date.now();
+	// `runDating` is synchronous and this loader is not, so the resolution happens HERE and the
+	// resolved `{pairwiseDistances}` is handed in. `'cross'` is the rectangular hook, which is the
+	// one `computeTreeFreeDivergences` calls; handing it the square provider would silently return
+	// row 0 of a square matrix as every taxon's distance to the root (tn93-wasm.js guards it).
+	if (!payload.tn93Base) {
+		// There is no engine to fall back to, so this is a refusal and not a slower path. It names the
+		// missing input rather than letting the loader report "glueUrl and wasmUrl are required".
+		throw new Error(
+			'No TN93 engine URLs were given (tn93Base), so the root-to-tip divergences cannot be ' +
+				'computed: veg/tn93\'s compiled build is the only TN93 in this product. The page serves it ' +
+				'from static/tn93/ (tn93.mjs, tn93.wasm, MANIFEST.json); check that the build copied them.'
+		);
+	}
+	const tn93 = await resolveTn93Options({ shape: 'cross', wasm: tn93Sources(payload.tn93Base) });
 	const run = runDating({
 		alignmentText: payload.alignmentText,
 		alignmentName: payload.alignmentName,
@@ -49,6 +84,8 @@ serve<DatingRequest, DatingResponse>((payload, ctx) => {
 		clockModel: payload.clockModel,
 		ciMethod: payload.ciMethod,
 		timeUnits: payload.timeUnits,
+		tn93Options: tn93.tn93Options,
+		tn93Engine: tn93.tn93Engine,
 		progress: ctx.progress,
 		signal: ctx.signal,
 		provenance: { surface: 'web-time' }
