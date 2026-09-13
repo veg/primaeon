@@ -108,7 +108,15 @@ env:
   # tree at all, so the reference command formed for them could not run and the job exited 2 on six
   # failed reference runs (34729264726). Those examples now get only their --use-tn93 reference,
   # which is the only run this app's surfaces make for them under D22.
-  ENGINE_REF: phase-5e
+  #
+  # phase-5f is the comparator, not the library: `git diff phase-5d..phase-5f -- js/` is empty. It
+  # derives two parity classes that had never been derived. The edge-order check was asserting
+  # `cesi` at zero tolerance through the back door, in a script granting that field the graph class
+  # everywhere else; and the three null moments shared a flat 2 % that measured 1.5 to 2.9 sigma of
+  # the estimator's own sampling distribution, which on a field checked nine times a run fails a
+  # defect-free run about three quarters of the time. The new classes TIGHTEN the null mean 2-3.9x
+  # and loosen only the std, from 1.65 sigma to 3.
+  ENGINE_REF: phase-5f
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on
