@@ -847,6 +847,55 @@ changed a rule phase 2 recorded. Nothing in §6 moved and no spec was edited.
   interval section 3 quotes. Two ancestor estimates on one page with nothing connecting them is the
   same defect §8 records for the filter section's duplicated lede, and the same fix.
 
+**The `/time` route, phase 5: temporal selection (section 5)**
+
+Seven further resolutions. Nothing in §6 moved, no spec was edited, and the two existing `/time`
+tables and three figures are untouched — the section was added and `Data and provenance` renumbered
+from 5 to 6 (which also corrected `DATING_DOWNLOAD_NOTE`, whose last clause named section 5).
+
+- **A `<figcaption>` may hold exactly ONE `<b>`, and this is now a rule rather than an accident.**
+  `app.css`'s `.numbered figcaption b::before` increments the FIGURE counter, so every `<b>` in a
+  caption is a new figure number. Three of the four new captions open with a name and then emphasise
+  a phrase inside the prose ("The y axis is not a frequency", "positive part", "The third gate
+  cannot be drawn") — which silently renumbered every figure after them, measured while the e2e was
+  being written. Inline emphasis inside a caption is now `<strong>`, with a scoped
+  `figcaption strong { color: var(--text); font-weight: 700 }` so it looks identical, and
+  `e2e/time.spec.ts` asserts `figcaption b` has exactly one element per figure. The same rule applies
+  to `caption b` and the table counter. (The number itself cannot be asserted any other way: it is
+  generated content, absent from `textContent`, and `getComputedStyle` returns the unresolved
+  `counter(figure)`.)
+- **A figure that would have nothing to draw draws the fallback instead of disappearing.** Figure 5
+  is one ridge per confirmed sweep; when nothing is confirmed it draws the strongest candidates and
+  the caption says which it is drawing. Rendering a `.note` in place of the figure would move every
+  figure number after it between two runs of the same page, and the counter is DOM order. In that
+  fallback the ridges, peaks and labels are `--plot-uncalled` / `--plot-tick`, never purple: a
+  candidate set is not a called set (§4).
+- **Four small multiples rather than four coloured lines.** Figure 6 draws the wave modes as four
+  stacked panels on one shared axis, each labelled with its share of the variance, all in `--text`.
+  Four hues and a legend would be the `SECTOR_PALETTE` mistake again, and NOTHING in that figure is
+  a call, so no purple appears in it at all.
+- **A fourth row-state vocabulary, and still no mark in the table body.** §8's phase-2 rule stands:
+  `/time` tables carry words, not glyphs — except that section 5's table has a genuine Call column in
+  the report's own sense, so it takes §3's treatment exactly (a 0.5 em `--brand` square then the
+  grade in `--text` at 400, an em dash where nothing was called). The states it adds are "not
+  scored" and "not tested" in `--text-faint`; a candidate whose null never ran never reads "not a
+  sweep", because that would be a claim the run did not make.
+- **This table's rows ARE controls, unlike section 4's.** Clicking a row selects the codon in all
+  four figures and clicking a mark in a figure pages the table to its row, so the rows take
+  `cursor: pointer` and a `--surface-2` hover, which §8's phase-2 note explicitly withheld from the
+  date table because nothing happened there. `.table .count` stays a page singleton owned by section
+  1; this table's line is `.table__foot`.
+- **The four downloads are the reference's bytes, with no `primaeon` key added.** The surface
+  specification asked for `temporal_summary.json` to carry the reference's eighteen keys plus one of
+  ours. The runtime's writers are byte-equal to `hyphaeon temporal`'s own output and that is the
+  stronger claim: a reader who takes all four files can `diff` them. PrimAeon's provenance is on the
+  record and in the reproduction line printed under the buttons instead, and the note says the files
+  are the reference's own.
+- **The record is not persisted with the review.** A finished record carries two `[L, T]` float64
+  curve blocks — 17.5 MB on a 4,384-codon alignment at the default grid — and the `/time` IndexedDB
+  row is meant to be the small thing that survives a reload. Re-running costs the model pass again;
+  the graph is in the browser cache by then. This is said where the section says what it cost.
+
 **Measured at integration** (`scratchpad/design/final/contrast.py` over the tokens in `app.css`)
 
 | Scheme | Token | Hex | on `--bg` | on `--surface-2` |

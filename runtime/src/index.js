@@ -95,3 +95,15 @@ export * from './dating/index.js';
  * would mean weakening the test. `./dating/neural` is its own subpath export for the same reason.
  */
 export { runDatingModelPass } from './datingNeural.js';
+
+/**
+ * PHASE 5 OF PLAN-TEMPORAL.md ADDS THE TEMPORAL-SELECTION PILLAR. `runtime/src/temporal/` is
+ * `run_temporal_surveillance` (hyphaeon/temporal.py:399-905) as an application drives it: one
+ * forward pass over the codons, the reference's chain of arithmetic through `@veg/hyphaeon-js`, and
+ * the date-shuffling null run in calibrated chunks that report progress and honour a cancel
+ * (`./temporal/null.js`, whose header carries the measured cost model that corrects PLAN-TEMPORAL
+ * §5.1.3's estimate by two orders of magnitude). Unlike `./dates` and `./dating` it is NOT
+ * model-free — its first step is a forward pass — so `./temporal` is a subpath for import tidiness
+ * rather than for a boundary assertion.
+ */
+export * from './temporal/index.js';

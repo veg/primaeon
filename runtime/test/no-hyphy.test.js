@@ -93,7 +93,11 @@ describe('HyPhy is not in this package', () => {
 		// asserts the import graph under `src/dating/` cannot reach a session or a manifest at all.
 		// './dating/neural' is phase 4's model-based half and is the OPPOSITE subpath: it exists so
 		// that the one file which does load a graph for this pillar sits outside `src/dating/` and
-		// the boundary test above it stays exactly as written.
+		// the boundary test above it stays exactly as written. './temporal' is phase 5's
+		// temporal-selection pillar, and it is a subpath for IMPORT TIDINESS ONLY: unlike './dates'
+		// and './dating' it is not model-free — its first step is a forward pass over every codon —
+		// so there is deliberately no import-boundary assertion behind it, and a reader must not
+		// infer one from the symmetry of this list.
 		expect(Object.keys(pkg.exports)).toEqual([
 			'.',
 			'./web',
@@ -102,6 +106,7 @@ describe('HyPhy is not in this package', () => {
 			'./dating',
 			'./dating/neural',
 			'./clock',
+			'./temporal',
 			'./prescreen',
 			'./prescreen/scope',
 			'./package.json',

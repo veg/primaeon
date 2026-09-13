@@ -20,7 +20,9 @@ import type {
 	InferRequest,
 	InferResponse,
 	PrepRequest,
-	PrepResponse
+	PrepResponse,
+	TemporalRequest,
+	TemporalResponse
 } from './protocol';
 
 let prep: WorkerClient<PrepRequest, PrepResponse> | null = null;
@@ -28,6 +30,7 @@ let infer: WorkerClient<InferRequest, InferResponse> | null = null;
 let analyze: WorkerClient<AnalyzeWorkerRequest, AnalyzeWorkerResponse> | null = null;
 let dating: WorkerClient<DatingRequest, DatingResponse> | null = null;
 let datingModel: WorkerClient<DatingModelRequest, DatingResponse> | null = null;
+let temporal: WorkerClient<TemporalRequest, TemporalResponse> | null = null;
 
 export function prepClient(): WorkerClient<PrepRequest, PrepResponse> {
 	prep ??= new WorkerClient(() => new Worker(new URL('./prep.worker.ts', import.meta.url), { type: 'module' }));
@@ -65,6 +68,18 @@ export function datingClient(): WorkerClient<DatingRequest, DatingResponse> {
 export function datingModelClient(): WorkerClient<DatingModelRequest, DatingResponse> {
 	datingModel ??= new WorkerClient(() => new Worker(new URL('./datingModel.worker.ts', import.meta.url), { type: 'module' }));
 	return datingModel;
+}
+
+/**
+ * The `/time` route's temporal-selection worker, and the second thing on that route that loads a
+ * graph (the first is the model-based dating estimate). It is its own module for the reason
+ * `temporal.worker.ts`'s header gives: `datingClient`'s import graph is the proof that reviewing
+ * dates costs no model byte, and a shared worker would make it a promise. Nothing constructs this
+ * until a reader presses the button in section 5.
+ */
+export function temporalClient(): WorkerClient<TemporalRequest, TemporalResponse> {
+	temporal ??= new WorkerClient(() => new Worker(new URL('./temporal.worker.ts', import.meta.url), { type: 'module' }));
+	return temporal;
 }
 
 /** True where Web Workers exist (a browser, not the prerenderer). */

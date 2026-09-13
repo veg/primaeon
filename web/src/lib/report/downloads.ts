@@ -15,7 +15,7 @@
  * page. `cmd_phenotype` prints its record with `json.dumps` and writes no CSV at all (there is no
  * `writers.py` entry for it), so there are no reference bytes to reproduce: the JSON is the record
  * as the runtime returned it, and the CSV is its `sites` rows in the record's own key order, which
- * is the order phenotype.py:1085 pushes them in. A reader who wants the CLI's file gets it from the
+ * is the order phenotype.py:527 pushes them in. A reader who wants the CLI's file gets it from the
  * JSON; the CSV is for a spreadsheet.
  */
 

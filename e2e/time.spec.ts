@@ -26,6 +26,14 @@
  *      distance, and names the size of the move the ordinary fit made because of it. The request
  *      log is checked from the other side here: one `*.onnx` and it is `general_taxa.onnx`, the ORT
  *      runtime, and nothing off-origin.
+ *   4. TEMPORAL SELECTION (phase 5), on the H5N1 load: the second thing on this route that loads a
+ *      graph, and the one that must say out loud what it cannot reproduce. It asserts the offer's
+ *      cost paragraph before the button, the figure NUMBERING (the one thing a CSS counter can break
+ *      silently: 3 figures with the section un-run, 7 after it lands), the three sentences about the
+ *      permutation generator and the wave-sign convention, the sites CSV's 27 reference columns in
+ *      site order, the reproduction line, and — from the other side — that exactly one graph was
+ *      fetched and it is `general.onnx`. A fifth test stops the run during the model pass and checks
+ *      that the section goes back to offering rather than claiming a partial answer.
  *   3. THE TRAP, and the reason this page exists. The same alignment with the table rewritten
  *      accession-style. The reference would match zero rows and say nothing; the page must show
  *      both name sets side by side and say plainly that the dates came from the headers instead.
@@ -77,9 +85,12 @@ test.describe('the /time route', () => {
 		await expect(page.getByRole('heading', { level: 1, name: 'Dates' })).toBeVisible();
 		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'empty');
 		await expect(page.getByText(/drop dated sequences here/i)).toBeVisible();
-		// Five numbered sections now; the two new ones say what they are with nothing loaded.
-		await expect(page.locator('section.section')).toHaveCount(5);
+		// Six numbered sections now; each says what it is with nothing loaded.
+		await expect(page.locator('section.section')).toHaveCount(6);
 		await expect(page.locator('#dating')).toContainText('Nothing is loaded yet, so there is nothing to date.');
+		await expect(page.locator('#temporal')).toContainText('Nothing is loaded yet.');
+		// A pending section renders no figcaption (web/DESIGN.md §3), so the counter cannot drift.
+		await expect(page.locator('figcaption')).toHaveCount(0);
 		const body = await page.locator('body').innerText();
 		expect(body).not.toMatch(/to be written|TODO|coming soon|lorem ipsum/i);
 		// No control on this page is labelled exactly "Run" (web/DESIGN.md §6).
@@ -419,5 +430,187 @@ test.describe('flow 3 — the trap: a table that names no sequence', () => {
 		// Turning the fallback off leaves every sequence undated — what the command line would do.
 		await page.getByRole('checkbox', { name: /Fill sequences the table missed from their own headers/i }).uncheck();
 		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'undated');
+	});
+});
+
+test.describe('flow 4 — temporal selection', () => {
+	test.skip(!haveExamples, 'the engine examples are not checked out beside this repository');
+
+	/**
+	 * THE SECOND TEST IN THIS FILE THAT EXPECTS A GRAPH TO BE FETCHED, and — as in flow 1c — the
+	 * assertions at the end are half the point: exactly one `*.onnx`, and it is the BACKBONE
+	 * `general.onnx`, not the dating graph, because this pillar reads `lrt` and `mean_root_attns`
+	 * and the dating graph emits neither.
+	 *
+	 * H5N1 rather than the acceptance alignment, deliberately. `H1N1_2009_pandemic.fasta` is 4,384
+	 * codons over 100 sequences and is where the runtime suite makes its element-wise comparison
+	 * against `hyphaeon temporal`'s own four files, on the real graph, in Node. What a browser test
+	 * can add to that is not more decimal places: it is that the section streams, that the figure
+	 * counter lands where it should, that the honest sentences are printed, and that one graph is
+	 * fetched. H5N1 is 566 codons over 98 sequences and exercises every one of those in a fraction
+	 * of the time — and it takes the metadata-table ingestion path while it is at it.
+	 *
+	 * THE NUMBERS ASSERTED HERE ARE STRUCTURAL, NOT STATISTICAL. The confirmed-sweep count is
+	 * thresholded on a permutation p drawn from this application's generator rather than numpy's, so
+	 * it is a statistical-class quantity and asserting an exact count would be asserting a coin
+	 * flip; the candidate count and the codon counts are deterministic and are asserted as numbers.
+	 */
+	test('streams in three payloads, numbers its figures, says what it cannot reproduce, and loads one graph', async ({ page, baseURL }) => {
+		test.setTimeout(360_000);
+		const requests = trackRequests(page);
+		await page.goto('/time/');
+		// The tree comes too, so section 2's clock preview draws and the figure counter starts at two
+		// — which is what makes the assertion below about this section's four figures worth making.
+		await page.locator('#dates input[type="file"]').first().setInputFiles([H5N1, H5N1_META, H5N1_TREE]);
+		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'ready', { timeout: 20_000 });
+
+		const temporal = page.locator('#temporal');
+		await expect(temporal.getByRole('heading', { level: 2, name: 'Temporal selection' })).toBeVisible();
+		await expect(temporal.locator('.temporal')).toHaveAttribute('data-state', 'offered');
+
+		// The offer states its cost as arithmetic, with both unknowable counts named as ceilings.
+		await expect(temporal).toContainText('draws × candidate codons × dated sequences × grid points');
+		await expect(temporal).toContainText('Both counts are ceilings');
+		await expect(temporal).toContainText('temporal.py:510, 514');
+		// Two figures on the page so far — coverage and the clock preview — and neither is this
+		// section's: a pending section renders no figcaption (web/DESIGN.md §3).
+		await expect(page.locator('figcaption')).toHaveCount(2);
+		// Nothing heavy has been fetched to make that offer.
+		expect(requests.matching(HEAVY_ASSET), 'a heavy asset before the run was asked for').toEqual([]);
+
+		// The settings disclosure names the command line's own defaults beside ours.
+		await temporal.locator('details.settings summary').click();
+		await expect(temporal).toContainText("the command line's own default");
+		await expect(temporal).toContainText('α = 0.05');
+		await temporal.getByLabel('Shuffles').selectOption('200');
+		await temporal.getByLabel('Grid points').selectOption({ label: '60' });
+
+		await temporal.getByRole('button', { name: 'Run temporal selection', exact: true }).click();
+		await expect(temporal.locator('.temporal')).toHaveAttribute('data-state', 'running');
+
+		// ---- the landed section ------------------------------------------------------------------
+		const verdict = temporal.locator('.verdict');
+		await expect(verdict).toBeVisible({ timeout: 300_000 });
+		await expect(temporal.locator('.temporal')).toHaveAttribute('data-state', 'landed');
+		// The lede states the finding and stops; which of its three forms it takes depends on how many
+		// codons the null confirmed, which is a statistical-class quantity (this application's
+		// generator is not numpy's), so what is asserted is that it names codons rather than a count.
+		await expect(verdict).toContainText(/codon/);
+
+		// What it actually cost replaces what it might have cost.
+		await expect(temporal.locator('.measured')).toContainText(/codons scored over \d+ dated sequences/);
+		await expect(temporal.locator('.measured')).toContainText('nonzero attribution entries');
+
+		// The deterministic half, as numbers rather than as adjectives.
+		const stats = temporal.locator('dl.stats');
+		await expect(stats).toContainText('Sequences dated');
+		await expect(stats).toContainText('Bandwidth');
+		await expect(stats).toContainText('Candidates');
+
+		// ---- figure numbering, the one thing a CSS counter breaks silently ------------------------
+		const captions = page.locator('figcaption');
+		await expect(captions).toHaveCount(6);
+		// The number itself is CSS generated content (`.numbered figcaption b::before`, web/DESIGN.md
+		// §3) and is therefore in neither `textContent` nor `getComputedStyle`, which returns the
+		// unresolved `counter(figure)`. What CAN be asserted, and what actually breaks, is the thing
+		// the counter counts: ONE `<b>` per figcaption. Three inline `<b>`s in one caption moved every
+		// figure number after it while this suite was being written; every other emphasis inside a
+		// caption is a `<strong>` for exactly that reason.
+		await expect(page.locator('figcaption b')).toHaveCount(6);
+		await expect(captions.nth(2)).toContainText('Selection trajectories');
+		await expect(captions.nth(2)).toContainText('The y axis is not a frequency');
+		await expect(captions.nth(2)).toContainText('not drawn at all');
+		await expect(captions.nth(3)).toContainText('Sweep velocities, by peak date');
+		await expect(captions.nth(3)).toContainText('positive part');
+		await expect(captions.nth(4)).toContainText('Collective wave modes');
+		await expect(captions.nth(4)).toContainText('A wave and its negative describe the same mode');
+		await expect(captions.nth(5)).toContainText('What the dates add to the ordinary scan');
+		await expect(captions.nth(5)).toContainText('The third gate cannot be drawn');
+
+		// ---- the two things a reader comparing with a command-line run must be told ----------------
+		const statements = temporal.locator('.statements');
+		await expect(statements).toContainText('The permutation p-value comes from a different generator');
+		await expect(statements).toContainText('Mersenne Twister');
+		await expect(statements).toContainText('in distribution, not digit for digit');
+		await expect(statements).toContainText('A wave and its negative are the same mode');
+		await expect(statements).toContainText('canonical');
+
+		// ---- the table ----------------------------------------------------------------------------
+		// `.table .count` is a page singleton (web/DESIGN.md §6) and section 1's date table owns it.
+		await expect(page.locator('.table .count')).toHaveCount(1);
+		const table = temporal.locator('table');
+		await expect(table.locator('caption')).toContainText('Every candidate codon');
+		await expect(table.locator('caption')).toContainText('mean_intensity');
+		// The candidate count is DETERMINISTIC — it is the energy floor over the smoothed velocities,
+		// upstream of any shuffle — so it is asserted as a number. The sweep count on the same line is
+		// not: it is thresholded on a permutation p drawn from this application's generator.
+		await expect(temporal.locator('.table__foot')).toContainText('168 of 566 codons passed the');
+		await temporal.getByRole('button', { name: 'All codons' }).click();
+		await expect(temporal.locator('.table__foot')).toContainText('Showing 1–40');
+		await temporal.getByRole('button', { name: 'Candidates' }).click();
+
+		// ---- the four files are the reference's own -----------------------------------------------
+		const download = page.waitForEvent('download');
+		await temporal.locator('.downloads').getByRole('button', { name: 'Sites (CSV)' }).click();
+		const file = await download;
+		expect(file.suggestedFilename()).toBe('temporal_sites_summary.csv');
+		const lines = readFileSync(await file.path(), 'utf8').trimEnd().split('\n');
+		expect(lines[0]).toBe(
+			'site,ref_aa,derived_aa,mutation_label,domain,cross_classification,classification,' +
+				'is_confirmed_sweep,is_concordant_sweep,is_rescued_sweep,lrt,p_static,q_static,p_perm,q_perm,' +
+				'r2_fpca,peak_date,peak_intensity,t_half_start,t_half_end,fwhm_years,mean_intensity,auc,' +
+				'Wave_1_loading,Wave_2_loading,Wave_3_loading,Wave_4_loading'
+		);
+		// Every codon, in site order — the opposite convention to the table, and the note says so.
+		expect(lines[1].split(',')[0]).toBe('1');
+		expect(lines[lines.length - 1].split(',')[0]).toBe(String(lines.length - 1));
+		await expect(temporal.locator('.downloads__note')).toContainText('byte for byte');
+		await expect(temporal.locator('.downloads__note')).toContainText('selection_intensity');
+
+		// ---- the reproduction line -----------------------------------------------------------------
+		await expect(temporal.locator('pre.snippet')).toContainText('hyphaeon temporal');
+		await expect(temporal.locator('pre.snippet')).toContainText('--time-points 60');
+		await expect(temporal.locator('pre.snippet')).toContainText('-B 200');
+
+		// ---- exactly one graph, and the right one ---------------------------------------------------
+		const onnx = requests.matching(ONNX);
+		expect(onnx, `graphs fetched: ${onnx.join(', ')}`).toHaveLength(1);
+		expect(onnx[0]).toMatch(/\/models\/general\.onnx$/);
+		expect(requests.matching(ORT_FORBIDDEN)).toEqual([]);
+		expect(requests.matching(HYPHY_ANY)).toEqual([]);
+		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
+		expect(requests.failed()).toEqual([]);
+
+		// The words reserved for the dating analysis are still absent, with the pillar run.
+		const body = await page.locator('body').innerText();
+		for (const word of [/TMRCA/i, /calibrated/i, /confidence interval/i, /molecular clock estimate/i]) {
+			expect(body, `the page said ${word}`).not.toMatch(word);
+		}
+		expect(body).not.toMatch(/to be written|TODO|coming soon/i);
+	});
+
+	/**
+	 * STOPPING DURING THE MODEL PASS KEEPS NOTHING, AND THE SECTION SAYS SO BY GOING BACK TO OFFERING.
+	 * The other cancel — stopping the null — is the interesting one and is the runtime's contract
+	 * (`runTemporalNull` catches its own abort, records the achieved count and the run finishes), but
+	 * it cannot be driven reliably from a browser test here: on this alignment the whole null at 200
+	 * draws is tens of milliseconds, so a click would land after it. `runtime/test/temporal-port.test.js`
+	 * drives that path with an abort at a known draw and asserts what survives.
+	 */
+	test('stopping during the model pass leaves the section offering, not half-claiming', async ({ page }) => {
+		test.setTimeout(180_000);
+		await page.goto('/time/');
+		await page.locator('#dates input[type="file"]').first().setInputFiles([H5N1, H5N1_META, H5N1_TREE]);
+		await expect(page.locator('#dates .review')).toHaveAttribute('data-state', 'ready', { timeout: 20_000 });
+
+		const temporal = page.locator('#temporal');
+		await temporal.getByRole('button', { name: 'Run temporal selection', exact: true }).click();
+		await expect(temporal.locator('.temporal')).toHaveAttribute('data-state', 'running');
+		await temporal.getByRole('button', { name: 'Stop', exact: true }).click();
+
+		await expect(temporal.locator('.temporal')).toHaveAttribute('data-state', 'offered', { timeout: 120_000 });
+		await expect(temporal.locator('.verdict')).toHaveCount(0);
+		await expect(page.locator('figcaption')).toHaveCount(2);
+		await expect(temporal.getByRole('button', { name: 'Run temporal selection', exact: true })).toBeVisible();
 	});
 });

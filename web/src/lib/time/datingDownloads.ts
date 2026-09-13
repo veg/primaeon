@@ -61,4 +61,4 @@ export const DATING_DOWNLOAD_NOTE =
 	`columns under the reference's own header names. Each adds one thing the reference has no place for — a ` +
 	`${'primaeon'} block naming the alignment, the options and the sequences you excluded, and a ` +
 	`${'prediction_method'} column saying which model produced each predicted date. The CSV is in ALIGNMENT order, ` +
-	`so it diffs against a command-line run; the dates CSV in section 5 is in the order you are reading it.`;
+	`so it diffs against a command-line run; the dates CSV in section 6 is in the order you are reading it.`;
