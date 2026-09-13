@@ -26,9 +26,25 @@
  *     "prng": { "algorithm": "xoshiro256**", "default_seed": 42 } }
  *
  * File naming is `<variant>.onnx` beside the manifest (`general.onnx`, `viral.onnx`,
- * `busted_head.onnx`), per the layout in PLAN.md §5.5. A variant may override that with an
- * explicit `onnx_file` / `busted_head_file`, which this module honours so a renamed export does
- * not need a code change.
+ * `busted_head.onnx`, `<variant>_taxa.onnx`), per the layout in PLAN.md §5.5. A variant may
+ * override that with an explicit `onnx_file` / `busted_head_file` / `taxa_onnx_file`, which this
+ * module honours so a renamed export does not need a code change.
+ *
+ * THE DATING GRAPH IS A THIRD ARTIFACT, AND IT IS OPTIONAL. `<variant>_taxa.onnx` emits the
+ * taxon-by-taxon attention block and the per-taxon embeddings the dating pillar's two model-based
+ * estimators need (`cross_attn_sum`, `taxa_repr_sum`). It is a SEPARATE file rather than two more
+ * backbone outputs because onnxruntime does not prune a graph to the requested fetch list — see
+ * feeds.js's header for the measurement — so folding the reductions into `general.onnx` would tax
+ * every MEME, BUSTED, epistasis, DMS and phenotype site of every run for outputs only dating reads.
+ * `taxa_onnx_sha256` is validated ONLY WHEN PRESENT, exactly as `busted_head_onnx_sha256` is: a
+ * manifest without it means the dating graph was not built, `pickVariant` reports null, and the
+ * model-based estimators must REFUSE rather than fall back to something else.
+ *
+ * `onnx.taxa_row_layers` and `onnx.embed_dim` are the dating graph's DIVISORS, not decoration:
+ * `cross_attn_sum` is accumulated over the graph's row layers as well as over the call's sites, so
+ * the caller divides it by `sites * taxa_row_layers` and `taxa_repr_sum` by `sites` alone
+ * (splits.py:151-153). They live in the manifest rather than as a constant here because a
+ * checkpoint of a different depth would otherwise be silently mis-scaled.
  *
  * ISOMORPHIC ON PURPOSE. The same module runs in a browser worker and under Node, so it has no
  * static import of any `node:` builtin: file reads and node:crypto are reached through dynamic
@@ -60,6 +76,21 @@ export const DEFAULT_INPUT_NAMES = Object.freeze([
  */
 export const DEFAULT_OUTPUT_NAMES = Object.freeze(['lrt', 'mean_root_attns', 'root_repr']);
 export const REQUIRED_OUTPUT_NAMES = Object.freeze(['lrt']);
+
+/**
+ * The dating graph's outputs (`hyphaeon/export.py` TAXA_OUTPUT_NAMES, mirroring
+ * `splits.py:131-149`). THESE MUST NEVER JOIN `DEFAULT_OUTPUT_NAMES`: that list is what `runSites`
+ * fetches when a caller names no outputs, so adding them would make every meme run ask a graph that
+ * does not have them, and — if the two artifacts were ever merged — copy an [N, N] matrix out per
+ * batch for nothing. They are also BOTH required: `runTaxaSites` refuses a partial answer where
+ * `runSites` omits a missing optional head, because a covariance kernel built from half a graph is
+ * the plausible wrong number this pillar exists to avoid.
+ */
+export const TAXA_OUTPUT_NAMES = Object.freeze(['cross_attn_sum', 'taxa_repr_sum']);
+
+/** The row-layer count and embedding width a manifest that predates the dating graph does not carry. */
+const TAXA_ROW_LAYERS_FALLBACK = 6;
+const EMBED_DIM_FALLBACK = 384;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -95,6 +126,11 @@ export function parseManifest(doc) {
 		}
 		if (v.busted_head_onnx_sha256 != null && !isSha256Hex(v.busted_head_onnx_sha256)) {
 			throw new Error(`manifest: variant "${name}" has a malformed busted_head_onnx_sha256`);
+		}
+		// Optional by construction: absent means "the dating graph was not built for this variant".
+		// Present and malformed is a different thing entirely and must not be treated as absent.
+		if (v.taxa_onnx_sha256 != null && !isSha256Hex(v.taxa_onnx_sha256)) {
+			throw new Error(`manifest: variant "${name}" has a malformed taxa_onnx_sha256`);
 		}
 	}
 	return manifest;
@@ -157,8 +193,12 @@ export function listVariants(manifest) {
  * @param {object} manifest
  * @param {string} [name] default DEFAULT_VARIANT
  * @returns {{name: string, onnxSha256: string, bustedHeadSha256: string|null,
- *   onnxFile: string, bustedHeadFile: string|null, trainedOn: string|undefined,
+ *   taxaOnnxSha256: string|null, onnxFile: string, bustedHeadFile: string|null,
+ *   taxaOnnxFile: string|null, trainedOn: string|undefined,
  *   regime: string|undefined, raw: object}}
+ *   `taxaOnnxSha256` is null when this manifest declares no dating graph for the variant; the
+ *   dating pass reports that as `DATING_MODEL_GRAPH_ABSENT` and runs the model-free estimators
+ *   alone.
  */
 export function pickVariant(manifest, name = DEFAULT_VARIANT) {
 	const v = manifest.variants?.[name];
@@ -171,8 +211,10 @@ export function pickVariant(manifest, name = DEFAULT_VARIANT) {
 		name,
 		onnxSha256: v.onnx_sha256,
 		bustedHeadSha256: v.busted_head_onnx_sha256 ?? null,
+		taxaOnnxSha256: v.taxa_onnx_sha256 ?? null,
 		onnxFile: v.onnx_file ?? `${name}.onnx`,
 		bustedHeadFile: v.busted_head_onnx_sha256 ? (v.busted_head_file ?? 'busted_head.onnx') : null,
+		taxaOnnxFile: v.taxa_onnx_sha256 ? (v.taxa_onnx_file ?? `${name}_taxa.onnx`) : null,
 		trainedOn: v.trained_on,
 		regime: v.regime,
 		raw: v
@@ -199,6 +241,31 @@ export function inputNames(manifest) {
 export function outputNames(manifest) {
 	const names = manifest?.onnx?.outputs;
 	return Array.isArray(names) && names.length ? names.slice() : DEFAULT_OUTPUT_NAMES.slice();
+}
+
+/** The dating graph's output names: `onnx.taxa_outputs` when stated, else the default two. */
+export function taxaOutputNames(manifest) {
+	const names = manifest?.onnx?.taxa_outputs;
+	return Array.isArray(names) && names.length ? names.slice() : TAXA_OUTPUT_NAMES.slice();
+}
+
+/**
+ * The two divisors the dating pass applies to the accumulated sums, and the embedding width it
+ * checks the graph against. `onnx.taxa_row_layers` / `onnx.embed_dim` where the manifest states
+ * them; otherwise the exported checkpoint's own 6 and 384, which is what every manifest written
+ * before the dating graph existed describes.
+ *
+ * @returns {{rowLayers: number, embedDim: number, stated: boolean}}
+ */
+export function taxaGraphArch(manifest) {
+	const rows = manifest?.onnx?.taxa_row_layers;
+	const dim = manifest?.onnx?.embed_dim;
+	const stated = Number.isInteger(rows) && rows > 0 && Number.isInteger(dim) && dim > 0;
+	return {
+		rowLayers: stated ? rows : TAXA_ROW_LAYERS_FALLBACK,
+		embedDim: stated ? dim : EMBED_DIM_FALLBACK,
+		stated
+	};
 }
 
 /**

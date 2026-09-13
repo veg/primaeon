@@ -33,7 +33,10 @@ on:
   workflow_dispatch:
 
 env:
-  ENGINE_REF: phase-5b
+  # Must match ci.yml's. It drifted to phase-5c once and the consequence is not a stale build but a
+  # failed one: `js/src/temporal.js` does not exist before phase-5d, and the web build's named
+  # imports of it fail at module link, taking the whole deployment with them.
+  ENGINE_REF: phase-5d
   ONNXRUNTIME_NODE_INSTALL: skip
   HYPHAEON_ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   HYPHAEON_MODELS_DIR: ${{ github.workspace }}/HyphAeon/models

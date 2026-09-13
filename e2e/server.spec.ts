@@ -27,6 +27,37 @@
  * names a Python entry point) and at run time: THE SERVER IS STARTED WITH A PATH THAT CONTAINS
  * NOTHING — no venv, no `hyphaeon`, no `python` — so a run that needed one would fail rather than
  * silently succeed on a developer's machine.
+ *
+ * PHASE 6 ADDS THE THREE TIME ANALYSES, AND THEY BRING A SECOND INPUT. `dates`, `dating` and
+ * `temporal` are driven here exactly as the seven before them: POST, stream, read the result, take
+ * the downloads. Four things about them are only true at the wire, which is why they are here and
+ * not left to server/test/time.test.js's supertest coverage:
+ *
+ *   - `dates_file` is a second document in the request body — an Auspice build, a name-to-date map
+ *     or a CSV — and it has to survive JSON transport, the job directory and the worker boundary to
+ *     reach the date layer. A run that quietly fell back to reading the sequence NAMES instead
+ *     would still answer, with different numbers and no error: the temporal job below passes the
+ *     H5N1 metadata table and the result must say `date_review.source === 'table'`.
+ *   - A REFUSAL IS A 422 AT THE DOOR, before a worker is spent. The date layer is consulted on the
+ *     HTTP thread, so an undatable alignment never reaches the pool; the code is its own
+ *     (`DATES_NONE`) and the kind is `input`, not a server fault.
+ *   - THE TEMPORAL NULL REFINES ON THE STREAM. `permutations` is re-emitted per chunk with the
+ *     achieved draw count and a `calls_are_final` flag, and the payload is a PROJECTION: the
+ *     runtime's own interim is the whole record. The bytes that actually cross the wire are
+ *     measured here, on a real SSE connection, rather than on supertest's in-process one.
+ *   - THE REFERENCE'S OWN FILES ARE DOWNLOADS. `?file=` serves temporal's four and dating's two
+ *     with a `Content-Disposition`, which is the header a browser acts on and an in-process test
+ *     cannot really exercise.
+ *
+ * And all of it runs on the SAME empty-PATH server as the seven before it, so the no-subprocess
+ * claim now covers the date layer and both time pillars: neither reaches for a `python`, and the
+ * last test in this file asserts that their sources were inside the scan that proves it.
+ *
+ * THE EXAMPLES ARE THE CHEAPEST HONEST ONES, and they live in the ENGINE checkout rather than the
+ * web gallery (the gallery holds the five selection demos; korber / H5N1 / H1N1 are the dated
+ * sets). H5N1_HA_geo is 98 sequences x 566 codons with a tree and a metadata CSV, and carries the
+ * whole temporal pillar at T = 60, B = 200; korber_env_gp160 is the one shipped set with exactly
+ * one undated sequence, which is what makes it the gate's own test case.
  */
 
 import { expect, test, type APIRequestContext } from '@playwright/test';
@@ -36,7 +67,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { APP_DIR, GALLERY_INPUTS, MODELS_DIR, compareLrt, referenceMeme } from './helpers';
+import { APP_DIR, ENGINE_DIR, GALLERY_INPUTS, MODELS_DIR, compareLrt, referenceMeme } from './helpers';
 
 /** Every `.js` under `dir`, recursively (the server's and the MCP's sources). */
 function jsFiles(dir: string): string[] {
@@ -72,6 +103,19 @@ const SERVER_BIN = resolve(APP_DIR, 'server/bin/hyphaeon-server.js');
 const PORT_RANGE: [number, number] = [4260, 4299];
 const ID_RE = /^[0-9a-f]{32}$/;
 const REPORT_PHASES = ['parse', 'prepare', 'infer', 'stats', 'gene', 'epistasis', 'attribute', 'filter', 'dms', 'postprocess'];
+/** runtime/src/dating/ and runtime/src/temporal/ own phases of their own; prepareRun's two are shared. */
+const DATING_PHASES = ['parse', 'prepare', 'dating', 'dating-model'];
+const TEMPORAL_PHASES = ['parse', 'prepare', 'temporal-infer', 'temporal-smooth', 'temporal-null', 'temporal-waves'];
+/** server/src/time.js TEMPORAL_SECTIONS — the vocabulary `?section=` serves on a finished record. */
+const TEMPORAL_SECTIONS = ['summary', 'sites', 'curves', 'waves', 'permutations', 'dates', 'candidates', 'warnings', 'honesty', 'provenance'];
+
+/** The DATED examples, which live in the engine checkout beside this repository (see the header). */
+const EXAMPLES = resolve(ENGINE_DIR, 'examples');
+const H5N1 = resolve(EXAMPLES, 'H5N1_HA_geo.fasta');
+const H5N1_META = resolve(EXAMPLES, 'H5N1_HA_metadata.csv');
+const H5N1_TREE = resolve(EXAMPLES, 'H5N1_HA.nwk');
+const KORBER = resolve(EXAMPLES, 'korber_env_gp160.fasta');
+const haveDatedExamples = [H5N1, H5N1_META, H5N1_TREE, KORBER].every((f) => existsSync(f));
 
 async function freePort([lo, hi]: [number, number]): Promise<number> {
 	for (let port = lo; port <= hi; port++) {
@@ -88,6 +132,8 @@ async function freePort([lo, hi]: [number, number]): Promise<number> {
 interface SseEvent {
 	event: string;
 	data: any;
+	/** What this event's `data:` payload actually cost on the wire, in characters. */
+	bytes: number;
 }
 
 /** Read an SSE stream until the `until` event (or the stream ends). */
@@ -116,7 +162,7 @@ async function readSse(url: string, { until = 'done', timeoutMs = 240_000 }: { u
 					else if (line.startsWith('data:')) data += line.slice(5).trim();
 				}
 				if (!data) continue;
-				events.push({ event, data: JSON.parse(data) });
+				events.push({ event, data: JSON.parse(data), bytes: data.length });
 				if (event === until) break outer;
 			}
 		}
@@ -232,6 +278,12 @@ test.describe('server', () => {
 		expect(models.status()).toBe(200);
 		const body = await models.json();
 		expect(JSON.stringify(body)).toMatch(/general/);
+		// PHASE 6: `deploy/README.md` tells an operator to read `dating_graph` here to know whether
+		// this build can serve `use_model` at all, BEFORE a caller discovers it inside a run. The
+		// value is read from the manifest without loading a graph, and it is one of two words.
+		expect(body.engine.dating_graph, JSON.stringify(body.engine)).toBeTruthy();
+		for (const state of Object.values(body.engine.dating_graph as Record<string, string>)) expect(['declared', 'absent']).toContain(state);
+		expect(body.engine.date_layer.engine).toMatch(/no model/);
 	});
 
 	test('POST /api/v1/jobs analyze on bat_oas1 answers 202 with a 128-bit id', async () => {
@@ -361,12 +413,315 @@ test.describe('server', () => {
 		await api.delete(`/api/v1/jobs/${id}`);
 	});
 
+	test('analysis: "dates" reviews the H5N1 metadata table over the wire — no model, no graph', async () => {
+		test.skip(!haveDatedExamples, `${EXAMPLES} has no dated examples (engine checkout)`);
+		const res = await api.post('/api/v1/jobs', {
+			data: {
+				analysis: 'dates',
+				alignment: readFileSync(H5N1, 'utf8'),
+				dates_file: readFileSync(H5N1_META, 'utf8'),
+				names: { alignment: 'H5N1_HA_geo.fasta', dates_file: 'H5N1_HA_metadata.csv' }
+			}
+		});
+		expect(res.status(), await res.text()).toBe(202);
+		const { id } = await res.json();
+		expect(id).toMatch(ID_RE);
+
+		const events = await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 120_000 });
+		expect(events.at(-1)!.event).toBe('done');
+		expect(events.at(-1)!.data.status, JSON.stringify(events.at(-1)!.data)).toBe('completed');
+
+		const doc = await (await api.get(`/api/v1/jobs/${id}/result`)).json();
+		expect(doc.analysis).toBe('dates');
+		expect(doc.ok).toBe(true);
+		// The METADATA DOCUMENT crossed the wire and was used: a run that silently fell back to the
+		// sequence names would also answer 98 of 98 here, and say `headers` instead.
+		expect(doc.date_review.source).toBe('table');
+		expect(doc.date_review.coverage.dated).toBe(98);
+		expect(doc.date_review.coverage.taxa_total).toBe(98);
+		// A taxon is never omitted from the per-taxon table; that is the question the review answers.
+		expect(doc.date_review.rows).toHaveLength(98);
+		expect(doc.clock).toMatchObject({ has_clock: true, dating_possible: true, temporal_possible: true });
+		expect(doc.gate.ok, JSON.stringify(doc.gate.blocking)).toBe(true);
+		expect(doc.provenance.surface).toBe('node-server');
+		expect(doc.provenance.engine).toBe('in-process (no model, no graph)');
+		// No model was loaded and no section was published: there is no "during" in this analysis.
+		const view = await (await api.get(`/api/v1/jobs/${id}`)).json();
+		expect(view.sections).toBeUndefined();
+		test.info().annotations.push({ type: 'dates-span', description: `${doc.date_review.span.min} – ${doc.date_review.span.max}, units ${doc.date_review.time_units}` });
+		await api.delete(`/api/v1/jobs/${id}`);
+	});
+
+	test('the date layer refuses at the door: 422 with its own code, before a worker is spent', async () => {
+		// Five sequences that carry no date in any rule, and no metadata document to rescue them.
+		const undatable = '>alpha\nATGATGATGATG\n>beta\nATGATGATGCTG\n>gamma\nATGATGCTGATG\n>delta\nATGCTGATGATG\n>epsilon\nCTGATGATGATG\n';
+		for (const analysis of ['dating', 'temporal']) {
+			const res = await api.post('/api/v1/jobs', { data: { analysis, alignment: undatable } });
+			expect(res.status(), `${analysis}: ${await res.text()}`).toBe(422);
+			const body = await res.json();
+			expect(body.error.kind, analysis).toBe('input');
+			expect(body.error.code, analysis).toBe('DATES_NONE');
+			// The hint must name the METADATA fix. Phase 3 classified exactly this shape of refusal
+			// as a server fault and told the caller to report it to the operator; Phase 4 fixed that
+			// for TN93 and Phase 6 extends the table to 23 more codes.
+			expect(body.error.hint, analysis).toMatch(/dates_file|date_pattern/);
+			expect(body.error.hint, analysis).not.toMatch(/report it to the operator/);
+		}
+		// And `analysis: "dates"` is the one that answers instead of refusing: reporting is its job.
+		const review = await api.post('/api/v1/jobs', { data: { analysis: 'dates', alignment: undatable } });
+		expect(review.status()).toBe(202);
+		const { id } = await review.json();
+		const events = await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 60_000 });
+		// It fails — nothing could be dated at all — but with the review on the error, so a caller
+		// can see which rules were tried without a second request.
+		expect(events.at(-1)!.data.status).toBe('failed');
+		expect(events.at(-1)!.data.error.code).toBe('DATES_NONE');
+		expect(events.at(-1)!.data.error.details.date_review.coverage.dated).toBe(0);
+		await api.delete(`/api/v1/jobs/${id}`);
+	});
+
+	test('the undated-sequence gate refuses a korber dating job until the override names itself', async () => {
+		test.skip(!haveDatedExamples, `${EXAMPLES} has no dated examples (engine checkout)`);
+		const alignment = readFileSync(KORBER, 'utf8');
+		const names = { alignment: 'korber_env_gp160.fasta' };
+		// 142 of 143 names carry a date; the odd one out is the sequence called CONSENSUS. Dropping
+		// it silently is what the gate exists to prevent, and an HTTP job has nobody to ask.
+		const blocked = await api.post('/api/v1/jobs', { data: { analysis: 'dating', alignment, names, options: { root_taxon: 'CONSENSUS' } } });
+		expect(blocked.status(), await blocked.text()).toBe(422);
+		const err = (await blocked.json()).error;
+		expect(err.kind).toBe('input');
+		expect(err.code).toBe('DATES_UNDATED_PRESENT');
+		expect(err.message).toMatch(/1 of 143/);
+		expect(err.hint).toMatch(/drop_undated/);
+		// `dates` reports the same gate rather than refusing for it, and says the clock is still on.
+		const res = await api.post('/api/v1/jobs', { data: { analysis: 'dates', alignment, names } });
+		expect(res.status()).toBe(202);
+		const { id } = await res.json();
+		const events = await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 120_000 });
+		expect(events.at(-1)!.data.status, JSON.stringify(events.at(-1)!.data)).toBe('completed');
+		const doc = await (await api.get(`/api/v1/jobs/${id}/result`)).json();
+		expect(doc.ok).toBe(true);
+		expect(doc.gate.ok).toBe(false);
+		expect(doc.gate.blocking.map((b: any) => b.code)).toEqual(['DATES_UNDATED_PRESENT']);
+		expect(doc.clock.dating_possible).toBe(true);
+		expect(doc.date_review.by_rule.korber_isolate).toBe(142);
+		expect(doc.date_review.rows.filter((r: any) => r.value === null)).toHaveLength(1);
+		await api.delete(`/api/v1/jobs/${id}`);
+	});
+
+	test('analysis: "dating" fits the H5N1 clock, streams its phases and writes the reference\'s two files', async () => {
+		test.skip(!haveDatedExamples, `${EXAMPLES} has no dated examples (engine checkout)`);
+		const res = await api.post('/api/v1/jobs', {
+			data: { analysis: 'dating', alignment: readFileSync(H5N1, 'utf8'), names: { alignment: 'H5N1_HA_geo.fasta' }, seed: 42 }
+		});
+		expect(res.status(), await res.text()).toBe(202);
+		const { id } = await res.json();
+		const started = Date.now();
+		const events = await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 300_000 });
+		expect(events.at(-1)!.event).toBe('done');
+		expect(events.at(-1)!.data.status, JSON.stringify(events.at(-1)!.data)).toBe('completed');
+		const phases = [...new Set(events.filter((e) => e.event === 'progress').map((e) => e.data.phase))];
+		expect(phases.length).toBeGreaterThan(0);
+		for (const p of phases) expect(DATING_PHASES, `unexpected dating phase ${p}`).toContain(p);
+		test.info().annotations.push({ type: 'dating-run', description: `${((Date.now() - started) / 1000).toFixed(1)} s, phases ${phases.join(', ')}` });
+
+		const doc = await (await api.get(`/api/v1/jobs/${id}/result`)).json();
+		expect(doc.analysis).toBe('dating');
+		expect(doc.record.taxa_count).toBe(98);
+		expect(doc.taxa_summary).toHaveLength(98);
+		// Model-free by default, over pairwise TN93 distances — the estimator travels with the date.
+		expect(doc.record.distance_mode).toBe('tn93');
+		expect(doc.honesty.model_pass).toBe(false);
+		// D34: this pillar takes no tree on any surface, and the record says so rather than leaving
+		// it to be inferred from an absent field.
+		expect(doc.provenance.preprocessing.tree_source).toBe('tn93');
+		expect(doc.provenance.preprocessing.branch_lengths_estimated).toBe(false);
+		expect(doc.provenance.surface).toBe('node-server');
+		// The reproduction line is an OBJECT here and on `temporal`, not the argv array the other six
+		// pillars stamp: a bare command string would promise a reproducibility this build declines.
+		const ref = doc.provenance.reference_command;
+		expect(Array.isArray(ref)).toBe(false);
+		// The three fields the contract requires, asserted as a floor rather than a closed set: this
+		// builder moved into `runtime/src/dating/results.js` in phase 6's review and gained a fourth,
+		// `headline`. A closed key set pinned from the e2e pinned the runtime's return shape here.
+		for (const k of ['caveats', 'command', 'reproduces']) expect(Object.keys(ref)).toContain(k);
+		expect(ref.command).toMatch(/^hyphaeon dating -a H5N1_HA_geo\.fasta /);
+		// The dates came from the headers, read by a parser wider than the reference's.
+		expect(ref.reproduces).toBe(false);
+		expect(ref.caveats.join(' ')).toMatch(/-d/);
+
+		// WHICH DATE THIS SURFACE MAY QUOTE. `record.t_mrca` is `active_model`'s and the `/time` page
+		// does not always print it — `datingHeadline` refuses a fit whose `ci_mrca` is a point
+		// estimate `[x, x]`, which every spline fit is upstream. The rule is the runtime's and all
+		// three surfaces read it; this is the server's copy of it, on the wire.
+		const head = doc.honesty.headline;
+		expect(head).toBeTruthy();
+		expect(head.active_model).toBe(doc.record.active_model);
+		expect(typeof head.key).toBe('string');
+		expect(typeof head.departed).toBe('boolean');
+		expect(typeof head.quotable).toBe('boolean');
+		expect(ref.headline.key).toBe(head.key);
+		if (!head.departed) expect(head.t_mrca).toBe(doc.record.t_mrca);
+		else expect(ref.caveats.join(' ')).toMatch(/different numbers from the same run/);
+		if (!head.quotable) expect(head.refutation).toMatch(/not a finding/);
+		test.info().annotations.push({
+			type: 'dating-clock',
+			description: `t_mrca ${doc.record.t_mrca}, mu ${doc.record.mu}; quoted ${head.key} ${head.t_mrca} (departed ${head.departed})`
+		});
+
+		// THE DOWNLOADS: the reference's own two files, with the header a browser acts on.
+		const csv = await api.get(`/api/v1/jobs/${id}/result?file=csv`);
+		expect(csv.status()).toBe(200);
+		expect(csv.headers()['content-type']).toMatch(/text\/csv/);
+		expect(csv.headers()['content-disposition']).toMatch(/attachment; filename="dating-[0-9a-f]{8}\.csv"/);
+		const lines = (await csv.text()).trim().split('\n');
+		expect(lines[0]).toBe('taxon,sampling_date,root_divergence,fitted_divergence,predicted_date,divergence_residual,temporal_residual,z_score,is_outlier,is_holdout');
+		expect(lines).toHaveLength(99);
+		const json = await api.get(`/api/v1/jobs/${id}/result?file=json`);
+		expect(json.status()).toBe(200);
+		expect(json.headers()['content-type']).toMatch(/application\/json/);
+		const parsed = JSON.parse(await json.text());
+		expect(parsed.primaeon, 'the CLI\'s shape exactly: no provenance block').toBeUndefined();
+		expect(parsed.t_mrca).toBeCloseTo(doc.record.t_mrca, 6);
+		await api.delete(`/api/v1/jobs/${id}`);
+	});
+
+	test('analysis: "temporal" runs H5N1 end to end: a refining null on the stream, then every section and file', async () => {
+		test.skip(!haveDatedExamples, `${EXAMPLES} has no dated examples (engine checkout)`);
+		const res = await api.post('/api/v1/jobs', {
+			data: {
+				analysis: 'temporal',
+				alignment: readFileSync(H5N1, 'utf8'),
+				tree: readFileSync(H5N1_TREE, 'utf8'),
+				dates_file: readFileSync(H5N1_META, 'utf8'),
+				names: { alignment: 'H5N1_HA_geo.fasta', tree: 'H5N1_HA.nwk', dates_file: 'H5N1_HA_metadata.csv' },
+				options: { time_points: 60, n_permutations: 200 },
+				seed: 42
+			}
+		});
+		expect(res.status(), await res.text()).toBe(202);
+		const submitted = await res.json();
+		const id = submitted.id;
+		// A temporal job publishes two live sections and no more; `analyze`'s seven are not its.
+		expect(submitted.sections).toEqual({ summary: 'pending', permutations: 'pending' });
+
+		const started = Date.now();
+		const events = await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 300_000 });
+		const elapsed = (Date.now() - started) / 1000;
+		expect(events.at(-1)!.event).toBe('done');
+		expect(events.at(-1)!.data.status, JSON.stringify(events.at(-1)!.data)).toBe('completed');
+		const phases = [...new Set(events.filter((e) => e.event === 'progress').map((e) => e.data.phase))];
+		for (const p of phases) expect(TEMPORAL_PHASES, `unexpected temporal phase ${p}`).toContain(p);
+
+		const sections = events.filter((e) => e.event === 'section');
+		const perms = sections.filter((e) => e.data.name === 'permutations');
+		expect(sections.filter((e) => e.data.name === 'summary').length).toBeGreaterThan(0);
+		// The null REFINES: more than one payload, at least one non-final, exactly one final, last.
+		expect(perms.length).toBeGreaterThan(1);
+		expect(perms.filter((e) => e.data.final === false).length).toBeGreaterThan(0);
+		expect(perms.filter((e) => e.data.final).length).toBe(1);
+		expect(perms.at(-1)!.data.final).toBe(true);
+		const counts = perms.map((e) => e.data.payload.permutations.completed);
+		for (let i = 1; i < counts.length; i++) expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1]);
+		expect(counts.at(-1)).toBe(200);
+		// A negative finding is not a result until the null is in, and every payload says which it is.
+		expect(perms[0].data.payload.calls_are_final).toBe(false);
+		expect(perms[0].data.payload.uncalled_because).toMatch(/has not (finished|been drawn)/);
+		expect(perms.at(-1)!.data.payload.calls_are_final).toBe(true);
+		expect(perms.at(-1)!.data.payload.null_state).toBe('finished');
+		expect(perms.at(-1)!.data.payload.uncalled_because).toBeNull();
+		// THE PROJECTION, measured on a real connection: the runtime's own interim payload is the
+		// WHOLE record, and forwarding it would not error — it would just make the server unusable.
+		const biggest = Math.max(...sections.map((e) => e.bytes));
+		const total = sections.reduce((a, e) => a + e.bytes, 0);
+		expect(biggest).toBeLessThan(128 * 1024);
+		expect(total).toBeLessThan(512 * 1024);
+		test.info().annotations.push({
+			type: 'temporal-stream',
+			description: `${elapsed.toFixed(1)} s, ${sections.length} section events, biggest ${(biggest / 1024).toFixed(1)} KB, total ${(total / 1024).toFixed(1)} KB, ${perms.length} permutation payloads`
+		});
+
+		const view = await (await api.get(`/api/v1/jobs/${id}`)).json();
+		expect(view.sections).toEqual({ summary: 'final', permutations: 'final' });
+
+		const doc = await (await api.get(`/api/v1/jobs/${id}/result`)).json();
+		expect(doc.analysis).toBe('temporal');
+		expect(doc.record.stage).toBe('complete');
+		expect(doc.record.permutations.completed).toBe(200);
+		expect(doc.record.permutations.cancelled).toBe(false);
+		// The tree was used as given, and the DATES came from the document, not the headers.
+		expect(doc.provenance.preprocessing.tree_source).toBe('user');
+		expect(doc.date_review.source).toBe('table');
+		expect(doc.provenance.preprocessing.date_coverage.dated).toBe(98);
+		expect(doc.provenance.null_state).toBe('finished');
+		expect(doc.provenance.surface).toBe('node-server');
+		expect(doc.honesty.calls_are_final).toBe(true);
+		expect(doc.honesty.reference_command.reproduces, 'numpy MT19937 upstream against xoshiro256** here (D17)').toBe(false);
+		// THE NOTES THAT MUST TRAVEL WITH THE FILES, asserted by what each one SAYS rather than by how
+		// many there are. `temporalDownloadNotes` is the runtime's and the runtime is free to add to it
+		// — it gained the null's exchangeability assumption in phase 6's review, which turned a pinned
+		// count of 5 red without a single sentence becoming less true. A count pinned from here also
+		// pinned it in the wrong repository: `runtime/test/temporal-port.test.js` owns that number.
+		const notes: string[] = doc.honesty.download_notes;
+		expect(notes.length).toBeGreaterThanOrEqual(5);
+		const joined = notes.join(' ');
+		expect(joined, 'the FORMAT/CONTENT split').toMatch(/byte for byte/);
+		expect(joined, 'the duplicated curves column, upstream').toMatch(/selection_intensity` and `sweep_velocity` from the same array/);
+		expect(joined, "the reference's own p_perm fill").toMatch(/temporal\.py:620-621/);
+		expect(joined, 'what the date-shuffling null assumes').toMatch(/shared ancestry|exchangeab/i);
+		expect(joined, 'the wave-sign convention, D28').toMatch(/sign this page fixes by convention/);
+
+		// EVERY SECTION, each inside the MCP's own 256 KiB inline limit so the two surfaces page alike.
+		for (const name of TEMPORAL_SECTIONS) {
+			const s = await api.get(`/api/v1/jobs/${id}/result?section=${name}`);
+			expect(s.status(), name).toBe(200);
+			const body = await s.json();
+			expect(body.section, name).toBe(name);
+			expect(body.honesty, name).toBeTruthy();
+			expect(JSON.stringify(body).length, name).toBeLessThan(256 * 1024);
+		}
+		const curves = await (await api.get(`/api/v1/jobs/${id}/result?section=curves&sites=1,2,3`)).json();
+		expect(curves.curves.map((c: any) => c.site)).toEqual([1, 2, 3]);
+		expect(curves.curves[0].prevalence).toHaveLength(curves.time_points);
+		const bad = await api.get(`/api/v1/jobs/${id}/result?section=curves&sites=99999`);
+		expect(bad.status()).toBe(400);
+
+		// THE DOWNLOADS: the reference's own four files.
+		for (const [name, suffix, type] of [
+			['sites', '_sites_summary.csv', /text\/csv/],
+			['curves', '_curves.csv', /text\/csv/],
+			['waves', '_waves.csv', /text\/csv/],
+			['summary', '_summary.json', /application\/json/]
+		] as Array<[string, string, RegExp]>) {
+			const file = await api.get(`/api/v1/jobs/${id}/result?file=${name}`);
+			expect(file.status(), name).toBe(200);
+			expect(file.headers()['content-type'], name).toMatch(type);
+			expect(file.headers()['content-disposition'], name).toMatch(new RegExp(`filename="temporal-[0-9a-f]{8}${suffix.replace(/\./g, '\\.')}"`));
+			expect((await file.text()).length, name).toBeGreaterThan(100);
+		}
+		const sitesCsv = await (await api.get(`/api/v1/jobs/${id}/result?file=sites`)).text();
+		expect(sitesCsv.split('\n')[0]).toMatch(/^site,ref_aa,derived_aa,mutation_label,domain,/);
+		expect(sitesCsv.trim().split('\n')).toHaveLength(567); // 566 codons + header
+		await api.delete(`/api/v1/jobs/${id}`);
+	});
+
 	test('nothing on this surface can spawn Python: not in the sources, and not on PATH', async () => {
 		// The bridge is deleted, not disabled.
 		expect(existsSync(resolve(APP_DIR, 'mcp/src/bridge.js')), 'mcp/src/bridge.js still exists').toBe(false);
 		// Everything this surface runs: the server, the MCP it mounts, and the runtime both call.
 		const sources = ['server/src', 'server/bin', 'mcp/src', 'mcp/bin', 'runtime/src'].flatMap((d) => jsFiles(resolve(APP_DIR, d)));
 		expect(sources.length).toBeGreaterThan(0);
+		// PHASE 6: the date layer and the two time pillars must be INSIDE this scan, not merely not
+		// caught by it. A file moved out of these directories would silently drop out of the proof,
+		// and `dates` is the one analysis on this surface that reads a user's metadata document —
+		// exactly the sort of input a shell-out is tempting for.
+		const scanned = new Set(sources.map((f) => f.slice(APP_DIR.length + 1)));
+		for (const required of ['server/src/time.js', 'mcp/src/time.js', 'runtime/src/datingNeural.js', 'runtime/src/rootToTip.js']) {
+			expect(scanned.has(required), `${required} is not in the no-subprocess scan`).toBe(true);
+		}
+		for (const dir of ['runtime/src/dates', 'runtime/src/dating', 'runtime/src/temporal']) {
+			expect([...scanned].some((f) => f.startsWith(dir + '/')), `${dir}/ is not in the no-subprocess scan`).toBe(true);
+		}
 		const offenders: string[] = [];
 		for (const file of sources) {
 			const body = code(readFileSync(file, 'utf8'));
@@ -377,8 +732,9 @@ test.describe('server', () => {
 			}
 		}
 		expect(offenders, `sources that could reach a subprocess: ${offenders.join(', ')}`).toEqual([]);
-		// And the running server, which answered every request above, had nothing on its PATH:
-		// `python`, `hyphaeon` and `hyphy` were all unreachable while those jobs completed.
+		// And the running server, which answered every request above — the report, the tree-free
+		// meme, the phenotype, and Phase 6's date review, molecular clock and temporal null — had
+		// nothing on its PATH: `python`, `hyphaeon` and `hyphy` were all unreachable throughout.
 		expect(child!.spawnargs.length).toBeGreaterThan(0);
 		expect(readdirSync(join(dataDir, 'empty-path')), 'the PATH the server ran with is an empty directory').toEqual([]);
 	});

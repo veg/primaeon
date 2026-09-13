@@ -31,7 +31,7 @@
  */
 
 export * from './manifest.js';
-export { buildFeeds, runSites, fetchesFor, buildBustedHeadFeeds, runBustedHead } from './feeds.js';
+export { buildFeeds, runSites, runTaxaSites, fetchesFor, buildBustedHeadFeeds, runBustedHead } from './feeds.js';
 export {
 	predictFromSession,
 	inferSites,
@@ -69,3 +69,41 @@ export * from './fastaValidation.js';
  * `./dates` is also a subpath export, so the `/time` route imports it without the ONNX surface.
  */
 export * from './dates/index.js';
+
+/**
+ * PHASE 3 OF PLAN-TEMPORAL.md ADDS THE DATING PILLAR, MODEL-FREE. `runtime/src/dating/` orchestrates
+ * `hyphaeon dating --no-tree --method ols` over the library's ported estimators (`runOlsDating`,
+ * `runRestrictedSplineClockDating`, `computeTreeFreeDivergences`, `clockFittedAndPredicted`) and
+ * owns what the library must not: the `'*' → '-'` convention this pillar's reference-of-record used,
+ * the `L mod 3` trim, the coverage/holdout rule, the outlier flag, clock-model selection and its
+ * sentence, ensemble admission, the reference-shaped JSON and CSV, and every refusal a reader sees.
+ * It loads no model and imports nothing that could: `./dating` is also a subpath export, so the
+ * `/time` route reaches it without the ONNX surface, and `dating-port.test.js` asserts the boundary.
+ * `clockRegression.js` is NOT touched by any of it — it is the independent check this port is
+ * compared against, and the same suite runs the two side by side.
+ */
+export * from './dating/index.js';
+
+/**
+ * PHASE 4 OF PLAN-TEMPORAL.md ADDS THE HALF THE MODEL FEEDS. `datingNeural.js` is the one file in
+ * this package that puts the two together: it runs `<variant>_taxa.onnx` over EVERY site of the
+ * alignment (not the variable ones — splits.py is fed the whole `[L, N, 1]` tensor, so the dating
+ * pass cannot ride the report's forward pass), accumulates the two batch-reduced outputs, divides
+ * once, and hands the library pure matrices. It sits OUTSIDE `src/dating/` deliberately: the
+ * import-boundary test that makes "the date-review page costs no model byte" a fact rather than a
+ * claim scans that directory for a session, a manifest or onnxruntime, and moving this inside it
+ * would mean weakening the test. `./dating/neural` is its own subpath export for the same reason.
+ */
+export { runDatingModelPass } from './datingNeural.js';
+
+/**
+ * PHASE 5 OF PLAN-TEMPORAL.md ADDS THE TEMPORAL-SELECTION PILLAR. `runtime/src/temporal/` is
+ * `run_temporal_surveillance` (hyphaeon/temporal.py:399-905) as an application drives it: one
+ * forward pass over the codons, the reference's chain of arithmetic through `@veg/hyphaeon-js`, and
+ * the date-shuffling null run in calibrated chunks that report progress and honour a cancel
+ * (`./temporal/null.js`, whose header carries the measured cost model that corrects PLAN-TEMPORAL
+ * §5.1.3's estimate by two orders of magnitude). Unlike `./dates` and `./dating` it is NOT
+ * model-free — its first step is a forward pass — so `./temporal` is a subpath for import tidiness
+ * rather than for a boundary assertion.
+ */
+export * from './temporal/index.js';

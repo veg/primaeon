@@ -483,7 +483,7 @@ library mirrors `dataset.py`, and the fixture replay in `js/test/fixtures.test.j
 |---|---|---|
 | exact | tokenisation, patches, graph edges and sectors, BH, ranks, confusion matrices, writers | equality after canonicalisation |
 | tolerance | LRT and attention through ORT, MDS, cosine, t/χ²/normal p-values, ROC-AUC | `max |Δ|` ≤ 1e-5·max(1, \|lrt\|) for the graph (measured in Phase 0: fp32 torch paths themselves differ by 6.7e-6, so 1e-6 is unreachable), ≤ 1e-5 (MDS), ≤ 1e-9 (special functions on float64; note `cmd_meme` writes p/q as float32) |
-| statistical | `p_perm`, `gene_p_value_perm`, `null_coherence_*`, `p_assoc_perm` | JS and Python each at B = 10,000 with their own seeds; difference within 3·√(p(1−p)/B); null moments within 2% |
+| statistical | `p_perm`, `gene_p_value_perm`, `null_coherence_*`, `p_assoc_perm` | JS and Python each at B = 10,000 with their own seeds; difference within 3·√(p(1−p)(1/B_ref + 1/B_surface)); each null moment within 3·c·`null_coherence_std`(ref)·√(1/B_ref + 1/B_surface), c = 1 (mean), 1 (std, = √((κ*−1)/4) at κ* = 5), 3.6 (p95) — 3σ of that estimator's own sampling distribution, measured on 23 nulls across all eight examples (`PARITY.md`). The flat "2 %" this row used to carry was ~10σ on the mean and only ~1.7σ on the std, and failed a clean run 71 % of the time |
 
 Three surfaces plus the reference run this on every push: JS under Node, JS in headless Chromium, the
 MCP tool, and Python.

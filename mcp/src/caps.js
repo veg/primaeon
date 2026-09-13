@@ -71,7 +71,16 @@ export const MAX_CODONS = Object.freeze({
   epistasis: 30000,
   phenotype: 30000,
   dms: 3000,
-  analyze: 30000
+  analyze: 30000,
+  // Phase 6. EVERY analysis needs a row: `classifyRun` applies the codon cap only when
+  // `MAX_CODONS[analysis] !== undefined`, so an analysis added without one is silently UNCAPPED on
+  // sites and a 40,000-codon temporal upload sails through the only check that would have stopped
+  // it. `temporal` and `dating` size like meme (one forward pass per codon); `dates` reads sequence
+  // NAMES and never a codon, and carries the same row so the absence is a decision and not an
+  // omission.
+  temporal: 30000,
+  dating: 30000,
+  dates: 30000
 });
 
 export const DMS_MUTANTS_PER_SITE = 19;
@@ -100,8 +109,37 @@ export const ANALYZE_WAIT_MAX_SEC = JOB_TIMEOUT_MS / 1000;
  */
 export const ANALYZE_INLINE_MAX_BYTES = 256 * 1024;
 
-/** The analyses that run the network and therefore fall under the work caps. */
-export const MODEL_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype", "analyze"]);
+/**
+ * The analyses that run the network and therefore fall under the work caps.
+ *
+ * `dating` is here CONDITIONALLY and that is the point of the note: its default path is model-free
+ * (a root-to-tip regression over TN93 distances, O(N x L), measured at 85 ms on the 143-sequence
+ * korber example), and `use_model: true` adds one forward pass over every codon through
+ * `<variant>_taxa.onnx` (measured upstream at 9.4-17.1 s on the same file — 88% of the wall clock).
+ * `workFor` below switches on that option rather than on the analysis name.
+ */
+export const MODEL_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype", "analyze", "temporal", "dating"]);
+
+/**
+ * `hyphaeon dating`'s own ceiling on the model-based estimators: dating.py:2745-2747 gives up on
+ * the transformer above this and silently falls back to OLS, and the runtime
+ * (runtime/src/dating/modelFits.js DATING_NEURAL_MAX_TAXA) refuses instead, because the fallback
+ * and the thing that was asked for are different answers under one name. Quoted here so `caps`
+ * can publish it beside MAX_TAXA, which is a DIFFERENT number for a different reason (MAX_TAXA is
+ * what this server will accept at all; this is what the estimator will run).
+ */
+export const DATING_MODEL_MAX_TAXA = 1500;
+
+/**
+ * A temporal record is NEVER answered inside the tool call. MEASURED (H5N1_HA_geo, 98 taxa x 566
+ * codons, general.onnx at 4 threads, B = 1000 at the reference's own --time-points 250): the run is
+ * 4,065 ms and the JSON-safe record is 2,149,694 bytes, 8.2x ANALYZE_INLINE_MAX_BYTES, of which
+ * `curves` alone is 1,988,099 (92.5%). The engine's own H1N1 acceptance run is 7.18 MB, 27x. `top`
+ * cannot help: the site columns are typed arrays, not arrays of records. So the tool always creates
+ * a job, waits for it, and answers with the SUMMARY plus the job id; `get_results section=` pages
+ * the record (src/time.js TEMPORAL_SECTIONS).
+ */
+export const TEMPORAL_ALWAYS_JOB = true;
 
 /**
  * The pillars, ALL of which run IN THIS PROCESS (runtime/ over onnxruntime-node;
@@ -112,7 +150,22 @@ export const MODEL_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms
  * (hyphaeon_analyze: the whole report). Defined in this leaf so src/validate.js, src/engine.js and
  * src/tools.js share one list without importing each other.
  */
-export const NATIVE_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dms", "phenotype", "evaluate", "analyze"]);
+export const NATIVE_ANALYSES = Object.freeze([
+  "meme",
+  "busted",
+  "epistasis",
+  "dms",
+  "phenotype",
+  "evaluate",
+  "analyze",
+  // Phase 6, the last phase: the two time pillars and the date layer that makes them safe
+  // (runtime/src/dates/, runtime/src/dating/, runtime/src/temporal/; PLAN-TEMPORAL D31/D34).
+  // `dates` runs no model at all and is in this list because it is a tool a client calls and a
+  // name `hyphaeon_validate` sizes; `list_models` reports its own no-model status.
+  "dates",
+  "dating",
+  "temporal"
+]);
 
 /**
  * Work term for an analysis: sites x taxa^2, times 19 for the digital DMS sweep.
@@ -122,9 +175,20 @@ export const NATIVE_ANALYSES = Object.freeze(["meme", "busted", "epistasis", "dm
  * @param {number} taxa      sequences in the file as submitted
  * @returns {number}
  */
-export function workFor(analysis, codons, taxa) {
+export function workFor(analysis, codons, taxa, options = {}) {
   const base = codons * taxa * taxa;
-  return analysis === "dms" ? base * DMS_MUTANTS_PER_SITE : base;
+  if (analysis === "dms") return base * DMS_MUTANTS_PER_SITE;
+  // The date layer reads sequence NAMES: no codon is parsed and no matrix is built, so the work
+  // term that describes a forward pass describes nothing here. Its real cost is O(taxa) string
+  // work — measured at 3-24 ms on the four bundled examples — and its real cap is
+  // MAX_ALIGNMENT_CHARS, which the schema enforces before the string is touched.
+  if (analysis === "dates") return 0;
+  // Dating's default path is a root-to-tip regression over pairwise TN93 distances: O(N x L)
+  // character work plus an N x N distance matrix, NOT a per-site forward pass (measured: 85 ms on
+  // korber's 143 x 981, against 2.0e7 "units" if L x N^2 were applied to it). `use_model` adds one
+  // forward pass over every codon through the taxa graph, which IS L x N^2.
+  if (analysis === "dating") return options.useModel === true ? base : codons * taxa;
+  return base;
 }
 
 /**
@@ -154,8 +218,8 @@ export function probeSequences(sequences) {
  * @param {{codons: number, taxa: number}} size
  * @returns {{ok: boolean, mode?: "sync"|"job", work: number, reason?: string, hint?: string}}
  */
-export function classifyRun(analysis, { codons, taxa }) {
-  const work = workFor(analysis, codons, taxa);
+export function classifyRun(analysis, { codons, taxa }, options = {}) {
+  const work = workFor(analysis, codons, taxa, options);
   const codonCap = MAX_CODONS[analysis];
 
   if (taxa < MIN_TAXA) {
@@ -176,6 +240,25 @@ export function classifyRun(analysis, { codons, taxa }) {
         "The alignment has " + taxa + " sequences; the cap is " + MAX_TAXA +
         " as submitted (the model itself is capped at " + TAXON_CAP + " after PD subsampling).",
       hint: "Reduce the alignment to at most " + MAX_TAXA + " sequences before submitting."
+    };
+  }
+  // The model-based dating estimators have their OWN ceiling and refuse rather than downsample
+  // into it. It is checked after MAX_TAXA because MAX_TAXA is what this server accepts at all,
+  // and it is deliberately UNREACHABLE at today's numbers: DATING_MODEL_MAX_TAXA is 1,500 and
+  // MAX_TAXA is 1,000, so no submission this server admits can reach the pillar's own ceiling.
+  // The branch stays because the two numbers answer different questions and either may move, and
+  // because the runtime refuses on it independently (DATING_MODEL_TOO_MANY_TAXA): a deployment
+  // that raised MAX_TAXA without this would get the refusal from inside the run instead of before
+  // it, which is the same answer minutes later.
+  if (analysis === "dating" && options.useModel === true && taxa > DATING_MODEL_MAX_TAXA) {
+    return {
+      ok: false,
+      work,
+      reason:
+        "The alignment has " + taxa + " sequences; the model-based dating estimators are refused above " +
+        DATING_MODEL_MAX_TAXA + " (dating.py:2745-2747 silently falls back to OLS at that size; this build will not, " +
+        "because the fallback and the thing you asked for are different answers under one name).",
+      hint: "Re-run with use_model: false to get the model-free estimate deliberately, or submit fewer sequences."
     };
   }
   if (codons < 1) {
@@ -242,6 +325,20 @@ export function estimateSeconds(analysis, codons, taxa) {
   const work = workFor(analysis, codons, taxa);
   // attribution + forward for epistasis, roughly; the report runs meme, busted, epistasis, the
   // attribution loop and two filter passes before its (budget-capped) DMS.
+  // MEASURED on this machine at 4 threads: the date layer is 3-24 ms on the bundled examples
+  // (H5N1 6 ms, korber 3 ms, H1N1 9 ms, H5N1 + a metadata CSV 24 ms), which rounds to zero against
+  // a 1.5 s model start-up this analysis never pays.
+  if (analysis === "dates") return 0.05;
+  // MEASURED: korber's model-free clock is 85 ms end to end (143 sequences x 981 codons), so the
+  // model-free path is the parse plus arithmetic and nothing else. With `use_model` the taxa-graph
+  // pass dominates (9.4 s on the same file upstream, 88% of the wall clock) and the work term is
+  // the ordinary per-site one, so the ordinary coefficient applies.
+  if (analysis === "dating") return work === codons * taxa ? 0.2 : 1.5 + 2e-4 * codons + 2.1e-7 * work;
+  // MEASURED: H5N1_HA_geo (98 x 566) is 4,065 ms for the whole pillar with the full 1,000-draw
+  // null inside budget, against a 4.4e6 work term — so the forward pass is not the whole story and
+  // the null adds a term the caps vocabulary has no name for (its own budget lives in
+  // runtime/src/temporal/null.js). This stays an ADVISORY order of magnitude, as the docstring says.
+  if (analysis === "temporal") return 1.5 + 2 * (2e-4 * codons + 2.1e-7 * work);
   const passes = analysis === "epistasis" ? 2 : analysis === "analyze" ? 4 : 1;
   return 1.5 + passes * (2e-4 * codons + 2.1e-7 * work);
 }

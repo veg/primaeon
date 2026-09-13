@@ -527,6 +527,30 @@ suite('the custom pattern is validated before it is ever run', () => {
 		expect(compileDateRegex('(?:\\d{4})').valid).toBe(false);
 	});
 
+	it('MORE THAN ONE capturing group runs, and says that only the first is read', () => {
+		// X7, phase 6's review: `_(\d{4})-(\d{2})_` was accepted silently and reported
+		// `groups: 2, valid: true, matched: 98`, with nothing anywhere saying the second group was
+		// discarded — so a reader whose date is in the second group gets a confidently wrong axis.
+		// It is a NOTE and not a refusal: `dating.py:478` reads `m.group(1)` and so does this, so the
+		// pattern runs exactly as the reference runs it.
+		const compiled = compileDateRegex('_(\\d{4})-(\\d{2})_');
+		expect(compiled.valid).toBe(true);
+		expect(compiled.groups).toBe(2);
+		expect(compiled.warning.code).toBe('DATE_REGEX_EXTRA_GROUPS');
+		expect(compiled.warning.message).toMatch(/only the FIRST is read/);
+		expect(compiled.warning.message).toMatch(/non-capturing/);
+		// One group carries no note at all.
+		expect(compileDateRegex('_(\\d{4})_').warning).toBeNull();
+		// And the note reaches the ingest's own warning list and its regex block.
+		const ing = ingestDates({ taxa: ['s_2019-04_x', 's_2020-05_x', 's_2021-06_x'], dateRegex: '_(\\d{4})-(\\d{2})_' });
+		expect(ing.ok).toBe(true);
+		expect(ing.coverage.from_regex).toBe(3);
+		expect(row(ing, 's_2019-04_x').value).toBe(2019);
+		expect(pick(ing, 'DATE_REGEX_EXTRA_GROUPS').severity).toBe('warn');
+		expect(ing.regex.warning.code).toBe('DATE_REGEX_EXTRA_GROUPS');
+		expect(DATE_DIAGNOSTIC_CODES).toContain('DATE_REGEX_EXTRA_GROUPS');
+	});
+
 	it('an uncompilable pattern is refused with the engine\'s own message', () => {
 		const ing = ingestDates({ taxa: THREE, dateRegex: '(' });
 		expect(ing.ok).toBe(false);
