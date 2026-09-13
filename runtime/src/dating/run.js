@@ -94,12 +94,13 @@
  *
  * so on dating-sized alignments the compiled engine roughly DOUBLES the run for numbers that are
  * identical to the last bit (t_mrca 1979.7591896284164 and 1994.8279548937924 from both engines).
- * Its ~90 ms of load and first-call warm-up is only earned above ~3,500 unordered pairs
- * (`TN93_WASM_BREAK_EVEN_PAIRS`, tn93-wasm.js), which a one-landmark root case never reaches — but
- * case 3's square sub-branch does, at 2,500 dated taxa by two million. The engine therefore cannot
- * be chosen by SHAPE, since `computeTreeFreeDivergences` picks the shape at runtime from the data;
- * it is chosen by the size of the job, which is what `resolveTn93Options`'s `pairs` argument is for
- * and what a caller of this function should pass.
+ * Its ~90 ms of load and first-call warm-up is not earned back on a one-landmark root case, and IS
+ * paid anyway. That is deliberate and it is not a timing decision: veg/tn93's compiled build is how
+ * that repository's updates reach this one, and the JavaScript port is a second implementation of
+ * the same arithmetic kept in step by hand, so any path still on the port is a path where the two
+ * can diverge the day upstream changes. `auto` is therefore the compiled engine at every size, and
+ * the port is the fallback for a build that will not load. tn93-wasm.js's header carries the
+ * measurements and the reasoning.
  */
 
 import { computeTreeFreeDivergences, parseAlignmentSequences, runOlsDating, runRestrictedSplineClockDating } from '@veg/hyphaeon-js';

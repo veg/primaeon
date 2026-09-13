@@ -141,11 +141,10 @@
  * compiled engine on the cross hook: `computeTreeFreeDivergences` picks its shape AT RUNTIME from
  * the data (case 3's cohort, dating.js:1087 vs :1107), so one options object must answer both, and
  * the square branch at 2,500 dated taxa is three million pairs — 60 s ported against 13 s compiled,
- * extrapolated from the korber rate. The engine is therefore chosen by the SIZE of the job, not its
- * shape: `TN93_WASM_BREAK_EVEN_PAIRS` is the measured crossover (~3,500 unordered pairs) and
- * `resolveTn93Options({pairs})` applies it to `'auto'`. A caller that does not know the size gets
- * what it always got. The matrices are identical to the last bit in every row above, on both shapes
- * and at every n measured, which is the number that matters.
+ * extrapolated from the korber rate. So one options object answers both shapes, and the ENGINE is
+ * not chosen by shape or by size at all: `auto` is the compiled build everywhere, for the
+ * single-source-of-truth reason in the cost section below. The matrices are identical to the last
+ * bit in every row above, on both shapes and at every n measured, which is the number that matters.
  *
  * SEQUENCE NAMES ARE NOT SENT. The FASTA handed to the module names its records s0..s(n-1) in taxa
  * order, and the CSV is mapped back by index. A taxon name carrying a comma or a quote would
@@ -671,28 +670,24 @@ export const TN93_ENGINE_KEY = 'tn93Engine';
  *   HIV1_RT 200  19,900 162.9 ms  198.0 ms   yes
  *   HIV1_RT 476 113,050 338.9 ms  865.1 ms   yes
  *
- * Below ~3,500 unordered pairs the compiled engine cannot earn its 90 ms back; above it the gap
- * widens with N². `TN93_WASM_BREAK_EVEN_PAIRS` is that crossover and `tn93EngineForPairs` applies
- * it, for a caller that knows the size of the job before it asks for an engine. Sequence length
- * moves the number (H5N1_HA_geo at 1,700 nt is 8.2 µs/pair ported against 3.3 compiled, so its
- * crossover is higher); 3,500 is the measured value on the longer alignment, which is the
- * conservative side — it prefers the port in the region where the two are within a few ms.
- */
-export const TN93_WASM_BREAK_EVEN_PAIRS = 3500;
-
-/**
- * Which engine the numbers say to use for a job of `pairs` unordered pairs — `'auto'` above the
- * measured crossover, `'js'` below it. It is only a DEFAULT: an explicit `'wasm'` or `'js'` from a
- * caller is never overridden (`resolveTn93Options` applies this to `'auto'` alone, and only when it
- * was given a size at all).
+ * Below ~3,500 unordered pairs the compiled engine does not earn its ~90 ms of load back, and above
+ * it the gap widens with N². THAT IS RECORDED HERE AS A COST AND IS NOT A SWITCH. An earlier draft
+ * of this file turned it into one — `TN93_WASM_BREAK_EVEN_PAIRS` with a `tn93EngineForPairs` that
+ * sent small jobs to the port — and that was wrong on a ground the timings cannot see.
  *
- * @param {number|null|undefined} pairs unordered pairs the run will compute, or null if unknown
- * @returns {'auto'|'js'}
+ * WHY THE COMPILED ENGINE IS NOT A PERFORMANCE CHOICE. veg/tn93 is a repository this project's
+ * authors maintain, and the vendored build is how its updates arrive here: a fix or a change in the
+ * tool lands as a new release we re-vendor, verified by MANIFEST.json's sha256. The JavaScript port
+ * is a second implementation of the same arithmetic that has to be kept in step BY HAND, and every
+ * code path still running it is a path where the two can silently diverge the day upstream changes.
+ * Sergei asked for the compiled target for exactly that reason, and the decision was recorded as a
+ * stakeholder directive that overrides the measurement.
+ *
+ * So `auto` means the compiled engine, on every job, whatever its size. The port remains as the
+ * FALLBACK when the compiled build cannot load — and only then, loudly, with `TN93_ENGINE_FALLBACK`
+ * and a reason. The ~90 ms on a small job is a price this project has decided to pay.
  */
-export function tn93EngineForPairs(pairs) {
-	if (pairs === null || pairs === undefined || !Number.isFinite(pairs)) return 'auto';
-	return pairs >= TN93_WASM_BREAK_EVEN_PAIRS ? 'auto' : 'js';
-}
+
 
 /**
  * The whole thing in one call: `{ pairwiseDistances }` to hand the library as `tn93Options` for its
@@ -776,9 +771,10 @@ export function tn93EngineOf(options) {
  * only which hook the caller CANNOT do without, for the one case that still matters: a library tag
  * that carries one hook and not the other.
  *
- * `pairs` is the size of the job, when the caller knows it: below `TN93_WASM_BREAK_EVEN_PAIRS` the
- * measured numbers say the port finishes first (see that constant's table), so `'auto'` resolves to
- * the port and says why. Without it, `'auto'` means what it always did.
+ * `pairs` is the size of the job, when the caller knows it. It is RECORDED, not acted on: `'auto'`
+ * is the compiled engine at every size. An earlier draft used it to send small jobs to the port and
+ * that was wrong — see the cost section in this file's header for why the port is a fallback rather
+ * than a fast path.
  *
  * @param {object} [args]
  * @param {'auto'|'wasm'|'js'} [args.engine]
@@ -803,9 +799,10 @@ export async function resolveTn93Options({ engine = 'auto', wasm = {}, options =
 		error
 	});
 	if (engine === 'js') return ported('requested', null);
-	// The numbers, not a preference: below the crossover the compiled engine loses to the port even
-	// before its own load is counted. Only `auto` is decided this way, and only when a size was given.
-	if (engine === 'auto' && tn93EngineForPairs(pairs) === 'js') return ported('below_break_even', null);
+	// `auto` is the compiled engine at every size. See the header: this is not a timing decision, and
+	// a `pairs` hint does NOT send a small job to the port — the port is the fallback for a build that
+	// will not load, not a fast path. `pairs` is still accepted and recorded, because the cost of the
+	// choice is worth reporting even when it does not change it.
 	try {
 		// Both hooks when the library has both (the object may meet either shape at runtime); the one
 		// the caller named when it has only that one, so an older library still runs rather than

@@ -780,11 +780,10 @@ export async function diagnoseUpload({
 			taxaCount = 0; // unparseable: `diagnose` says so, and there is nothing to load
 		}
 		if (taxaCount > 0 && taxaCount <= taxaLimit) {
-			// The number of unordered pairs the load will actually compute, which is what decides
-			// whether the compiled engine can earn its ~90 ms of load and warm-up back
-			// (TN93_WASM_BREAK_EVEN_PAIRS, tn93-wasm.js). A diagnose is the whole of its request — there
-			// is no model inference after it to hide the fixed cost in — so the size is passed here
-			// where the pipeline's own resolution does not pass it.
+			// The number of unordered pairs the load will compute, passed so the run can REPORT what the
+			// engine cost on a request that has no model inference to hide it in. It does not choose the
+			// engine: `auto` is veg/tn93's compiled build at every size (tn93-wasm.js's header says why),
+			// and a diagnose of 18 taxa pays the ~90 ms deliberately.
 			const n = Math.min(taxaCount, maxSpecies ?? taxaCount);
 			const resolved = await resolveTn93Options({
 				engine: tn93Engine ?? 'auto',

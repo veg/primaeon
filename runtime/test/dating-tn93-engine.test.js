@@ -57,12 +57,10 @@ import { ingestDates, taxaForDates } from '../src/dates/index.js';
 import { diagnoseUpload } from '../src/pipeline.js';
 import {
 	TN93_ENGINE_KEY,
-	TN93_WASM_BREAK_EVEN_PAIRS,
 	loadTn93Wasm,
 	resolveTn93Options,
 	tn93CrossProvider,
 	tn93CrossWasmOptions,
-	tn93EngineForPairs,
 	tn93EngineOf,
 	tn93WasmOptions
 } from '../src/tn93-wasm.js';
@@ -474,27 +472,37 @@ describe.skipIf(!ready)('the record names the engine that ran, and cannot be tol
 	}, 120000);
 });
 
-describe('the engine is chosen by the size of the job, which was measured', () => {
-	// R4. The compiled engine costs ~90 ms in a fresh process before its first real matrix (load,
-	// first callMain, warm-up) and saves ~14 µs a pair on korber-length sequences, so it cannot pay
-	// for itself below a few thousand pairs — which is why a one-landmark root case, 142 pairs, is
-	// SLOWER compiled both cold and warm. The table is in tn93-wasm.js.
-	it('below the measured crossover `auto` resolves to the port, and says why', async () => {
-		const small = await resolveTn93Options({ shape: 'cross', pairs: TN93_WASM_BREAK_EVEN_PAIRS - 1 });
-		expect(small.tn93Engine).toBe('js');
-		expect(small.tn93EngineReason).toBe('below_break_even');
-		expect(small.tn93Options.pairwiseDistances).toBeUndefined();
-		const big = await resolveTn93Options({ shape: 'cross', pairs: TN93_WASM_BREAK_EVEN_PAIRS });
-		expect(big.tn93Engine).toBe('wasm');
-		expect(typeof big.tn93Options.pairwiseDistances).toBe('function');
+describe('the compiled engine is the engine, at every size', () => {
+	// The measurements say the compiled build cannot pay back its ~90 ms of load below a few
+	// thousand pairs, and an earlier draft of this work turned that into a switch: small jobs went
+	// to the port. That was wrong, and this block is what stops it coming back.
+	//
+	// veg/tn93 is a repository this project's authors maintain, and the vendored build is how its
+	// updates arrive here. The JavaScript port is a second implementation of the same arithmetic,
+	// kept in step by hand — so a path still running the port is a path where the two can silently
+	// diverge the day upstream changes. The compiled target was asked for on that ground, and it
+	// overrides the timing. The port is the fallback for a build that will not load, not a fast path.
+	it('resolves `auto` to the compiled engine no matter how small the job is', async () => {
+		for (const pairs of [1, 10, 153, 3499, 10 ** 9]) {
+			const out = await resolveTn93Options({ shape: 'cross', pairs });
+			expect(out.tn93Engine, `pairs=${pairs}`).toBe('wasm');
+			expect(typeof out.tn93Options.pairwiseDistances).toBe('function');
+			expect(out.tn93EngineReason).toBeNull();
+		}
 	}, 120000);
 
-	it('an explicit engine is never overridden by the size, in either direction', async () => {
+	it('has no size-based selector left to reintroduce the port silently', async () => {
+		const src = readFileSync(new URL('../src/tn93-wasm.js', import.meta.url), 'utf8');
+		// The prose explains why the crossover is NOT a switch; no live code may branch on it.
+		expect(src).not.toMatch(/export const TN93_WASM_BREAK_EVEN_PAIRS/);
+		expect(src).not.toMatch(/export function tn93EngineForPairs/);
+		expect(src).not.toMatch(/return ported\('below_break_even'/);
+	});
+
+	it('an explicit engine is still honoured in both directions', async () => {
 		expect((await resolveTn93Options({ engine: 'wasm', pairs: 1 })).tn93Engine).toBe('wasm');
 		expect((await resolveTn93Options({ engine: 'js', pairs: 10 ** 9 })).tn93Engine).toBe('js');
-		// No size given is what every existing caller does, and it must mean what it always meant.
 		expect((await resolveTn93Options({ shape: 'cross' })).tn93Engine).toBe('wasm');
-		expect(tn93EngineForPairs(null)).toBe('auto');
 	}, 120000);
 });
 
@@ -537,13 +545,14 @@ describe.skipIf(!ready)('diagnose() gets the engine too, on the path every uploa
 		expect(out.warnings).toEqual(diagnose({ alignmentText, treeText }).warnings);
 	}, 180000);
 
-	it('takes the port on a small upload, because that is what the numbers say', async () => {
-		// 18 taxa is 153 pairs: about 3 ms ported, against ~90 ms of load and warm-up for the compiled
-		// engine, which would be the whole cost of the request. The matrices are identical either way.
+	it('takes the compiled engine even on a small upload, and matches `diagnose` exactly', async () => {
+		// 18 taxa is 153 pairs: about 3 ms ported against ~90 ms of load, so this is the case where the
+		// timings most want the port — and it still takes the compiled build, because one engine that
+		// tracks veg/tn93 is worth more than 90 ms on an upload check. The diagnosis is identical.
 		const alignmentText = readFileSync(join(EXAMPLES, 'bat_oas1.fasta'), 'utf8');
 		const out = await diagnoseUpload({ alignmentText });
-		expect(out.tn93_engine).toBe('js');
-		expect(out.tn93_engine_reason).toBe('below_break_even');
+		expect(out.tn93_engine).toBe('wasm');
+		expect(out.tn93_engine_reason).toBeNull();
 		expect(out.warnings).toEqual(diagnose({ alignmentText }).warnings);
 	}, 180000);
 });
