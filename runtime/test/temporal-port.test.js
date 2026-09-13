@@ -183,31 +183,40 @@ const HEADLINE = {
 /**
  * Measured at this commit; each is asserted against its class AND against itself. See the header.
  *
- * THESE ARE A REGRESSION TRIPWIRE, NOT THE SCIENTIFIC GATE. `CLASS` below is the gate: it is the
- * tolerance a reader of the numbers is entitled to. `MEASURED` is tighter on purpose, so that a
- * change in OUR arithmetic trips it long before it reaches the class.
+ * THESE ARE A REGRESSION TRIPWIRE, NOT THE SCIENTIFIC GATE. `CLASS` below is the gate: the tolerance
+ * a reader of the numbers is entitled to, and the project's own parity classes (PLAN.md §5.4).
+ * `MEASURED` is meant to sit under it so a change in OUR arithmetic trips long before it reaches the
+ * class.
  *
- * WHICH MEANS A TRIPWIRE MUST SPAN EVERY PLATFORM WE RUN ON, or it reports the platform instead of
- * a regression. Two of these were fitted on the development machine alone and duly failed in CI on
- * the first run that reached them (veg/primaeon run 34736590449, linux/x64): `energy.rel` measured
- * 2.528e-5 against its 1.69e-5, and `loadings.abs` 5.020e-6 against its 4.8e-6. Both passed their
- * CLASS on that run — the energy at 0.25 of it — so nothing about the port was wrong; the bounds
- * were describing darwin/x64 under Rosetta and being asked about Linux.
+ * WHAT THREE CI ROUNDS ESTABLISHED, and it is not what the first round looked like. These were
+ * fitted on the development machine — darwin/x64 under Rosetta — and asked about linux/x64, where
+ * onnxruntime reduces in a different order. Five failed, in three rounds, because `expect` stops a
+ * test at its first failure and one run only ever reveals the FIRST bound that is too tight:
  *
- * Both now carry the spread, with the platform named beside each figure and 1.5x headroom on the
- * larger, because we hold ONE sample per platform and onnxruntime's reduction order is already
- * known to move with the thread count (see `lrt`, which carries 10 % for that reason). Tighten them
- * again when there are enough runs to say what the spread actually is.
+ *     energy.rel     1.69e-5  -> linux 2.528e-5   (1.50x)
+ *     loadings.abs   4.8e-6   -> linux 5.020e-6   (1.05x)
+ *     loadings.rel   1.29e-5  -> linux 1.390e-5   (1.08x)
+ *     r2_fpca        5.1e-7   -> linux 5.324e-7   (1.04x)
+ *     waves          8.7e-8   -> linux 8.835e-8   (1.02x)
  *
- * AND A THIRD, ON THE NEXT RUN: `loadings.rel` at 1.390e-5 against its 1.29e-5. `expect` stops a
- * test at its first failure, so ONE run only ever reveals the FIRST bound that is too tight —
- * fixing what a run shows is not the same as fixing what is wrong, and this table cost two CI
- * rounds to learn that. What makes the remaining entries credible is not that they have not failed
- * yet but that they were EXERCISED on that Linux run and passed: `lrt`, `p_static`, `q_static`,
- * `r2_fpca`, `prevalence`, `velocity` and `waves` all sit in assertions that ran to completion
- * there. The three that needed widening are exactly the wave decomposition's — energy, loadings
- * abs and rel — which is what one would expect, since a singular value decomposition amplifies
- * whatever float noise it is handed.
+ * THE LAST TWO ARE THE INFORMATIVE ONES. They PASSED on one Linux run and FAILED on the next, at the
+ * same commit — so the spread is not merely across platforms, it is across RUNS on one platform,
+ * which is what a thread-scheduled float reduction does. A tripwire pinned to the last digit of one
+ * run measures the scheduler.
+ *
+ * AND THE TWO TIERS ARE NOT A DECADE APART, though the CLASS block below used to say they were. They
+ * are 1.25x on `lrt.rel`, 1.54x on `lrt.abs`, 1.95x on `p_static`, 1.96x on `r2_fpca`, 2.20x on
+ * `q_static` — and a decade or more only on `prevalence`, `velocity`, `waves` and `loadings.rel`.
+ * Where the gap is a factor of two there is no room for a tripwire that is both meaningfully tighter
+ * than the gate AND above the environment's noise, and pretending otherwise is what produced three
+ * rounds of one-bound-at-a-time edits.
+ *
+ * SO: every float bound here now sits above the widest thing observed and below its class, and for
+ * the five tight pairs it sits just below the class, where the second tier is frankly nominal. The
+ * classes did NOT move — they are the scientific gate and they passed on Linux throughout, the
+ * energy one at 0.25 of its bound. `keeps every tripwire beneath the class it shadows` enforces the
+ * remaining relationship. Re-derive these from a handful of runs on each platform when anyone wants
+ * the tighter tier back; one sample cannot support it.
  */
 const MEASURED = {
 	/**
@@ -215,15 +224,21 @@ const MEASURED = {
 	 * depends on the thread count, so this one bound carries 10 % headroom for that alone. It is
 	 * still four times tighter than the class and it still sits at the reference's OWN device spread.
 	 */
-	lrt: { abs: 1.3e-5, rel: 8e-6 },
-	p_static: { abs: 5.13e-7 },
-	q_static: { abs: 9.1e-7 },
-	r2_fpca: { abs: 5.1e-7 },
+	lrt: { abs: 1.7e-5, rel: 9e-6 },
+	/** darwin 5.13e-7; never observed failing on Linux, raised with its family. CLASS 1e-6. */
+	p_static: { abs: 8e-7 },
+	/** darwin 9.1e-7; raised with its family. CLASS 2e-6. */
+	q_static: { abs: 1.5e-6 },
+	/** darwin 5.1e-7, linux 5.324e-7 — and it passed one Linux run before failing the next. CLASS 1e-6. */
+	r2_fpca: { abs: 8e-7 },
 	/** darwin/x64 Rosetta 1.69e-5, linux/x64 2.528e-5; 1.5x the larger. CLASS is 1e-4. */
 	energy: { rel: 3.8e-5 },
-	prevalence: { abs: 6.7e-9 },
-	velocity: { abs: 1.05e-7 },
-	waves: { abs: 8.7e-8 },
+	/** darwin 6.7e-9. CLASS 1e-7, a real decade, so this one keeps a true second tier. */
+	prevalence: { abs: 1.3e-8 },
+	/** darwin 1.05e-7. CLASS 1e-6, a real decade. */
+	velocity: { abs: 2.1e-7 },
+	/** darwin 8.7e-8, linux 8.835e-8 — passed one Linux run, failed the next. CLASS 1e-6, a real decade. */
+	waves: { abs: 2e-7 },
 	/**
 	 * abs: darwin/x64 Rosetta 4.8e-6, linux/x64 5.020e-6.
 	 * rel: darwin/x64 Rosetta 1.29e-5, linux/x64 1.390e-5.
@@ -237,7 +252,12 @@ const MEASURED = {
 	flipVector: [-1, 1, -1, -1]
 };
 
-/** The classes, one decade or more above what was measured, and never below the device spread. */
+/**
+ * The classes: the scientific gate, and the project's own parity classes (PLAN.md §5.4). NOT a
+ * decade above what was measured — that claim stood here and was false for half the table (see
+ * MEASURED). These did not move when the tripwires above were re-derived, and they must not move to
+ * make a run pass: they are what a reader of the numbers is entitled to.
+ */
 const CLASS = {
 	lrtAbs: 2e-5,
 	lrtRel: 1e-5,
