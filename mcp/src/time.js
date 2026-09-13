@@ -10,10 +10,11 @@
  * than a wiring detail, so they live here rather than being smeared across engine.js and tools.js:
  *
  *   1. A SECOND DATA FILE THAT IS NOT SEQUENCE DATA. Every input key before this one was
- *      sequence-shaped. A date layer is an Auspice JSON *or* a delimited table *or* the FASTA
- *      headers *or* a pasted map, with delimiter sniffing, column discovery, a caller-supplied
- *      regex and a seven-tier name ladder. `ingestFor` below is the ONE call both new pillars and
- *      the review tool make, so the three tools can never disagree about what a date is.
+ *      sequence-shaped. A date layer is an Auspice JSON *or* a delimited table *or* a BEAST 1.x /
+ *      2.x XML *or* the FASTA headers *or* a pasted map, with delimiter sniffing, column discovery,
+ *      a caller-supplied regex and a seven-tier name ladder (eight for a BEAST document, which adds
+ *      `seq_prefix_stripped`). `ingestFor` below is the ONE call both new pillars and the review
+ *      tool make, so the three tools can never disagree about what a date is.
  *   2. REFUSALS THAT ARE RETURNED, NOT THROWN. `ingestDates`, `runDating` and `runTemporal` all
  *      return `{ok: false, refusal, warnings}` objects. Every other pillar the engine wraps signals
  *      a bad input by THROWING, and `classifyEngineError` exists to read those thrown messages, so
@@ -148,6 +149,7 @@
  */
 
 import {
+  BEAST_MATCH_TIERS,
   DATE_DIAGNOSTIC_CODES,
   DATE_MATCH_TIERS,
   DATE_THRESHOLDS,
@@ -164,7 +166,24 @@ import {
   datingReferenceCommand
 } from "@veg/hyphaeon-runtime/dating";
 
-export { DATE_DIAGNOSTIC_CODES, DATE_MATCH_TIERS, DATE_THRESHOLDS, DATING_CI_METHODS, DATING_DISTANCE_MODES, DATING_NEURAL_MAX_TAXA, DATING_THRESHOLDS };
+export { BEAST_MATCH_TIERS, DATE_DIAGNOSTIC_CODES, DATE_MATCH_TIERS, DATE_THRESHOLDS, DATING_CI_METHODS, DATING_DISTANCE_MODES, DATING_NEURAL_MAX_TAXA, DATING_THRESHOLDS };
+
+/**
+ * THE LADDER THAT ACTUALLY RAN, which is not always `DATE_MATCH_TIERS`.
+ *
+ * `date_review.match_tiers` is a per-tier count and `match_tiers_available` is the list it is
+ * counted over, so a client reads one against the other. A BEAST source runs `BEAST_MATCH_TIERS` —
+ * `DATE_MATCH_TIERS` with `seq_prefix_stripped` inserted after `exact`, which is dating.py:438-442's
+ * own `seq_` reconciliation in both directions — so publishing the seven-tier list beside a count
+ * that carries `seq_prefix_stripped: 2` told the client the run had matched at a rung that does not
+ * exist. Every other source keeps the seven-tier ladder exactly as it was.
+ *
+ * @param {object|null|undefined} ingest a `DateIngest`
+ * @returns {readonly string[]}
+ */
+export function matchLadderFor(ingest) {
+  return ingest && ingest.source_kind === "beast" ? BEAST_MATCH_TIERS : DATE_MATCH_TIERS;
+}
 
 // ── the two gate codes this surface adds ────────────────────────────────────
 
@@ -221,11 +240,23 @@ export const TEMPORAL_MIN_DATED_TAXA = 5;
 export const TIME_REFUSAL_HINTS = Object.freeze({
   // --- the date layer (runtime/src/dates/codes.js, severity 'refuse') ---
   DATES_SOURCE_UNREADABLE:
-    "The metadata file did not parse as the kind it was read as. Check the file is complete, or set date_source_kind to say what it is (auspice | json-map | table).",
+    "The metadata file did not parse as the kind it was read as. Check the file is complete, or set date_source_kind to say what it is (auspice | json-map | table | beast).",
   DATES_SOURCE_KIND_UNKNOWN:
-    "The metadata is neither a Nextstrain Auspice JSON, a name-to-date JSON object, nor a delimited table. Export a two-column CSV (sequence name, date), or omit dates_file and let the headers be read.",
-  DATES_BEAST_XML_UNSUPPORTED:
-    "BEAST XML is read by the reference (dating.py:433-434) and not by this build. Export the taxon dates as a two-column CSV and pass it as dates_file.",
+    "The metadata is neither a Nextstrain Auspice JSON, a name-to-date JSON object, a BEAST XML, nor a delimited table. Export a two-column CSV (sequence name, date), or omit dates_file and let the headers be read.",
+  // The four ways a BEAST XML is refused. They replace the single "this build does not read BEAST
+  // XML" refusal the date layer used to raise: it does read one now — BEAST 1 `<taxon><date>` and
+  // BEAST 2 `<trait traitname="date">`, runtime/src/dates/beast.js, a port of dataset.py:84-233.
+  // What is left to refuse is a file that cannot be read AT ALL or that carries no date, and each
+  // of the four says which of those happened and what to change. (test/dates.test.js scans this
+  // directory for the retired code's name, so it must not appear here even in a comment.)
+  DATES_XML_UNPARSABLE:
+    "The XML is not well-formed, so nothing in it could be read — the reference refuses the same file for the same reason (dataset.py:109-110). A BEAST tree annotation written `[&rate=…]` in element text is the usual cause: a bare `&` opens an XML entity, so it has to be written `[&amp;rate=…]` or wrapped in CDATA. If the file is gzipped, decompress it first: dates_file is TEXT in a JSON field, never bytes.",
+  DATES_XML_UNSAFE:
+    "The XML was refused BEFORE it was read, and nothing in it was fetched or opened: it declares an external or parameter entity, or it is larger, deeper or more entity-heavy than this reader will expand. This reader has no filesystem and no network, so an external entity can only ever be a refusal. Strip the DOCTYPE and resend, or export the taxon dates as a two-column CSV.",
+  DATES_BEAST_NOT_BEAST:
+    "The file is well-formed XML but holds nothing a BEAST file holds: no <alignment>/<data> sequences, no <taxon><date>, no date <trait>, no starting tree. If it IS a BEAST file, check whether its root carries `xmlns=`: `parse_beast_xml` searches for UNQUALIFIED tags (dataset.py:123), so a namespaced document matches nothing in it — upstream reads it as an empty result and dates nothing, and this build refuses it instead. Otherwise pass the dates as a CSV/TSV or an Auspice JSON.",
+  DATES_BEAST_NO_DATES:
+    "The XML was read as a BEAST file and carries sequences or a starting tree, but no sampling date. Dates come from BEAST 1 `<taxon id=\"…\"><date value=\"…\"/>` (dataset.py:158-174) or a BEAST 2 `<trait traitname=\"date\" value=\"a=…,b=…\"/>` (dataset.py:176-188). Add one of those, supply the dates as a CSV instead, or omit dates_file and let the sequence headers be read (this is a warning rather than a refusal when the headers already dated the run).",
   DATES_TABLE_NO_DATE_COLUMN:
     "Name the date column explicitly with date_col (and the sequence-name column with strain_col), or rename it to one of the candidates the error lists.",
   DATES_AUSPICE_NO_TIPS:
@@ -328,7 +359,7 @@ export function bareNumbersDominate(ingest) {
  *
  * @param {object} args
  * @param {string} args.alignment          the alignment TEXT (names are read from it)
- * @param {string} [args.dates_file]       the metadata TEXT (Auspice JSON, JSON map, CSV/TSV)
+ * @param {string} [args.dates_file]       the metadata TEXT (Auspice JSON, JSON map, CSV/TSV, BEAST XML)
  * @param {string|null} [args.dates_file_name]
  * @param {object} [args.options]          the tool's date options, in CLI spelling
  * @returns {object} the DateIngest, unchanged
@@ -390,6 +421,13 @@ export function dateReview(ingest, { rows = true, rowsMax = DATE_ROWS_MAX } = {}
     unmatched_taxa: ingest.unmatched_taxa,
     table: ingest.table,
     auspice: ingest.auspice,
+    // The BEAST read, when there was one — `null` otherwise, exactly like `table` and `auspice`.
+    // It is the only one of the three that reports things the run did NOT use: how many sequences
+    // the XML carried, whether it carried a starting tree, which alignment block of how many won,
+    // which upstream quirk fired. See dateSourceSchema's `dates_file` note on why this surface
+    // takes the dates and leaves the rest: `dates_file` is `-d`, and `-d file.xml` upstream
+    // (dating.py:433-442) reads the dates out of the XML and nothing else.
+    beast: ingest.beast,
     regex: ingest.regex,
     headers: ingest.headers,
     warnings: ingest.warnings

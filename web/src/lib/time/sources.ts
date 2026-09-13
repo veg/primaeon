@@ -2,8 +2,10 @@
  * sources.ts — telling the dropped files apart, and the sequence-name/header pair the date layer
  * is fed.
  *
- * WHY THIS FILE EXISTS, PART ONE. `/time` accepts up to four kinds of file at one drop target: an
- * alignment, a Newick tree, a metadata table and a Nextstrain JSON. `lib/analyze/sniff.ts` already
+ * WHY THIS FILE EXISTS, PART ONE. `/time` accepts up to five kinds of file at one drop target: an
+ * alignment, a Newick tree, a metadata table, a Nextstrain JSON and a BEAST XML — which is the odd
+ * one out, because it can be all three of the first at once (`lib/time/beast.ts` places what it
+ * carries). `lib/analyze/sniff.ts` already
  * tells FASTA from NEXUS from PHYLIP, and the runtime's `detectDateSourceKind` already tells an
  * Auspice build from a flat name-to-date JSON from a delimited table. Neither knows about the
  * other's files, and the routing decision — "which of these four did the reader just give me" — is
@@ -32,6 +34,8 @@ export type DroppedKind = 'alignment' | 'tree' | 'table' | 'auspice' | 'json-map
 
 const TREE_EXT = /\.(nwk|newick|tree|tre)$/i;
 const TABLE_EXT = /\.(csv|tsv|tab|txt)$/i;
+/** `.xml.gz` too: `lib/analyze/inputs.ts` inflates before we see the text, but not the name. */
+const XML_EXT = /\.xml(\.gz)?$/i;
 
 /**
  * Classify one dropped file from its first bytes, with the name as a hint.
@@ -45,7 +49,12 @@ export function classifyDropped(text: string, fileName = ''): DroppedKind {
 	const head = text.slice(0, 4096);
 	const trimmed = head.replace(/^﻿/, '').trimStart();
 
-	if (/\.xml$/i.test(fileName) || /^<\?xml|^<beast/i.test(trimmed)) return 'beast';
+	// XML IS DECIDED BY CONTENT, AND THE NAME IS THE LAST RESORT — the same order the runtime's
+	// `detectDateSourceKind` takes since the BEAST reader landed. It used to be the name FIRST, which
+	// meant a `dates.xml` that was actually a CSV was routed to the XML reader and refused unread;
+	// now the bytes decide, and `.xml` only catches a file whose content matched nothing else (so it
+	// still reaches the reader and is refused as unreadable XML, which is the accurate diagnosis).
+	if (trimmed.startsWith('<')) return 'beast';
 
 	if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
 		const kind = detectDateSourceKind(text, fileName);
@@ -63,11 +72,23 @@ export function classifyDropped(text: string, fileName = ''): DroppedKind {
 	const kind = detectDateSourceKind(text, fileName);
 	if (kind === 'table') return 'table';
 	if (TABLE_EXT.test(fileName) && /[\t,;|]/.test(head)) return 'table';
+	if (XML_EXT.test(fileName)) return 'beast';
 	return 'unknown';
 }
 
-/** True for the three things the date layer can read dates out of. */
+/**
+ * True for everything the date layer can read dates out of.
+ *
+ * `beast` is a date source AND MORE — a BEAST XML can carry the alignment and a starting tree in
+ * the same file — so the page routes it separately (`lib/time/beast.ts` places the three slots).
+ * `isMetadataSource` is the narrower question the metadata slot asks: is this file ONLY dates?
+ */
 export function isDateSource(kind: DroppedKind): boolean {
+	return kind === 'table' || kind === 'auspice' || kind === 'json-map' || kind === 'beast';
+}
+
+/** The date sources that fill the metadata slot and nothing else. */
+export function isMetadataSource(kind: DroppedKind): boolean {
 	return kind === 'table' || kind === 'auspice' || kind === 'json-map';
 }
 

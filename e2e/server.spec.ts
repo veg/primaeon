@@ -33,11 +33,17 @@
  * the downloads. Four things about them are only true at the wire, which is why they are here and
  * not left to server/test/time.test.js's supertest coverage:
  *
- *   - `dates_file` is a second document in the request body — an Auspice build, a name-to-date map
- *     or a CSV — and it has to survive JSON transport, the job directory and the worker boundary to
- *     reach the date layer. A run that quietly fell back to reading the sequence NAMES instead
- *     would still answer, with different numbers and no error: the temporal job below passes the
- *     H5N1 metadata table and the result must say `date_review.source === 'table'`.
+ *   - `dates_file` is a second document in the request body — an Auspice build, a name-to-date map,
+ *     a CSV or (since Phase 6b) a BEAST 1.x/2.x XML — and it has to survive JSON transport, the job
+ *     directory and the worker boundary to reach the date layer. A run that quietly fell back to
+ *     reading the sequence NAMES instead would still answer, with different numbers and no error:
+ *     the temporal job below passes the H5N1 metadata table and the result must say
+ *     `date_review.source === 'table'`, and the BEAST job must say `'beast'`.
+ *   - A BEAST XML IS A DATE DOCUMENT HERE AND NOTHING MORE. The reference's `-d file.xml`
+ *     (dating.py:433-442) takes `parse_beast_xml(...)['dates']` and nothing else, and this surface
+ *     does the same: the sequences and starting tree such a file carries are read and discarded,
+ *     `alignment` is still required, and an XML sent AS the alignment is refused at the door with
+ *     `ALIGNMENT_IS_XML` rather than misparsed into four sequences called `<?xml`.
  *   - A REFUSAL IS A 422 AT THE DOOR, before a worker is spent. The date layer is consulted on the
  *     HTTP thread, so an undatable alignment never reaches the pool; the code is its own
  *     (`DATES_NONE`) and the kind is `input`, not a server fault.
@@ -67,6 +73,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { REFERENCE_BEAST2, beast1FromH5N1 } from './beastFixtures';
 import { APP_DIR, ENGINE_DIR, GALLERY_INPUTS, MODELS_DIR, compareLrt, referenceMeme } from './helpers';
 
 /** Every `.js` under `dir`, recursively (the server's and the MCP's sources). */
@@ -450,6 +457,123 @@ test.describe('server', () => {
 		expect(view.sections).toBeUndefined();
 		test.info().annotations.push({ type: 'dates-span', description: `${doc.date_review.span.min} – ${doc.date_review.span.max}, units ${doc.date_review.time_units}` });
 		await api.delete(`/api/v1/jobs/${id}`);
+	});
+
+	test('analysis: "dates" takes its dates from a BEAST XML, and only its dates', async () => {
+		test.skip(!haveDatedExamples, `${EXAMPLES} has no dated examples (engine checkout)`);
+		// The SAME 98 taxa, the same 98 dates and the same tree the CSV job above used, folded into
+		// one BEAST 1.x document by `beastFixtures.beast1FromH5N1()`. Two jobs are run here and
+		// compared, because the claim is not "a BEAST XML answers" but "it answers the same".
+		const alignment = readFileSync(H5N1, 'utf8');
+		const { xml } = beast1FromH5N1();
+
+		const fromCsv = await api.post('/api/v1/jobs', {
+			data: { analysis: 'dates', alignment, dates_file: readFileSync(H5N1_META, 'utf8'), names: { alignment: 'H5N1_HA_geo.fasta', dates_file: 'H5N1_HA_metadata.csv' } }
+		});
+		expect(fromCsv.status(), await fromCsv.text()).toBe(202);
+		const csvId = (await fromCsv.json()).id;
+		expect((await readSse(`${issuer}/api/v1/jobs/${csvId}/events`, { timeoutMs: 120_000 })).at(-1)!.data.status).toBe('completed');
+		const csvDoc = await (await api.get(`/api/v1/jobs/${csvId}/result`)).json();
+
+		const res = await api.post('/api/v1/jobs', {
+			data: { analysis: 'dates', alignment, dates_file: xml, names: { alignment: 'H5N1_HA_geo.fasta', dates_file: 'H5N1_HA.xml' } }
+		});
+		expect(res.status(), await res.text()).toBe(202);
+		const { id } = await res.json();
+		const events = await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 120_000 });
+		expect(events.at(-1)!.data.status, JSON.stringify(events.at(-1)!.data)).toBe('completed');
+		const doc = await (await api.get(`/api/v1/jobs/${id}/result`)).json();
+
+		expect(doc.ok).toBe(true);
+		expect(doc.date_review.source).toBe('beast');
+		expect(doc.date_review.coverage.dated).toBe(98);
+		expect(doc.date_review.coverage.from_beast).toBe(98);
+		expect(doc.date_review.rows).toHaveLength(98);
+		// Every value is the CSV run's, to the last bit: the two paths are one date layer.
+		expect(doc.date_review.rows.map((r: any) => [r.taxon, r.value])).toEqual(
+			csvDoc.date_review.rows.map((r: any) => [r.taxon, r.value])
+		);
+		expect(doc.date_review.span).toEqual(csvDoc.date_review.span);
+		// WHAT THE XML ALSO CARRIED IS REPORTED, NOT SILENTLY DROPPED. `-d file.xml` upstream reads
+		// the dates alone (dating.py:433-442); the `beast` block and the CARRIES_INPUTS warning are
+		// how a caller finds out that an alignment and a starting tree went past unused.
+		expect(doc.date_review.beast).toMatchObject({ version: 'BEAST 1', sequences: 98, dates: 98, tree_present: true });
+		expect(doc.date_review.warnings.map((w: any) => w.code)).toContain('DATES_BEAST_CARRIES_INPUTS');
+		// And the run used the alignment it was GIVEN, not the one inside the XML.
+		expect(doc.date_review.coverage.taxa_total).toBe(98);
+		await api.delete(`/api/v1/jobs/${id}`);
+		await api.delete(`/api/v1/jobs/${csvId}`);
+	});
+
+	test('a BEAST 2 XML dates a matching alignment, and an XML sent as the alignment is refused at the door', async () => {
+		// The reference's own BEAST 2 acceptance document (tests/test_dating.py:152-167) and the four
+		// sequences it names, as a FASTA. Nothing here needs the engine examples.
+		const alignment = '>isolate_A\nATGGCC\n>isolate_B\nATGGCA\n>isolate_C\nATGGTA\n>isolate_D\nTTGGTA\n';
+		const res = await api.post('/api/v1/jobs', {
+			data: { analysis: 'dates', alignment, dates_file: REFERENCE_BEAST2, names: { dates_file: 'beast2.xml' } }
+		});
+		expect(res.status(), await res.text()).toBe(202);
+		const { id } = await res.json();
+		expect((await readSse(`${issuer}/api/v1/jobs/${id}/events`, { timeoutMs: 60_000 })).at(-1)!.data.status).toBe('completed');
+		const doc = await (await api.get(`/api/v1/jobs/${id}/result`)).json();
+		expect(doc.date_review.source).toBe('beast');
+		expect(doc.date_review.beast.version).toBe('BEAST 2');
+		expect(doc.date_review.beast.tree_present).toBe(false);
+		expect(doc.date_review.coverage.dated).toBe(4);
+		const values = doc.date_review.rows.map((r: any) => r.value).sort((a: number, b: number) => a - b);
+		expect(values).toEqual([1990.25, 2000.5, 2010.75, 2020]);
+		await api.delete(`/api/v1/jobs/${id}`);
+
+		// THE HOLE THIS SURFACE CLOSED. `parseAlignmentSequences` does not reject XML, it MISREADS
+		// it: a BEAST document came back as four "sequences" named `<?xml`, `<taxon`, `<alignment`
+		// and `<sequence><taxon`, the caps passed, and the job was accepted and a worker spent. The
+		// door now refuses it before the alignment is parsed, with a code of its own.
+		const wrong = await api.post('/api/v1/jobs', { data: { analysis: 'dates', alignment: REFERENCE_BEAST2 } });
+		expect(wrong.status(), await wrong.text()).toBe(422);
+		const err = (await wrong.json()).error;
+		expect(err.kind).toBe('input');
+		expect(err.code).toBe('ALIGNMENT_IS_XML');
+		expect(err.hint).toMatch(/dates_file/);
+		// POST /validate rehearses the same answer rather than diagnosing the XML as sequences.
+		const rehearsal = await api.post('/api/v1/validate', { data: { analysis: 'dates', alignment: REFERENCE_BEAST2 } });
+		expect(rehearsal.status()).toBe(200);
+		const body = await rehearsal.json();
+		expect(body.warnings[0]).toMatchObject({ severity: 'refuse', code: 'ALIGNMENT_IS_XML' });
+		expect(body.summary.sequence_count).toBe(0);
+	});
+
+	test('an unreadable or non-BEAST dates_file is a 422 at the door, with the code the other surfaces use', async () => {
+		const alignment = '>isolate_A_1990\nATGGCC\n>isolate_B_2000\nATGGCA\n>isolate_C_2010\nATGGTA\n>isolate_D_2020\nTTGGTA\n';
+		const cases: Array<[string, string, string]> = [
+			// A bare `&` from a pasted Newick annotation: the commonest way a real BEAST file breaks.
+			['DATES_XML_UNPARSABLE', '<?xml version="1.0"?>\n<beast version="1.10.4"><newick>((a:1[&rate=0.1],b:1):1);</newick></beast>', 'bad.xml'],
+			// Well-formed XML that is not BEAST — which upstream reads as an empty result, in silence.
+			['DATES_BEAST_NOT_BEAST', '<?xml version="1.0"?>\n<nexml version="0.9"><otus id="tax1"/></nexml>', 'nexml.xml']
+		];
+		for (const [code, text, name] of cases) {
+			const res = await api.post('/api/v1/jobs', { data: { analysis: 'dating', alignment, dates_file: text, names: { dates_file: name } } });
+			expect(res.status(), `${code}: ${await res.text()}`).toBe(422);
+			const err = (await res.json()).error;
+			expect(err.kind, code).toBe('input');
+			expect(err.code, code).toBe(code);
+			expect(err.hint, code).toBeTruthy();
+			expect(err.hint, code).not.toMatch(/report it to the operator/);
+		}
+		// The retired refusal is gone from the wire as well as from the sources: the same XML that
+		// used to be turned away by NAME is now rehearsed and accepted by the door. `/validate` is
+		// the door that answers without spending a worker, which is what makes it the right one to
+		// ask here.
+		// `ValidateRequest` is strict and carries no `names`, so the document is sent alone.
+		const rehearsal = await api.post('/api/v1/validate', { data: { analysis: 'dating', alignment, dates_file: REFERENCE_BEAST2 } });
+		expect(rehearsal.status()).toBe(200);
+		const text = await rehearsal.text();
+		expect(text).not.toContain('DATES_BEAST_XML_UNSUPPORTED');
+		const body = JSON.parse(text);
+		// The DATE layer has nothing to refuse about it. (This four-sequence toy alignment does fail
+		// the tree-free TN93 check further down the rehearsal, which is the sequence layer's answer
+		// and not the one under test, so the filter is on the date codes.)
+		const dateRefusals = body.warnings.filter((w: any) => w.severity === 'refuse' && String(w.code).startsWith('DATES_'));
+		expect(dateRefusals, JSON.stringify(dateRefusals)).toEqual([]);
 	});
 
 	test('the date layer refuses at the door: 422 with its own code, before a worker is spent', async () => {

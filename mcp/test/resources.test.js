@@ -74,7 +74,22 @@ describe("resources", () => {
     expect(body.pillars.meme.tree).not.toMatch(/HKY85/);
     // Phase 6, the contract sentences the requirements resource must keep.
     expect(body.pillars.dates.engine).toMatch(/NO MODEL/);
-    expect(body.pillars.dates.beast_xml).toMatch(/REFUSED/);
+    // BEAST XML is READ now, and the resource has to say what is taken, what is not, and which XML
+    // is still refused — a client that only learns "refused" from here would never send one.
+    expect(body.pillars.dates.beast_xml.read).toMatch(/BEAST 1/);
+    expect(body.pillars.dates.beast_xml.read).toMatch(/BEAST 2/);
+    expect(body.pillars.dates.beast_xml.taken).toMatch(/DATES ONLY/);
+    expect(body.pillars.dates.beast_xml.taken).toMatch(/dating\.py:433-442/);
+    // The arithmetic is the reference's, not a decimal year, and the resource carries the measured
+    // size of the difference rather than an adjective.
+    expect(body.pillars.dates.beast_xml.arithmetic).toMatch(/2\.815/);
+    for (const code of ["DATES_XML_UNPARSABLE", "DATES_XML_UNSAFE", "DATES_BEAST_NOT_BEAST", "DATES_BEAST_NO_DATES"]) {
+      expect(body.pillars.dates.beast_xml.refused, code).toContain(code);
+    }
+    expect(body.pillars.dates.sources.join(" ")).toMatch(/BEAST/);
+    // The BEAST-only match tier, and only there: the table and Auspice ladder must not move.
+    expect(body.pillars.dates.name_matching.beast_tiers).toContain("seq_prefix_stripped");
+    expect(body.pillars.dates.name_matching.tiers).not.toContain("seq_prefix_stripped");
     expect(body.pillars.dates.name_matching.tiers).not.toContain("substring");
     expect(body.pillars.dating.tree).toMatch(/NONE, on any surface/);
     expect(body.pillars.dating.estimator_note).toMatch(/MODEL-FREE BY DEFAULT/);
@@ -88,7 +103,7 @@ describe("resources", () => {
     expect(body.caps.taxa.dating_model_max).toBe(1500);
     expect(body.caps.temporal.always_a_job).toBe(true);
     // The date layer's whole vocabulary is published, refusals included.
-    for (const code of ["DATES_NONE", "DATES_TOO_FEW", "DATES_NO_SPAN", "DATES_BEAST_XML_UNSUPPORTED", "DATES_BARE_NUMBER_MAJORITY", "DATES_UNDATED_PRESENT"]) {
+    for (const code of ["DATES_NONE", "DATES_TOO_FEW", "DATES_NO_SPAN", "DATES_XML_UNPARSABLE", "DATES_BEAST_NOT_BEAST", "DATES_BEAST_DATE_SCALE", "DATES_BARE_NUMBER_MAJORITY", "DATES_UNDATED_PRESENT"]) {
       expect(body.validation_codes, code).toHaveProperty(code);
     }
     expect(body.pillars.phenotype.trait).toMatch(/preset/);

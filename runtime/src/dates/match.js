@@ -78,6 +78,14 @@ export function normalizeForTier(name, tier) {
 	switch (tier) {
 		case 'exact':
 			return base;
+		case 'seq_prefix_stripped':
+			// BEAST-ONLY (`BEAST_MATCH_TIERS`), never in `DATE_MATCH_TIERS`. A leading `seq_` is
+			// removed from BOTH sides, which covers both directions of dating.py:438-442 at once:
+			// the XML's `seq_A` against the alignment's `A`, and the XML's `A` against the
+			// alignment's `seq_A`. THIS ARM MUST EXIST EXPLICITLY: the `default:` below returns the
+			// exact key, so a missing arm would silently make the tier a duplicate of `exact` and
+			// nothing would fail.
+			return stripQuotes(base).replace(/^seq_/, '');
 		case 'quote_stripped':
 			return stripQuotes(base);
 		case 'whitespace_collapsed':
@@ -159,7 +167,9 @@ export function matchDateNames(metadataNames, taxa, options = {}) {
 		ambiguous: [],
 		examples: []
 	};
-	for (const t of DATE_MATCH_TIERS) out.tiers[t] = 0;
+	// Both ladders, because `options.tiers` may carry a tier `DATE_MATCH_TIERS` does not know
+	// (`BEAST_MATCH_TIERS`'s `seq_prefix_stripped`): counting into an uninitialised key gives NaN.
+	for (const t of new Set([...DATE_MATCH_TIERS, ...tiersWanted])) out.tiers[t] = 0;
 	if (names.length === 0 || taxaList.length === 0) {
 		out.unmatchedMetadata = names.slice();
 		out.unmatchedTaxa = taxaList.slice();
@@ -261,9 +271,10 @@ export function matchDateNames(metadataNames, taxa, options = {}) {
 	out.unmatchedMetadata = names.filter((n) => !used.has(n));
 	out.unmatchedTaxa = taxaList.filter((t) => !out.assignments.has(t));
 
-	// The WEAKEST tier that contributed, so a run whose dates came from tier 7 says tier 7.
-	for (let i = DATE_MATCH_TIERS.length - 1; i >= 0; i--) {
-		const t = DATE_MATCH_TIERS[i];
+	// The WEAKEST tier that contributed, so a run whose dates came from tier 7 says tier 7. Over the
+	// ladder ACTUALLY used, so a BEAST run can report `seq_prefix_stripped`.
+	for (let i = tiersWanted.length - 1; i >= 0; i--) {
+		const t = tiersWanted[i];
 		if (out.tiers[t] > 0) {
 			out.tier = t;
 			break;
@@ -272,7 +283,14 @@ export function matchDateNames(metadataNames, taxa, options = {}) {
 	return out;
 }
 
-/** Did any tier beyond `exact` contribute? `DATES_FUZZY_MATCH` fires on this. */
+/**
+ * Did any tier beyond `exact` contribute? `DATES_FUZZY_MATCH` fires on this.
+ *
+ * `seq_prefix_stripped` is deliberately NOT counted: it is the reference's own rule
+ * (dating.py:438-442), not a guess this layer invented, and `ingest.js` names it with
+ * `DATES_BEAST_SEQ_PREFIX` instead — calling it a fuzzy match would tell a reader to doubt a
+ * correspondence the reference makes by design.
+ */
 export function usedFuzzyTier(match) {
 	return DATE_MATCH_TIERS.some((t) => t !== 'exact' && (match?.tiers?.[t] ?? 0) > 0);
 }

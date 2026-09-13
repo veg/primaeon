@@ -22,6 +22,11 @@
  * Nothing here asks whether the server can estimate branch lengths, because nothing can and
  * nothing needs to.
  *
+ * AN XML IS NOT AN ALIGNMENT (`ALIGNMENT_IS_XML`, below). This is the one refusal in this file that
+ * is neither the library's nor the caps' — it exists because the library's parser does not reject
+ * XML, it MISREADS it, and Phase 6b (`dates_file` reads a BEAST XML) made that a likely mistake
+ * rather than a curious one. The measurement is on the constant.
+ *
  * The response shape follows the MCP tool's: `{ok, warnings:[{code, severity, message, data}],
  * summary}` with the summary keys in snake_case as the CLI prints them.
  */
@@ -69,6 +74,44 @@ export function parseAlignment(text) {
   return { format: sequences.length ? sniffAlignmentFormat(text) : "unknown", sequences };
 }
 
+/**
+ * Does this text open as an XML document? A leading BOM and leading whitespace are skipped because
+ * a caller who exported an XML from a Windows tool has both.
+ *
+ * No alignment format this server accepts begins with `<`: FASTA opens with `>`, NEXUS with
+ * `#NEXUS`, PHYLIP with a taxon count. So an opening `<` is not an ambiguous signal, and this is
+ * not a second classifier competing with the date layer's `detectDateSourceKind` — it answers one
+ * narrower question, about one field, whose answer is never "which kind of date document is this".
+ */
+function looksLikeXml(text) {
+  if (typeof text !== "string") return false;
+  const head = text.replace(/^﻿/, "").trimStart().slice(0, 64).toLowerCase();
+  return head.startsWith("<?xml") || head.startsWith("<!doctype") || /^<[a-z_]/.test(head);
+}
+
+/**
+ * The code and the two sentences for an XML handed to `alignment`.
+ *
+ * WHY THIS IS A REFUSAL AND NOT A DIAGNOSTIC. MEASURED on a BEAST 1 XML built around
+ * H5N1_HA_geo's own alignment (98 taxa, 566 codons): the library's `parseAlignmentSequences` does
+ * not reject XML — it reads it as FOUR sequences named `<?xml`, `<taxon`, `<alignment` and
+ * `<sequence><taxon` with 581 "codons" between them, `format: "unknown"`, and `classifyRun` then
+ * passes it. So `POST /jobs {analysis:"dating", alignment:<a BEAST XML>}` answered 202 today,
+ * spent a worker, and failed inside the pillar on nonsense — the door's whole job undone by a
+ * field that had never been handed a document with angle brackets in it. Phase 6b makes that a
+ * likely mistake rather than a curious one, because a caller now HAS a BEAST XML in hand and three
+ * fields to try it in. `format: "unknown"` on a document that opens with `<` is the tell, and this
+ * is that tell turned into a refusal a caller can read.
+ */
+const ALIGNMENT_IS_XML = Object.freeze({
+  code: "ALIGNMENT_IS_XML",
+  reason: "The `alignment` field was given an XML document, and it takes sequences.",
+  hint:
+    "FASTA (headers starting with '>'), NEXUS (a MATRIX block) or PHYLIP (a 'ntaxa nsites' header) are accepted. " +
+    "A BEAST XML belongs in `dates_file`, which reads it for its sampling dates (BEAST 1 <taxon><date>, BEAST 2 " +
+    '<trait traitname="date">); export the sequences it carries as FASTA for `alignment`.'
+});
+
 export function hasEmbeddedTree(text) {
   if (typeof text !== "string" || !text.trim()) return false;
   try {
@@ -103,6 +146,8 @@ function snakeSummary(s) {
 export function sizeCheck(analysis, alignment, options = {}) {
   const capsAnalysis = capsAnalysisFor(analysis);
   if (!capsAnalysis) return { ok: true, size: null };
+  // Checked BEFORE the parse, because the parse is what gets this wrong (see ALIGNMENT_IS_XML).
+  if (looksLikeXml(alignment)) return { ok: false, size: null, code: ALIGNMENT_IS_XML.code, reason: ALIGNMENT_IS_XML.reason, hint: ALIGNMENT_IS_XML.hint };
   const parsed = parseAlignment(alignment);
   if (!parsed.sequences.length) {
     return {
@@ -156,9 +201,32 @@ export function sizeCheck(analysis, alignment, options = {}) {
  * that analysis's entire job; refusing it for the thing it was asked to measure would be absurd.
  * A dates job always runs and carries the gate as `gate.blocking[]`.
  *
+ * ── PHASE 6b: A BEAST XML IS READ HERE, NOT REFUSED HERE ─────────────────────────────────────
+ *
+ * `DATES_BEAST_XML_UNSUPPORTED` is gone. `dates_file` reads a BEAST 1.x or 2.x XML through the
+ * runtime's port of `parse_beast_xml` (runtime/src/dates/beast.js, dataset.py:84-233), so a file
+ * this door used to refuse on its NAME now produces dates — and four narrower refusals take the
+ * old one's place, each still `kind: "input"` with a hint that names the METADATA fix, because
+ * every one of them is a property of the caller's document and none changes if the operator
+ * restarts the server: `DATES_XML_UNPARSABLE` (not well-formed), `DATES_XML_UNSAFE` (an external
+ * or oversized entity, refused before the document is read), `DATES_BEAST_NOT_BEAST` (well-formed
+ * XML holding nothing a BEAST file holds — a namespaced document included, because
+ * `parse_beast_xml` searches unqualified tags) and `DATES_BEAST_NO_DATES`. Their hints are the
+ * MCP's `TIME_REFUSAL_HINTS`, resolved rather than copied (src/time.js), so this surface and the
+ * tool surface refuse the same file with the same sentence.
+ *
+ * WHAT THAT COSTS ON THE HTTP THREAD, MEASURED, because the refusal used to be free: reading a
+ * BEAST XML built around each bundled example is 9-21 ms (182 KB to 1.34 MB of XML) against 4-6 ms
+ * for the equivalent CSV. At the 8 MiB body limit — the largest document that can arrive — it is
+ * 70 ms for 740 long records and 504 ms for 36,000 short ones, the element-densest shape a caller
+ * can build. That is NOT a new exposure: `POST /validate` on an 8 MiB FASTA of many short records
+ * already costs 583 ms today, with no XML anywhere, so the body limit and the per-IP rate limits
+ * (src/config.js) are what bound this, exactly as they bounded the alignment parse. No second byte
+ * cap was added; see the `dates_file` field comment in src/app.js for why one would not help.
+ *
  * @param {string} analysis   "dating" | "temporal"
  * @param {string} alignment
- * @param {string} [datesFile] the metadata document's TEXT
+ * @param {string} [datesFile] the metadata document's TEXT (Auspice JSON, JSON map, CSV/TSV or BEAST XML)
  * @param {object} [options]   the job's options (CLI spelling: date_col, time_units, drop_undated, ...)
  * @param {object} [names]     {dates_file}
  * @returns {{ok: boolean, code?: string, message?: string, hint?: string, details?: object, review?: object}}
@@ -223,8 +291,16 @@ export function dateCheck(analysis, alignment, datesFile, options = {}, names = 
 export function validate({ alignment, tree, analysis = "analyze", use_tn93 = false, max_species, dates_file, options = {} }) {
   const treeGiven = typeof tree === "string" && tree.trim().length > 0;
   const maxSpecies = Number.isInteger(max_species) && max_species >= 2 ? Math.min(max_species, TAXON_CAP) : TAXON_CAP;
+  // AN XML IS NOT DIAGNOSED AS AN ALIGNMENT, it is refused as the wrong field (ALIGNMENT_IS_XML).
+  // Diagnosing it would not merely be useless, it would be misleading: MEASURED on a BEAST XML
+  // built around H5N1_HA_geo's own alignment, `diagnose()` answers `NON_ACGT_FRACTION` over four
+  // "sequences" named `<?xml`, `<taxon`, `<alignment` and `<sequence><taxon` — a refusal about a
+  // nucleotide composition the document does not have, and a `sequence_count` a caller could act
+  // on. Diagnosing the empty string instead gives the one honest answer (`FORMAT_UNKNOWN`, and a
+  // summary of nulls) and leaves the sentence that says what to do to the refusal below it.
+  const alignmentIsXml = looksLikeXml(alignment);
   const lib = libraryDiagnose({
-    alignmentText: typeof alignment === "string" ? alignment : "",
+    alignmentText: alignmentIsXml ? "" : typeof alignment === "string" ? alignment : "",
     treeText: treeGiven ? tree : null,
     maxSpecies,
     taxaLimit: MAX_TAXA,
@@ -232,13 +308,24 @@ export function validate({ alignment, tree, analysis = "analyze", use_tn93 = fal
   });
 
   const warnings = [...lib.warnings];
+  if (alignmentIsXml) {
+    warnings.unshift({
+      code: ALIGNMENT_IS_XML.code,
+      severity: "refuse",
+      message: ALIGNMENT_IS_XML.reason + " " + ALIGNMENT_IS_XML.hint,
+      data: { analysis }
+    });
+  }
   const treeFree = warnings.find((w) => w.code === "TREE_FREE_TN93") || null;
 
   const summary = Object.assign(snakeSummary(lib.summary), {
     analysis,
     surface: "node-server",
     engine: "in-process",
-    tree_source: treeSourceFor({ treeGiven, embedded: !treeGiven && hasEmbeddedTree(alignment), treeFree: treeFree !== null }),
+    // `hasEmbeddedTree` is not asked of an XML: `extractTree` would find a BEAST starting tree in
+    // one and report `tree_source: "embedded"` for a body this call is refusing, which is a claim
+    // about a run that will not happen.
+    tree_source: treeSourceFor({ treeGiven, embedded: !treeGiven && !alignmentIsXml && hasEmbeddedTree(alignment), treeFree: treeFree !== null }),
     tree_free: treeFree ? treeFree.data.reason : null,
     distance_rescaled: lib.warnings.some((w) => w.code === "DISTANCE_RESCALED"),
     work: 0,
@@ -248,7 +335,11 @@ export function validate({ alignment, tree, analysis = "analyze", use_tn93 = fal
 
   const capsAnalysis = capsAnalysisFor(analysis);
   const capsOptions = capsOptionsFor(analysis, options);
-  const parsed = parseAlignment(alignment);
+  // A REHEARSAL MUST REHEARSE THE REFUSAL, TOO: `sizeCheck` turns this body down, so validating it
+  // must not say "fine" — that is the one way a rehearsal is worse than no rehearsal. The caps
+  // block is skipped for the same reason it is skipped on any unreadable file: there is no size to
+  // report on a document that is not sequences.
+  const parsed = alignmentIsXml ? { format: "unknown", sequences: [] } : parseAlignment(alignment);
   if (capsAnalysis && parsed.sequences.length) {
     const probe = probeSequences(parsed.sequences);
     const taxa = parsed.sequences.length;

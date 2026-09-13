@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, parseText, example } from "./helpers.js";
@@ -46,7 +46,14 @@ import { CODES } from "../src/validate.js";
 const DATE_REFUSAL_CODES = [
   "DATES_SOURCE_UNREADABLE",
   "DATES_SOURCE_KIND_UNKNOWN",
-  "DATES_BEAST_XML_UNSUPPORTED",
+  // The four XML/BEAST refusals that replaced DATES_BEAST_XML_UNSUPPORTED when the build started
+  // reading BEAST XML. `DATES_BEAST_NO_DATES` refuses only when the XML was the only date source
+  // and warns when the headers rescued the run — the DATES_TABLE_NO_MATCH precedent — so it is a
+  // member here for the same reason that one is.
+  "DATES_XML_UNPARSABLE",
+  "DATES_XML_UNSAFE",
+  "DATES_BEAST_NOT_BEAST",
+  "DATES_BEAST_NO_DATES",
   "DATES_TABLE_NO_DATE_COLUMN",
   "DATES_AUSPICE_NO_TIPS",
   "DATE_REGEX_INVALID",
@@ -197,7 +204,7 @@ describe("hyphaeon_dates: which sequence got a date, and by what rule", () => {
     expect(table.body.date_review.span.max).toBeCloseTo(headers.body.date_review.span.max, 6);
   });
 
-  it("refuses an unreadable metadata source and a BEAST XML, as input errors with the date layer's own codes", async () => {
+  it("refuses an unreadable metadata source, an XML that is not BEAST, and one that is not well-formed, as input errors with the date layer's own codes", async () => {
     const alignment = await example("H5N1_HA_geo.fasta");
 
     // A JSON ARRAY is none of the three shapes this layer reads (an Auspice build, a name-to-date
@@ -215,12 +222,132 @@ describe("hyphaeon_dates: which sequence got a date, and by what rule", () => {
     expect(nameless.isError).toBe(true);
     expect(nameless.body.date_review.warnings.filter((w) => w.severity === "refuse").map((w) => w.code)).toContain("DATES_AUSPICE_NO_TIPS");
 
-    // The reference reads a BEAST XML (dating.py:433-434) and this build does not, so it is a
-    // REFUSAL naming that fact rather than a silent header fallback.
+    // A `<beast>` element holding nothing a BEAST file holds. This document used to be refused
+    // unread as DATES_BEAST_XML_UNSUPPORTED; now it is PARSED and refused for what it actually is —
+    // the reference reads exactly this as an empty result and dates nothing (measured on
+    // `<root><a/></root>`: version "BEAST XML", 0 sequences, 0 dates), which is the silence the
+    // refusal exists to break.
     const beast = await call({ alignment, dates_file: '<?xml version="1.0"?><beast><taxa/></beast>', dates_file_name: "run.xml" });
     expect(beast.isError).toBe(true);
     const beastCodes = beast.body.date_review.warnings.filter((w) => w.severity === "refuse").map((w) => w.code);
-    expect(beastCodes).toContain("DATES_BEAST_XML_UNSUPPORTED");
+    expect(beastCodes).toContain("DATES_BEAST_NOT_BEAST");
+    // The hint names the namespace trap, because a perfectly valid namespaced BEAST 2 file lands
+    // here too (`parse_beast_xml` searches UNQUALIFIED tags, dataset.py:123) and "this is not a
+    // BEAST file" would be a lie to the one reader most likely to see it.
+    expect(TIME_REFUSAL_HINTS.DATES_BEAST_NOT_BEAST).toMatch(/xmlns/);
+
+    // Not well-formed at all: a bare `&`, which is what a BEAST tree annotation written
+    // `[&rate=0.1]` outside CDATA produces. The reference refuses the whole document for the same
+    // reason (dataset.py:109-110 turns the parser's error into a ValueError).
+    const malformed = await call({
+      alignment,
+      dates_file: '<?xml version="1.0"?><beast><newick>((a:1[&rate=0.1],b:2):0);</newick></beast>',
+      dates_file_name: "annotated.xml"
+    });
+    expect(malformed.isError).toBe(true);
+    expect(malformed.body.date_review.warnings.filter((w) => w.severity === "refuse").map((w) => w.code)).toContain("DATES_XML_UNPARSABLE");
+  });
+
+  /**
+   * THE FEATURE, AS THE REFERENCE'S OWN TWO ACCEPTANCE DOCUMENTS.
+   *
+   * Both XML bodies are `HyphAeon/tests/test_dating.py:119-134` and `:152-167` verbatim, so this
+   * block is a port check and not an invention: the same file, through the same reader, must date
+   * the same taxa. The alignments are written here rather than taken from `examples/` because the
+   * point is the NAME MATCH between an XML and an alignment, which needs both sides in view.
+   */
+  it("reads a BEAST 1 XML and a BEAST 2 XML, and names what else the file carried", async () => {
+    // tests/test_dating.py:119-134. Sequences arrive as the `<taxon idref>` child's TAIL text,
+    // which is how a BEAST 1 file stores them, and the file also carries a starting tree.
+    const beast1 =
+      '<?xml version="1.0" standalone="yes"?>\n' +
+      '<beast version="1.10.4">\n' +
+      '    <taxa id="taxa">\n' +
+      '        <taxon id="taxon_A"><date value="1980.0" direction="forwards" units="years"/></taxon>\n' +
+      '        <taxon id="taxon_B"><date value="1990.0" direction="forwards" units="years"/></taxon>\n' +
+      '        <taxon id="taxon_C"><date value="2000.0" direction="forwards" units="years"/></taxon>\n' +
+      '        <taxon id="taxon_D"><date value="2010.0" direction="forwards" units="years"/></taxon>\n' +
+      "    </taxa>\n" +
+      '    <alignment id="alignment" dataType="nucleotide">\n' +
+      '        <sequence><taxon idref="taxon_A"/>ATGGCC</sequence>\n' +
+      '        <sequence><taxon idref="taxon_B"/>ATGGCA</sequence>\n' +
+      '        <sequence><taxon idref="taxon_C"/>ATGGTA</sequence>\n' +
+      '        <sequence><taxon idref="taxon_D"/>TTGGTA</sequence>\n' +
+      "    </alignment>\n" +
+      '    <newick id="startingTree">((taxon_A:0.01,taxon_B:0.02):0.05,(taxon_C:0.03,taxon_D:0.04):0.05);</newick>\n' +
+      "</beast>\n";
+    const aln1 = ">taxon_A\nATGGCC\n>taxon_B\nATGGCA\n>taxon_C\nATGGTA\n>taxon_D\nTTGGTA\n";
+
+    const one = await call({ alignment: aln1, dates_file: beast1, dates_file_name: "run.xml" });
+    expect(one.isError).toBe(false);
+    expect(one.body.ok).toBe(true);
+    expect(one.body.date_review.source_kind).toBe("beast");
+    expect(one.body.date_review.source).toBe("beast");
+    expect(one.body.date_review.coverage.dated).toBe(4);
+    expect(one.body.date_review.coverage.from_beast).toBe(4);
+    expect(one.body.date_review.span.min).toBeCloseTo(1980, 9);
+    expect(one.body.date_review.span.max).toBeCloseTo(2010, 9);
+    // The value came from the REFERENCE's parser, and the row says so with a rule id the library
+    // does not own. `decimal_year` here would have been a lie about which arithmetic ran.
+    expect(one.body.date_review.rows.every((r) => r.source === "beast")).toBe(true);
+    expect(one.body.date_review.rows.map((r) => r.rule)).toEqual(["beast_float", "beast_float", "beast_float", "beast_float"]);
+    expect(one.body.date_review.beast.version).toBe("BEAST 1");
+
+    // WHAT THE RUN DID NOT USE IS STILL REPORTED. The XML carries four sequences and a starting
+    // tree; `dates_file` is `-d`, which takes the dates and nothing else (dating.py:433-442), so
+    // the rest is named rather than substituted for the alignment that was passed.
+    expect(one.body.date_review.beast.sequences).toBe(4);
+    expect(one.body.date_review.beast.tree_present).toBe(true);
+    const oneCodes = one.body.date_review.warnings.map((w) => w.code);
+    expect(oneCodes).toContain("DATES_BEAST_CARRIES_INPUTS");
+    // `direction=` and `units=` are decoration upstream: `grep -n direction hyphaeon/dataset.py`
+    // returns nothing. Replicated, and said out loud, because a backwards-dated file would come
+    // out mirrored in time with no error anywhere.
+    expect(oneCodes).toContain("DATES_BEAST_DIRECTION_IGNORED");
+
+    // tests/test_dating.py:152-167. The BEAST 2 shape: `value=` attributes and one TraitSet.
+    const beast2 =
+      '<beast version="2.6" namespace="beast.evolution.alignment:beast.evolution.tree">\n' +
+      '    <data id="h1n1" name="alignment">\n' +
+      '        <sequence id="seq_A" taxon="isolate_A" value="ATGGCC"/>\n' +
+      '        <sequence id="seq_B" taxon="isolate_B" value="ATGGCA"/>\n' +
+      '        <sequence id="seq_C" taxon="isolate_C" value="ATGGTA"/>\n' +
+      '        <sequence id="seq_D" taxon="isolate_D" value="TTGGTA"/>\n' +
+      "    </data>\n" +
+      '    <trait id="dateTrait" spec="beast.evolution.tree.TraitSet" traitname="date" value="\n' +
+      "        isolate_A=1990.25,\n" +
+      "        isolate_B=2000.50,\n" +
+      "        isolate_C=2010.75,\n" +
+      "        isolate_D=2020.00\n" +
+      '    "/>\n' +
+      "</beast>\n";
+    const aln2 = ">isolate_A\nATGGCC\n>isolate_B\nATGGCA\n>isolate_C\nATGGTA\n>isolate_D\nTTGGTA\n";
+
+    const two = await call({ alignment: aln2, dates_file: beast2, dates_file_name: "beast2.xml" });
+    expect(two.isError).toBe(false);
+    expect(two.body.date_review.coverage.from_beast).toBe(4);
+    expect(two.body.date_review.span.min).toBeCloseTo(1990.25, 9);
+    expect(two.body.date_review.span.max).toBeCloseTo(2020.0, 9);
+    expect(two.body.date_review.beast.version).toBe("BEAST 2");
+    expect(two.body.date_review.beast.tree_present).toBe(false);
+  });
+
+  it("a BEAST file with sequences and no sampling date refuses with its own code, not a silent empty run", async () => {
+    const aln = ">taxon_A\nATGGCC\n>taxon_B\nATGGCA\n>taxon_C\nATGGTA\n";
+    const noDates =
+      '<?xml version="1.0"?><beast version="1.10.4">' +
+      '<alignment dataType="nucleotide">' +
+      '<sequence><taxon idref="taxon_A"/>ATGGCC</sequence>' +
+      '<sequence><taxon idref="taxon_B"/>ATGGCA</sequence>' +
+      '<sequence><taxon idref="taxon_C"/>ATGGTA</sequence>' +
+      "</alignment></beast>";
+    const res = await call({ alignment: aln, dates_file: noDates, dates_file_name: "nodates.xml" });
+    expect(res.isError).toBe(true);
+    const codes = res.body.date_review.warnings.filter((w) => w.severity === "refuse").map((w) => w.code);
+    // NOT DATES_BEAST_NOT_BEAST: this IS a BEAST file, it simply carries no date, which is a
+    // different sentence and a different fix.
+    expect(codes).toContain("DATES_BEAST_NO_DATES");
+    expect(codes).not.toContain("DATES_BEAST_NOT_BEAST");
   });
 
   it("a metadata table that names no sequence is reported, not silently replaced by the headers", async () => {
@@ -312,6 +439,36 @@ describe("hyphaeon_dates: which sequence got a date, and by what rule", () => {
     // plausible WRONG date, so no strength of substring matching is offered at all.
     expect(body.match_tiers_available).not.toContain("substring");
   });
+
+  /**
+   * THE PUBLISHED LADDER IS THE ONE THAT RAN, WHICH IS NOT ALWAYS THE SEVEN-TIER ONE.
+   *
+   * `date_review.match_tiers` is a per-tier count and `match_tiers_available` is the list it is
+   * counted over; a client reads one against the other. A BEAST source runs `BEAST_MATCH_TIERS`
+   * (`DATE_MATCH_TIERS` with `seq_prefix_stripped` after `exact`, dating.py:438-442's own `seq_`
+   * reconciliation), so publishing the seven-tier list beside a count carrying
+   * `seq_prefix_stripped: 2` named a rung that did not exist.
+   */
+  it("publishes the BEAST ladder for a BEAST source, so every counted tier is on the list", async () => {
+    const xml =
+      "<beast><taxa>" +
+      '<taxon id="seq_a"><date value="1980"/></taxon>' +
+      '<taxon id="b"><date value="1990"/></taxon>' +
+      '<taxon id="c"><date value="2000"/></taxon>' +
+      "</taxa></beast>";
+    const aln = ">a\nATG\n>seq_b\nATA\n>c\nATT\n";
+    const { body } = await call({ alignment: aln, dates_file: xml, dates_file_name: "s.xml" });
+    expect(body.date_review.source_kind).toBe("beast");
+    expect(body.date_review.match_tiers.seq_prefix_stripped).toBe(2);
+    expect(body.match_tiers_available).toContain("seq_prefix_stripped");
+    expect(body.match_tiers_available.indexOf("seq_prefix_stripped")).toBe(1);
+    // THE INVARIANT: nothing is counted at a tier the published ladder does not name.
+    for (const tier of Object.keys(body.date_review.match_tiers)) {
+      expect(body.match_tiers_available, tier).toContain(tier);
+    }
+    // And substring matching is still absent from the longer ladder.
+    expect(body.match_tiers_available).not.toContain("substring");
+  });
 });
 
 /**
@@ -337,8 +494,28 @@ describe("the three code tables: every refusal is an input fault with its own co
     for (const code of DATE_REFUSAL_CODES) expect(DATE_DIAGNOSTIC_CODES, code).toContain(code);
   });
 
+  /**
+   * THE RETIRED CODE, AS A TEST.
+   *
+   * `DATES_BEAST_XML_UNSUPPORTED` was removed from the runtime when the date layer started reading
+   * BEAST XML. A surface that still names it does not merely carry a stale string: it tells a
+   * client to export a CSV it does not need, and it promises a refusal that will never arrive. The
+   * MCP stated it in six places, so the sources are scanned rather than trusted.
+   */
+  it("no MCP source still names the retired DATES_BEAST_XML_UNSUPPORTED", () => {
+    const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".js"))) {
+      expect(readFileSync(path.join(dir, file), "utf8"), file).not.toContain("DATES_BEAST_XML_UNSUPPORTED");
+    }
+    expect(DATE_DIAGNOSTIC_CODES).not.toContain("DATES_BEAST_XML_UNSUPPORTED");
+    expect(TIME_REFUSAL_HINTS).not.toHaveProperty("DATES_BEAST_XML_UNSUPPORTED");
+    expect(CODES).not.toHaveProperty("DATES_BEAST_XML_UNSUPPORTED");
+  });
+
   it("every one of them maps to kind `input`, carries its code, and gets a hint about the METADATA", () => {
-    expect(ALL.length).toBe(23);
+    // 23 at Phase 6, then DATES_BEAST_XML_UNSUPPORTED retired and the four XML/BEAST refusals
+    // that replaced it added: 23 - 1 + 4.
+    expect(ALL.length).toBe(26);
     for (const code of ALL) {
       expect(TIME_REFUSAL_HINTS, code).toHaveProperty(code);
       const err = timeRefusal({ code, message: "the runtime's own sentence", data: {} });

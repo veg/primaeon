@@ -463,7 +463,9 @@ standard errors so the fact cannot quietly go away.
   — and against three shipped examples at measured values. `load_date_reference` already lifts by
   name, so adding them is a local change.
 - **BEAST XML input** (`dating.py:428-436`): detected, refused by name with
-  `DATES_BEAST_XML_UNSUPPORTED` quoting the line it is not implementing, not parsed.
+  `DATES_BEAST_XML_UNSUPPORTED` quoting the line it is not implementing, not parsed. **CLOSED in
+  Phase 6b (2026-09-13):** `parse_beast_xml` is ported (`runtime/src/dates/beast.js`), the refusal
+  is retired, and both dialects are read by every surface.
 - **MCP and server surfaces** for date ingestion. The layer is already surface-agnostic — it takes
   text and opens nothing, which is asserted — so mounting it is the phase that has an analysis to
   run. A `dates` comparator and a `parity/node-dates` surface wait on the same thing: there is no

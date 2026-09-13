@@ -291,19 +291,36 @@ export const METHOD_REQUIREMENTS = {
       "Nextstrain Auspice JSON",
       "a name-to-date JSON object",
       "a CSV/TSV table with a name column and a date column",
+      "a BEAST 1.x or 2.x XML (dates only; see beast_xml)",
       "a caller-supplied regular expression with one capturing group"
     ],
-    beast_xml: "REFUSED (DATES_BEAST_XML_UNSUPPORTED). dating.py:433-434 reads one; this build does not.",
+    beast_xml: {
+      read:
+        "BOTH DIALECTS, as `parse_beast_xml` reads them (dataset.py:84-233, ported to runtime/src/dates/beast.js): BEAST 1 `<taxon id=\"…\"><date value=\"…\"/>` and BEAST 2 `<trait traitname=\"date\" value=\"a=…,b=…\"/>`, with the reference's own `seq_` name reconciliation and an eighth match tier, `seq_prefix_stripped`, inserted after `exact` for BEAST documents only.",
+      taken:
+        "DATES ONLY, which is what `-d run.xml` takes upstream (dating.py:433-442). A BEAST XML is the one date source that can also carry the ALIGNMENT and a STARTING TREE; `--beast` (dating.py:2455-2471) is the separate door that fills those slots, each only `if … is None`, and it is not offered here because an MCP call already names `alignment` and `tree` explicitly — there is no slot to fill and no drop order to resolve. What the file carried and the run did not use is REPORTED: `date_review.beast` names the sequence count, the starting tree and which alignment block of how many won, and DATES_BEAST_CARRIES_INPUTS says so in the warnings.",
+      arithmetic:
+        "A BEAST date is converted by the REFERENCE's own parser (`_parse_numeric_or_calendar_date`, dataset.py:62-81) and never re-read by the library, because re-reading it would destroy it: `YYYY-MM-DD` becomes `year + (month-1)/12 + (day-1)/365.25` and `YYYY-MM` becomes `year + (month-0.5)/12`, neither of which is a decimal year (MEASURED against the conversion every other source here uses: mean 0.73 days, worst 2.815 on 2019-03-31), and the leading `float(s)` is UNGATED, so 1799, 50, -3 and 1e9 are all kept where every other source returns NaN. The rows carry beast_float | beast_ymd | beast_year_month, the only rule ids in this build that are not the library's. DATES_BEAST_DATE_SCALE and DATES_BEAST_DATE_UNGATED name both facts when they apply. `hyphaeon dating --beast` agrees with these numbers; a CSV of the same dates will not.",
+      upstream_bugs_replicated:
+        "`direction=` and `units=` on a <date> are read by NOTHING upstream (DATES_BEAST_DIRECTION_IGNORED), so a backwards-dated file comes out mirrored in time; the BEAST 2 trait test is a SUBSTRING test, so `dateBackward` is read as forward years (DATES_BEAST_TRAIT_NOT_DATE); one alignment block of many survives, chosen by TAXON count with the first winning a tie (DATES_BEAST_MULTIPLE_ALIGNMENTS); the `seq_` reconciliation renames sequences with no collision check and grows the date map (DATES_BEAST_SEQ_PREFIX); a namespaced document matches nothing and upstream returns an empty result (DATES_BEAST_NAMESPACED). Every one is replicated and named, never corrected.",
+      refused:
+        "DATES_XML_UNPARSABLE (not well-formed — a `[&rate=…]` annotation with a bare `&` is the usual cause; the reference raises on the same file, dataset.py:109-110), DATES_XML_UNSAFE (external or parameter entities, or past this reader's size / depth / entity-expansion budget — refused BEFORE anything is read, and nothing is ever fetched or opened), DATES_BEAST_NOT_BEAST (well-formed XML holding nothing a BEAST file holds, a namespaced document included), DATES_BEAST_NO_DATES (a BEAST file with no sampling date; a warning instead when the headers dated the run anyway, the DATES_TABLE_NO_MATCH precedent).",
+      gzip:
+        "Not here. dates_file is TEXT in a JSON field, so gzip bytes cannot reach this surface at all; decompress before sending. (The browser inflates on drop; this is the divergence, and it is the caller's to close.)"
+    },
     name_matching: {
       tiers: ["exact", "quote_stripped", "whitespace_collapsed", "case_insensitive", "first_token", "sanitized", "field_containment"],
+      beast_tiers: ["exact", "seq_prefix_stripped", "quote_stripped", "whitespace_collapsed", "case_insensitive", "first_token", "sanitized", "field_containment"],
+      beast_note:
+        "A BEAST document is matched on the same ladder with ONE tier inserted after `exact`: `seq_prefix_stripped` drops a leading `seq_` from BOTH sides, which covers both branches of dating.py:438-442 at once (`seq_A` in the XML against `A` in the alignment, and the reverse) and adds nothing fuzzier than the reference already does. It is BEAST-only because the prefix is a BEAST 2 idiom; the table and Auspice ladders do not move.",
       note: "Substring matching is deliberately NOT a tier at any strength: `EPI_ISL_4021` must never match `EPI_ISL_402124`, because the failure mode of a fuzzy match here is a plausible WRONG date."
     },
     beyond_reference:
       "This layer is the UNION of all three upstream parsers, so it dates sequences `hyphaeon temporal` cannot — measured on korber, 142 of 143 by the `korber_isolate` rule the reference's header parser does not have. A different dated set is a different time axis, kernel, candidate set and null, so `record.dates.beyond_reference` carries the count and the rules, TEMPORAL_DATES_BEYOND_REFERENCE warns, and the reproduction line sets reproduces: false and tells you to supply the dates as a `-d` table. The rule the repository works to: we must never SILENTLY do better.",
     options: {
-      dates_file: { cli: "-d/--dates", default: null, note: "the metadata's TEXT, never a path; omit it and the headers are read" },
+      dates_file: { cli: "-d/--dates", default: null, note: "the metadata's TEXT, never a path; omit it and the headers are read. A BEAST XML is read here as `-d run.xml` reads one: dates only (see beast_xml)" },
       dates_file_name: { default: null, note: "the basename, printed as `-d <name>` on the reproduction line" },
-      date_source_kind: { default: "auto", values: ["auto", "auspice", "json-map", "table"], note: "the CONTENT is sniffed and the name is only a tie-break" },
+      date_source_kind: { default: "auto", values: ["auto", "auspice", "json-map", "table", "beast"], note: "the CONTENT is sniffed and the name is only a tie-break" },
       strain_col: { cli: "--strain-col", default: "discovered" },
       date_col: { cli: "--date-col", default: "discovered" },
       delimiter: { default: "sniffed over the first 20 lines" },
@@ -321,7 +338,7 @@ export const METHOD_REQUIREMENTS = {
       rows: { default: true, note: "the per-sequence table" },
       top: { default: null, note: "caps the rows; undated, imputed and fuzzily matched sequences are kept FIRST and the counts always cover every sequence" }
     },
-    result_keys: ["ok", "headline", "clock{has_clock, dating_possible, temporal_possible, reasons, temporal_reasons}", "gate{ok, blocking[], overrides, applied}", "date_review{coverage, by_rule, span, time_units, time_units_source, time_units_evidence, match_tier, match_tiers, ambiguous, unmatched_metadata, unmatched_taxa, table, auspice, regex, headers, rows[], warnings[]}", "match_tiers_available", "next"],
+    result_keys: ["ok", "headline", "clock{has_clock, dating_possible, temporal_possible, reasons, temporal_reasons}", "gate{ok, blocking[], overrides, applied}", "date_review{coverage, by_rule, span, time_units, time_units_source, time_units_evidence, match_tier, match_tiers, ambiguous, unmatched_metadata, unmatched_taxa, table, auspice, beast, regex, headers, rows[], warnings[]}", "match_tiers_available", "next"],
     gate:
       "The two questions the browser puts to a human and a tool call cannot ask. DATES_BARE_NUMBER_MAJORITY (half or more of the dates read as a bare number in the name) is overridden by accept_bare_numbers; DATES_UNDATED_PRESENT is overridden by drop_undated. hyphaeon_dating and hyphaeon_temporal REFUSE on them; this tool only reports them, because reporting them is its job.",
     parity: "No CLI counterpart: the reference performs this ingestion silently inside `dating` and `temporal` and prints none of it."
