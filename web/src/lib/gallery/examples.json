@@ -1,5 +1,5 @@
 {
-	"WHY THIS FILE EXISTS": "The catalogue of the five bundled examples, in one place for the two things that read it: the landing page's example chips (web/src/routes/+page.svelte, which links each to /report/gallery/<id>/ and puts `description` in the chip's title) and the build-time prebake (web/scripts/prebake-gallery.mjs, which runs every analysis on each and writes static/gallery/<id>.json). `description` is the one-line 'Description & Biological Domain' cell of the HyphAeon README's 'Included Benchmark Datasets' table (veg/HyphAeon@phase-2a README.md), verbatim; `paper.taxa`/`paper.codons` are that table's N and L before duplicate pruning and the taxon cap; `reference_runtime_sec` is PLAN.md section 1's measured `hyphaeon meme` wall time on a laptop CPU, the fallback when the engine's fixtures/manifest.json `e2e_wall_seconds` is absent. RHO is NEXUS with its tree embedded, so it has no tree file. Order is the landing page's chip order: the two small ones first, then the two whose trees carry no branch lengths (so they run tree-free on TN93 distances, D22), then the largest.",
+	"WHY THIS FILE EXISTS": "The catalogue of the five bundled examples, in one place for the two things that read it: the landing page's example chips (web/src/routes/+page.svelte, which links each to /report/gallery/<id>/ and puts `description` in the chip's title) and the build-time prebake (web/scripts/prebake-gallery.mjs, which runs every analysis on each and writes static/gallery/<id>.json). `description` is the one-line 'Description & Biological Domain' cell of the HyphAeon README's 'Included Benchmark Datasets' table (veg/HyphAeon@phase-2a README.md), verbatim; `paper.taxa`/`paper.codons` are that table's N and L before duplicate pruning and the taxon cap; `reference_runtime_sec` is PLAN.md section 1's measured `hyphaeon meme` wall time on a laptop CPU, the fallback when the engine's fixtures/manifest.json `e2e_wall_seconds` is absent. RHO is NEXUS with its tree embedded, so it has no tree file. Order is the landing page's chip order: the two small ones first, then the two whose trees carry no branch lengths (so they run tree-free on TN93 distances, D22), then the largest. `dated` is a SECOND catalogue, for /time: the three examples that carry sampling dates. They are not prebaked and have no gallery record — /time runs the date review in the page from the file itself, so an entry needs only the file names and what a reader should expect to see. They were added because /time shipped with nothing to click: the dated examples lived in the engine checkout, so the one route whose whole subject is metadata had no data. Each carries its dates a different way, which is the point — the review stage is what this route exists to show, and one example per rule is what exercises it. `date_rule` names the rule the ingest should match and is a claim the page's own test asserts, not a label.",
 	"examples": [
 		{
 			"id": "bat_oas1",
@@ -10,7 +10,10 @@
 			"alignment": "bat_oas1.fasta",
 			"tree": "bat_oas1.nwk",
 			"format": "fasta",
-			"paper": { "taxa": 18, "codons": 351 },
+			"paper": {
+				"taxa": 18,
+				"codons": 351
+			},
 			"reference_runtime_sec": 1.7
 		},
 		{
@@ -22,7 +25,10 @@
 			"alignment": "Smc6.fasta",
 			"tree": "Smc6.nwk",
 			"format": "fasta",
-			"paper": { "taxa": 20, "codons": 1097 },
+			"paper": {
+				"taxa": 20,
+				"codons": 1097
+			},
 			"reference_runtime_sec": 3.5
 		},
 		{
@@ -34,7 +40,10 @@
 			"alignment": "camelid.fasta",
 			"tree": "camelid.nwk",
 			"format": "fasta",
-			"paper": { "taxa": 212, "codons": 96 },
+			"paper": {
+				"taxa": 212,
+				"codons": 96
+			},
 			"reference_runtime_sec": 4.0
 		},
 		{
@@ -46,7 +55,10 @@
 			"alignment": "HIV1_RT.fasta",
 			"tree": "HIV1_RT.nwk",
 			"format": "fasta",
-			"paper": { "taxa": 476, "codons": 335 },
+			"paper": {
+				"taxa": 476,
+				"codons": 335
+			},
 			"reference_runtime_sec": 17.3
 		},
 		{
@@ -58,8 +70,61 @@
 			"alignment": "RHO.fasta",
 			"tree": null,
 			"format": "nexus",
-			"paper": { "taxa": 710, "codons": 349 },
+			"paper": {
+				"taxa": 710,
+				"codons": 349
+			},
 			"reference_runtime_sec": null
+		}
+	],
+	"dated": [
+		{
+			"id": "H5N1_HA_geo",
+			"name": "H5N1 HA",
+			"gene": "Haemagglutinin",
+			"description": "Avian influenza H5N1 haemagglutinin, Chinese provinces 1996-2005. The cheapest honest temporal run: every sequence is dated, the gate is clear, and the null is seconds.",
+			"regime": "Avian influenza · surveillance",
+			"alignment": "H5N1_HA_geo.fasta",
+			"tree": null,
+			"format": "fasta",
+			"paper": {
+				"taxa": 98,
+				"codons": 566
+			},
+			"date_rule": "header_trailing_year",
+			"expect": "98 of 98 dated from the four-digit year at the end of each name."
+		},
+		{
+			"id": "korber_env_gp160",
+			"name": "HIV-1 env gp160",
+			"gene": "Envelope glycoprotein gp160",
+			"description": "Korber's HIV-1 group M envelope panel, the dating flagship: its root-to-tip fit is the published estimate of the pandemic's common ancestor.",
+			"regime": "HIV-1 · pandemic origin",
+			"alignment": "korber_env_gp160.fasta",
+			"tree": null,
+			"format": "fasta",
+			"paper": {
+				"taxa": 143,
+				"codons": 981
+			},
+			"date_rule": "korber_isolate",
+			"expect": "142 of 143 dated from the two-digit isolate year; CONSENSUS carries none, so the undated-sequence gate asks before it drops it."
+		},
+		{
+			"id": "H1N1_2009_pandemic",
+			"name": "H1N1 2009",
+			"gene": "Concatenated genome segments",
+			"description": "The 2009 pandemic's first eight months, dated to the day. The temporal pillar's acceptance example, and the slowest: 4,384 codons is about 20 s of model pass.",
+			"regime": "Pandemic influenza · surveillance",
+			"alignment": "H1N1_2009_pandemic.fasta",
+			"tree": "H1N1_2009_pandemic.nwk",
+			"format": "fasta",
+			"paper": {
+				"taxa": 100,
+				"codons": 4384
+			},
+			"date_rule": "header_decimal_year",
+			"expect": "95 of 100 dated from the decimal year in the pipe-delimited header; the five without one are undated."
 		}
 	]
 }

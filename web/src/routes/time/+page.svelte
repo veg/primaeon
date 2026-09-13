@@ -45,6 +45,8 @@
 	import { goto, replaceState } from '$app/navigation';
 	import { archival1959Candidates, compileDateRegex, ingestDates, taxaForDates } from '@veg/hyphaeon-runtime/dates';
 	import DropZone from '$lib/analyze/DropZone.svelte';
+	import catalogue from '$lib/gallery/examples.json';
+	import type { DatedExample } from '$lib/gallery/types';
 	import { digest, readText } from '$lib/analyze/inputs';
 	import { setHandoff, takeHandoff } from '$lib/handoff';
 	import { clockPreview } from '$lib/time/clock';
@@ -319,6 +321,42 @@
 		} catch (err) {
 			failure = err instanceof Error ? err.message : String(err);
 		} finally {
+			busy = false;
+		}
+	}
+
+	/**
+	 * THE BUNDLED DATED EXAMPLES.
+	 *
+	 * /time shipped with nothing to click: its three dated examples lived in the engine checkout, so
+	 * the one route whose whole subject is metadata had no data to read. They are tracked under
+	 * `static/gallery/inputs/` now, and each carries its dates a different way on purpose — a
+	 * four-digit year at the end of a name, a two-digit isolate year, a decimal year in a
+	 * pipe-delimited field — because the review stage is what this route exists to show and one
+	 * example per rule is what exercises it.
+	 *
+	 * Fetched and handed to `acceptFiles` as real `File` objects rather than assigned straight to
+	 * `alignmentText`: that way an example goes through the same classification, the same digest and
+	 * the same refusals as a dropped file, and there is no second path to keep in step.
+	 */
+	const DATED: readonly DatedExample[] = (catalogue.dated ?? []) as DatedExample[];
+
+	async function loadExample(example: DatedExample) {
+		failure = null;
+		busy = true;
+		try {
+			const names = [example.alignment, ...(example.tree ? [example.tree] : [])];
+			const files = await Promise.all(
+				names.map(async (name) => {
+					const res = await fetch(`${base}/gallery/inputs/${name}`);
+					if (!res.ok) throw new Error(`${name} could not be read from this build (${res.status}).`);
+					return new File([await res.blob()], name, { type: 'text/plain' });
+				})
+			);
+			busy = false;
+			await acceptFiles(files);
+		} catch (err) {
+			failure = err instanceof Error ? err.message : String(err);
 			busy = false;
 		}
 	}
@@ -853,6 +891,23 @@
 				onFiles={(files) => void acceptFiles(files)}
 			/>
 
+			<!-- Shown whether or not something is loaded: hiding them after the first load left a reader
+			     unable to switch examples without reloading the page. -->
+			{#if DATED.length > 0}
+				<p class="examples">
+					<span class="examples__label">Or try a dated example:</span>
+					{#each DATED as example (example.id)}
+						<button
+							class="chip"
+							type="button"
+							disabled={busy}
+							title={`${example.description} ${example.expect}`}
+							onclick={() => void loadExample(example)}>{example.name}</button
+						>
+					{/each}
+				</p>
+			{/if}
+
 			{#if failure}
 				<p class="notice--error" role="alert"><strong>Refused.</strong> {failure}</p>
 			{/if}
@@ -1186,6 +1241,43 @@
 </article>
 
 <style>
+	/* The dated-example line. Same shape as /analyze's demo chips (routes/analyze/+page.svelte) and
+	   the landing page's example links: a button that reads as a link, separated by middots, because
+	   DESIGN.md §2 allows no pills and no filled controls but the primary action. */
+	.examples {
+		margin-top: var(--space-4);
+		font-size: var(--text-md);
+		color: var(--text-muted);
+	}
+	.examples__label {
+		margin-right: var(--space-1);
+	}
+	.chip {
+		background: none;
+		border: 0;
+		padding: 0;
+		color: var(--link);
+		text-decoration: underline;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 0.16em;
+		font-size: inherit;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.chip:hover {
+		text-decoration-thickness: 2px;
+	}
+	.chip:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.chip + .chip::before {
+		content: '·';
+		color: var(--text-faint);
+		margin: 0 var(--space-2);
+		display: inline-block;
+		text-decoration: none;
+	}
 	.timepage {
 		margin-bottom: var(--space-10);
 	}
