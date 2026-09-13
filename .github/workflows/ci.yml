@@ -87,10 +87,18 @@ on:
 
 env:
   # The engine commit these tests run against. Bump together with the library the app consumes.
-  # phase-5b carries the date layer and the model-free dating estimators. The runtime's date and
-  # dating modules import those by name, so an older ref does not degrade gracefully: it fails at
-  # module link and takes the whole workspace with it. The pin and the code move together.
-  ENGINE_REF: phase-5b
+  # phase-5d carries the date layer, the dating estimators and the temporal pillar. The runtime's
+  # date, dating and temporal modules import those by name, so an older ref does not degrade
+  # gracefully: it fails at module link and takes the whole workspace with it. The pin and the code
+  # move together, which is why this branch pins a tag carrying more than it needs.
+  #
+  # phase-5d is also the first tag since the reconcile that carries model.safetensors. The
+  # reconcile onto the engine's main brought main's .gitignore, whose blanket *.safetensors rule
+  # silently untracked the suite weights that had been tracked since phase-4b. Nothing in this
+  # repository's suites loads them, so every check stayed green while the parity job below — which
+  # runs the Python reference with HYPHAEON_WEIGHTS and HF_HUB_OFFLINE=1 — lost all 23 of its
+  # reference runs at startup (measured on run 34714101215).
+  ENGINE_REF: phase-5d
   # The engine checkout in the sibling layout every path below assumes (see the header).
   ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   # onnxruntime-node 1.23.2's postinstall downloads the CUDA execution-provider binaries on
