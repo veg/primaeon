@@ -986,9 +986,22 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
   it.skipIf(!HAVE_EXAMPLES)("keeps the projection small even with the honesty block on every payload", () => {
     const sections = events.filter((e) => e.event === "section");
     const biggest = Math.max(...sections.map((e) => e.bytes));
-    const total = sections.reduce((a, e) => a + e.bytes, 0);
+    const mean = sections.reduce((a, e) => a + e.bytes, 0) / sections.length;
+    // What the projection GUARANTEES is per-payload: every section event carries a projected
+    // section (a summary or a permutations chunk) instead of the runtime's interim WHOLE record,
+    // which is 6.7 MiB apiece. That is a bound on each event, and on the average of them — not on
+    // the SUM. The number of interim `permutations` events is a count of null-progress ticks and
+    // is timing-dependent (measured locally over three runs at B = 2000: 11, 13 and 14 permutation
+    // events, stream total 564,469 / 665,651 / 715,152 B), so a ceiling on the running total was
+    // asserting the wrong invariant — it measured how many times the null reported progress, which
+    // the projection neither bounds nor should. The scheduled CI crossed the old 512 KiB total on
+    // roughly half its runs (562,360 / 564,205 / 564,730 / 565,737 B in runs 3485.., 3496.., 3544..,
+    // 3509..) for exactly that reason, while `biggest` never moved: the largest single section is
+    // stable at ~51.8 KB, ten times clear of its own bound. So the bound is per-event now — the
+    // biggest section, and the mean over all of them — which is what "the projection is doing its
+    // job" actually means and is invariant to how long the null took to converge.
     expect(biggest).toBeLessThan(128 * 1024);
-    expect(total).toBeLessThan(512 * 1024);
+    expect(mean).toBeLessThan(64 * 1024);
   });
 });
 
