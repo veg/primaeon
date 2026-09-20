@@ -562,8 +562,14 @@ describe("stopping a temporal run keeps what it produced", () => {
     await readSse(srv.baseUrl, "/api/v1/jobs/" + id + "/events", {
       onEvent: (ev) => {
         if (asked) return;
-        if (ev.event !== "section" || ev.data.name !== "permutations") return;
-        if (!(ev.data.payload.permutations && ev.data.payload.permutations.completed >= 1)) return;
+        // Cancel on the FIRST null progress tick, not on a permutations SECTION. A section is
+        // emitted per chunk of draws, so on a fast runner the first one can already carry most of
+        // the null — leaving too few chunk boundaries (the only place `runTemporalNull` checks its
+        // abort and yields) for the cancel to land before the run finishes. That was the
+        // intermittent CI failure (run 35519189635): the null completed and stamped no
+        // `RUN_STOPPED_EARLY`. The `temporal-null` progress event fires at draw 0, before the draws
+        // accumulate, which guarantees a full null still ahead of the cancel on any runner.
+        if (ev.event !== "progress" || ev.data.phase !== "temporal-null") return;
         asked = true;
         request(handle.app).post("/api/v1/jobs/" + id + "/cancel").send().end(() => {});
       }
