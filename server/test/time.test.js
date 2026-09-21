@@ -544,7 +544,20 @@ describe("analysis: temporal — a refining null on an SSE stream", () => {
 });
 
 describe("stopping a temporal run keeps what it produced", () => {
-  it.skipIf(!HAVE_EXAMPLES)("POST /cancel mid-null completes with a truncated, honest record", async () => {
+  // POST /cancel drives an abort into the worker and KEEPS what the run produced (Phase 6). The
+  // TRUNCATION SEMANTICS — a mid-null abort resolves with a record at the achieved draw count,
+  // carrying its p-values and a RUN_STOPPED_EARLY warning — are pinned deterministically in the
+  // runtime, where the abort can be tripped by the null's own progress with no clock in the loop
+  // (runtime/test/temporal-port.test.js, "a null aborted mid-draw..."). Proving the SAME thing here
+  // meant catching a live run mid-null over HTTP and hoping the cancel won the race against the
+  // null's completion; on a fast runner it did not, the run finished clean, and the test flaked (CI
+  // run 35519189635). This test proves only what is the SERVER's to prove, and does so without that
+  // race: that the route aborts the run, that the pillar RESOLVES rather than being deleted, and
+  // that a resolved temporal record is a truncated-honest one. Whether the abort lands before the
+  // null (job `cancelled`, no draws) or during it (job `completed`, a truncated record) is timing,
+  // so BOTH terminal outcomes are accepted; the truncation assertions run in the `completed` branch,
+  // which is the one the runtime test also exercises head-on.
+  it.skipIf(!HAVE_EXAMPLES)("POST /cancel aborts the run, keeps it, and resolves a truncated record", async () => {
     const ex = engineExample("H5N1_HA_geo", { tree: "H5N1_HA.nwk", dates: "H5N1_HA_metadata.csv" });
     const res = await post({
       analysis: "temporal",
@@ -552,45 +565,53 @@ describe("stopping a temporal run keeps what it produced", () => {
       tree: ex.tree,
       dates_file: ex.dates_file,
       names: ex.names,
-      // The reference's own grid and draw count, so the null is long enough to interrupt.
-      options: { time_points: 250, n_permutations: 1000 }
+      // A large null so the cancel has room to land while it runs; the assertions do not depend on it.
+      options: { time_points: 250, n_permutations: 4000 }
     });
     expect(res.status).toBe(202);
     const id = res.body.id;
 
-    let asked = false;
+    // Cancel as soon as the null phase is announced (draw 0), AWAITED so the route contract itself is
+    // under test: 200 and a job view back. This is not timed against the null — the assertions below
+    // hold for either terminal state the abort produces.
+    let cancelSent = false;
+    let cancelStatus = null;
     await readSse(srv.baseUrl, "/api/v1/jobs/" + id + "/events", {
       onEvent: (ev) => {
-        if (asked) return;
-        if (ev.event !== "section" || ev.data.name !== "permutations") return;
-        if (!(ev.data.payload.permutations && ev.data.payload.permutations.completed >= 1)) return;
-        asked = true;
-        request(handle.app).post("/api/v1/jobs/" + id + "/cancel").send().end(() => {});
+        if (cancelSent) return;
+        if (ev.event !== "progress" || ev.data.phase !== "temporal-null") return;
+        cancelSent = true;
+        // `.end(cb)` DISPATCHES the request now. A supertest request built with `.send()` alone is
+        // lazy — it does not hit the wire until awaited, and awaiting it after this SSE read (which
+        // only resolves when the run is `done`) would send the cancel AFTER the null had already
+        // finished. That is the mistake that made this look like a broken abort; it was an unsent
+        // request. Fire it here and capture the status in the callback.
+        request(handle.app).post("/api/v1/jobs/" + id + "/cancel").send().end((_e, r) => { cancelStatus = r && r.status; });
       }
     });
-    expect(asked).toBe(true);
+    expect(cancelSent, "the run never entered the null phase").toBe(true);
 
     const view = await settle(id);
-    // COMPLETED, not cancelled: `runTemporalNull` catches its own abort and `runTemporal` resolves
-    // with a record classified at the achieved draw count. DELETE would have thrown that away,
-    // which is exactly why cancel is a separate route.
-    expect(view.status).toBe("completed");
-    expect(view.warnings.map((w) => w.code)).toContain("RUN_STOPPED_EARLY");
+    expect(cancelStatus).toBe(200);
+    // KEPT, not deleted: the row and its result survive the cancel (DELETE is the route that removes).
+    // A pillar that cannot answer partially ends `cancelled`; the temporal pillar RESOLVES, so a
+    // cancel that landed mid-null ends `completed` with a truncated record. Both are valid here.
+    expect(["completed", "cancelled"]).toContain(view.status);
 
-    const doc = (await request(handle.app).get("/api/v1/jobs/" + id + "/result")).body;
-    const perm = doc.record.permutations;
-    expect(perm.cancelled).toBe(true);
-    expect(perm.completed).toBeGreaterThan(0);
-    expect(perm.completed).toBeLessThan(perm.requested);
-    // A client that stopped at draw N reads a result that says N and MEANS it: draw b is seeded
-    // from splitmix64(seed, b), so this record is bit-identical to one configured at `completed`.
-    const stopped = doc.provenance.warnings.find((w) => w.code === "RUN_STOPPED_EARLY");
-    expect(stopped.message).toMatch(new RegExp("completed " + perm.completed + " of " + perm.requested));
-    expect(stopped.data.reason).toMatch(/cancelled by client/);
-    // The calls it does carry are results at that count, not a half-answer.
-    expect(doc.honesty.null_state).toBe("finished");
-    expect(doc.honesty.calls_are_final).toBe(true);
-    expect(doc.record.stage).toBe("complete");
+    if (view.status === "completed") {
+      expect(view.warnings.map((w) => w.code)).toContain("RUN_STOPPED_EARLY");
+      const doc = (await request(handle.app).get("/api/v1/jobs/" + id + "/result")).body;
+      const perm = doc.record.permutations;
+      expect(perm.cancelled).toBe(true);
+      expect(perm.completed).toBeLessThan(perm.requested);
+      // A client that stopped at draw N reads a result that says N and MEANS it: draw b is seeded
+      // from splitmix64(seed, b), so this record is bit-identical to one configured at `completed`.
+      const stopped = doc.provenance.warnings.find((w) => w.code === "RUN_STOPPED_EARLY");
+      expect(stopped.message).toMatch(new RegExp("completed " + perm.completed + " of " + perm.requested));
+      expect(stopped.data.reason).toMatch(/cancelled by client/);
+      expect(doc.honesty.calls_are_final).toBe(true);
+      expect(doc.record.stage).toBe("complete");
+    }
   }, 300_000);
 
   it("cancelling an unknown job is 404, and cancelling a finished one is a no-op", async () => {
@@ -985,10 +1006,20 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
 
   it.skipIf(!HAVE_EXAMPLES)("keeps the projection small even with the honesty block on every payload", () => {
     const sections = events.filter((e) => e.event === "section");
-    const biggest = Math.max(...sections.map((e) => e.bytes));
-    const total = sections.reduce((a, e) => a + e.bytes, 0);
-    expect(biggest).toBeLessThan(128 * 1024);
-    expect(total).toBeLessThan(512 * 1024);
+    // What the projection GUARANTEES is PER-PAYLOAD: every section event carries a projected section
+    // (a summary or a permutations chunk) instead of the runtime's interim WHOLE record, which is
+    // 6.7 MiB apiece. The bound is therefore on EACH event, with no dependence on how many there are.
+    //
+    // The old assertion bounded the SUM of every section's bytes (< 512 KiB). But the number of
+    // interim `permutations` events is a count of null-progress ticks — timing-dependent, and
+    // neither bounded by the projection nor something it should bound (measured: 11 / 13 / 14 events
+    // over three runs, stream total 564,469 / 665,651 / 715,152 B). So the sum crept over 512 KiB on
+    // about half the nightlies (562,360 / 564,205 / 564,730 / 565,737 B) while nothing was actually
+    // wrong: the largest single section is a stable ~51.8 KB, and EVERY section is a projection, not
+    // the whole record. Asserting the per-event cap on all of them is the invariant the projection
+    // enforces, and it cannot flake on a count that timing decides.
+    expect(sections.length).toBeGreaterThan(0);
+    for (const s of sections) expect(s.bytes).toBeLessThan(128 * 1024);
   });
 });
 
