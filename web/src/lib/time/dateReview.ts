@@ -31,6 +31,8 @@
  * is one row per alignment sequence — and is counted on its own line under the table instead.
  */
 
+import type { BeastSummary } from '@veg/hyphaeon-runtime/dates';
+import { beastCalendarOf } from './beast';
 import type { DateEntry, TimeUnits } from './types';
 import { imputationLabel, matchTierLabel, ruleLabel, sourceLabel } from './ruleLabel';
 
@@ -42,6 +44,8 @@ export interface DateIngestLike {
 	time_units_evidence?: Record<string, unknown>;
 	source: string;
 	sources_used: string[];
+	/** Which document the dates were read out of; `'beast'` is the one that carries more than dates. */
+	source_kind?: string | null;
 	coverage: {
 		taxa_total: number;
 		dated: number;
@@ -50,6 +54,7 @@ export interface DateIngestLike {
 		from_map: number;
 		from_auspice: number;
 		from_table: number;
+		from_beast: number;
 		from_regex: number;
 		from_header: number;
 		imputed: number;
@@ -66,6 +71,7 @@ export interface DateIngestLike {
 	span: { min: number; max: number; span: number; unique: number; tied: number; finite: number } | null;
 	table: Record<string, unknown> | null;
 	auspice: Record<string, unknown> | null;
+	beast?: BeastSummary | null;
 	regex: Record<string, unknown> | null;
 	headers: Record<string, unknown> | null;
 	warnings: Array<{ code: string; severity: string; message: string; data?: unknown }>;
@@ -110,9 +116,21 @@ export function calendarOf(value: number): string {
 	return `${yyyy}-${mm}-${dd}`;
 }
 
-/** Column 3, on whichever axis the run is using. */
-export function readsAs(value: number | null, units: TimeUnits): string {
+/**
+ * Column 3, on whichever axis the run is using.
+ *
+ * `rule` is read for one reason: a BEAST date was converted by the REFERENCE's arithmetic, not the
+ * library's, so inverting it with `calendarOf` would print a day the reader never wrote — measured,
+ * 2019-03-31 enters as 2019.2488021902807 and comes back out of `calendarOf` as 2019-04-02, two
+ * days from the string sitting three columns to its right. `beastCalendarOf` inverts the formula
+ * the value actually came from; everything else keeps the library's.
+ */
+export function readsAs(value: number | null, units: TimeUnits, rule?: string): string {
 	if (value == null || !Number.isFinite(value)) return '—';
+	if (units === 'years' && rule) {
+		const beast = beastCalendarOf(value, rule);
+		if (beast) return beast;
+	}
 	if (units === 'years') return calendarOf(value);
 	const n = value.toLocaleString('en-US', { maximumFractionDigits: 4 });
 	if (units === 'generations') return `gen ${n}`;
@@ -120,10 +138,25 @@ export function readsAs(value: number | null, units: TimeUnits): string {
 	return n;
 }
 
-function rankOf(entry: DateEntry, tableLoaded: boolean): 0 | 1 | 2 | 3 {
+/**
+ * Which source a loaded date DOCUMENT contributes rows as. A BEAST XML is a document exactly as a
+ * metadata table is — rank 1 means "a document was loaded and this row did not come from it" — so
+ * the rank test is against whichever document is loaded rather than against the word `table`.
+ * Without this a BEAST run would rank every one of its own rows as a matching failure.
+ */
+function documentSource(ingest: DateIngestLike): 'table' | 'beast' {
+	return ingest.source_kind === 'beast' ? 'beast' : 'table';
+}
+
+/** What the loaded document is called in "not in …". */
+export function documentWord(ingest: DateIngestLike | null | undefined): string {
+	return ingest && ingest.source_kind === 'beast' ? 'the XML' : 'table';
+}
+
+function rankOf(entry: DateEntry, tableLoaded: boolean, document: 'table' | 'beast'): 0 | 1 | 2 | 3 {
 	if (entry.value == null || !Number.isFinite(entry.value) || UNDATED_RULES.has(entry.rule)) return 0;
-	if (tableLoaded && entry.source === 'table' && entry.match_tier !== 'exact') return 1;
-	if (tableLoaded && entry.source !== 'table') return 1;
+	if (tableLoaded && entry.source === document && entry.match_tier !== 'exact') return 1;
+	if (tableLoaded && entry.source !== document) return 1;
 	if (entry.imputed) return 2;
 	return 3;
 }
@@ -131,15 +164,17 @@ function rankOf(entry: DateEntry, tableLoaded: boolean): 0 | 1 | 2 | 3 {
 /** One row per alignment sequence, in alignment order, with the column text resolved. */
 export function reviewRows(ingest: DateIngestLike, tableLoaded: boolean): ReviewRow[] {
 	const units = ingest.time_units;
+	const document = documentSource(ingest);
+	const word = documentWord(ingest);
 	return ingest.rows.map((entry, index) => ({
 		...entry,
 		index,
-		rank: rankOf(entry, tableLoaded),
-		readsAs: readsAs(entry.value, units),
+		rank: rankOf(entry, tableLoaded, document),
+		readsAs: readsAs(entry.value, units, entry.rule),
 		ruleText: ruleLabel(entry.rule),
 		sourceText: sourceLabel(entry.source, tableLoaded),
 		imputedText: imputationLabel(entry),
-		matchText: entry.source === 'table' || tableLoaded ? matchTierLabel(entry.match_tier, tableLoaded) : '—'
+		matchText: entry.source === document || tableLoaded ? matchTierLabel(entry.match_tier, tableLoaded, word) : '—'
 	}));
 }
 
@@ -238,6 +273,7 @@ export function diagnosis(ingest: DateIngestLike): Diagnosis {
 	parts.push(`${c.taxa_total} sequence${c.taxa_total === 1 ? '' : 's'}, ${c.dated} dated`);
 	const from: string[] = [];
 	if (c.from_table) from.push(`${c.from_table} from the metadata table`);
+	if (c.from_beast) from.push(`${c.from_beast} from the BEAST XML`);
 	if (c.from_auspice) from.push(`${c.from_auspice} from the Auspice build`);
 	if (c.from_map) from.push(`${c.from_map} from the name-to-date JSON`);
 	if (c.from_regex) from.push(`${c.from_regex} from your pattern`);
@@ -345,9 +381,13 @@ export function unmatchedMetadataLine(
 	const u = ingest.unmatched_metadata;
 	const table = ingest.table as { rows_read?: number } | null;
 	if (!u || u.count === 0) return null;
-	const total = table?.rows_read ?? u.count;
+	// A BEAST XML has no rows; it has dated taxa, and the count that matters is how many of THOSE
+	// named nothing in the alignment. Same diagnosis, the file's own word for its unit.
+	const beast = ingest.source_kind === 'beast' ? ingest.beast : null;
+	const unit = beast ? 'dated taxa' : 'rows';
+	const total = beast?.dates ?? table?.rows_read ?? u.count;
 	return {
-		lead: `${u.count} of ${total} rows in ${metadataName ?? 'the metadata file'} name no sequence in this alignment`,
+		lead: `${u.count} of ${total} ${unit} in ${metadataName ?? 'the metadata file'} name no sequence in this alignment`,
 		rest: 'so they contributed nothing:',
 		names: u.names.slice(0, 5),
 		more: u.names.slice(5)

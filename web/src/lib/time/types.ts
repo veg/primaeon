@@ -40,8 +40,12 @@ export const TIME_UNIT_OPTIONS: ReadonlyArray<{ value: TimeUnits; label: string 
 	{ value: 'arbitrary', label: 'Arbitrary time' }
 ];
 
-/** Which source produced a row's date. The runtime's `DATE_SOURCES`, narrowed to what /time uses. */
-export type DateSource = 'map' | 'auspice' | 'table' | 'regex' | 'header' | 'none';
+/**
+ * Which source produced a row's date. The runtime's `DATE_SOURCES`, narrowed to what /time uses.
+ * `beast` joined it with the BEAST XML reader: it is a document source like `table`, and the one
+ * that can also carry the alignment and the starting tree.
+ */
+export type DateSource = 'map' | 'auspice' | 'table' | 'beast' | 'regex' | 'header' | 'none';
 
 /**
  * One alignment sequence's date, exactly as `ingestDates` returns it.

@@ -129,6 +129,37 @@ describe.runIf(available())('the download note is conditioned on the run (phase 
 		expect(note).toMatch(/do NOT reproduce a command-line run/);
 		expect(note).not.toMatch(/Both files reproduce/);
 	});
+
+	/**
+	 * B4: THE PAGE AND THE MCP MUST ANSWER THE SAME QUESTION THE SAME WAY.
+	 *
+	 * `datingReferenceCommand`'s `-d` branch needs the date file's NAME and the `DateIngest` that
+	 * file produced. The page passed neither, so it took the no-`-d` branch and told a reader who
+	 * had just dropped a BEAST XML that "the dates on this run were read from the sequence names by
+	 * this build's own date layer" — while the MCP, which has always passed both, said the opposite
+	 * about the same run.
+	 */
+	it('takes the `-d` branch when the reader supplied a date file, as the MCP does', () => {
+		const text = example('korber_env_gp160.fasta');
+		const dated = ingestDates({ taxa: taxaForDates(text), headerOf: null, timeUnits: 'years' });
+		// A two-column CSV of exactly the dates this run used: the file that WOULD go on `-d`.
+		const csv =
+			'strain,date\n' +
+			dated.rows
+				.filter((r) => Number.isFinite(r.value))
+				.map((r) => `${r.taxon},${r.value}`)
+				.join('\n');
+		const ingest = ingestDates({ taxa: taxaForDates(text), source: csv, sourceName: 'dates.csv' });
+		const note = datingDownloadNote(result, { datesName: 'dates.csv', ingest });
+		// The false sentence is gone: the dates did NOT come from the sequence names on this run.
+		expect(note).not.toMatch(/were read from the sequence names by this build's own date layer/);
+		// And it is the same answer `datingReferenceCommand` gives the MCP for the same four arguments.
+		const mcp = datingReferenceCommand(result as never, {}, { dates: 'dates.csv' }, ingest) as {
+			reproduces: boolean;
+		};
+		const claims = /do NOT reproduce a command-line run/.test(note);
+		expect(claims).toBe(!mcp.reproduces);
+	});
 });
 
 describe.runIf(available())('the files themselves', () => {

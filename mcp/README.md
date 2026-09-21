@@ -150,7 +150,7 @@ allowance):
 | `hyphaeon_epistasis` | Co-selection network (cosine, Student-t p, BH q, CESI), sectors with spectral coherence and the seeded permutation null, the sector-site DMS unless `no_dms`; `seed`, `n_permutations`, the CLI's thresholds | yes |
 | `hyphaeon_dms` | 19-substitution digital DMS per site with intrinsic plasticity; `focal_taxon`; app-side `sites` sweeps a subset | yes |
 | `hyphaeon_phenotype` | Directional trait association per site (foreground vs background attention, rho, t-test p, ACAT with the site LRT, BH q), a PARS signature, trait co-selection pairs, trait sectors, and — with `permulations` > 0 and a tree — a gene-level Brownian-motion permulation p. Trait: `preset`, `foreground`, or `phenotype_file` (the CSV/TSV **text**) | yes |
-| `hyphaeon_dates` | The date review stage as data: a sampling date per sequence from the FASTA headers, a Nextstrain Auspice JSON, a name-to-date JSON object, a CSV/TSV table or a pattern you supply, with **which rule dated each sequence**, what did not match, what was imputed, the seven-tier name ladder's counts, and whether the set carries a clock at all. Also reports the two gates the two pillars below refuse on. Runs no model; milliseconds | no |
+| `hyphaeon_dates` | The date review stage as data: a sampling date per sequence from the FASTA headers, a Nextstrain Auspice JSON, a name-to-date JSON object, a CSV/TSV table, a BEAST 1.x / 2.x XML or a pattern you supply, with **which rule dated each sequence**, what did not match, what was imputed, the seven-tier name ladder's counts (eight for a BEAST document), and whether the set carries a clock at all. Also reports the two gates the two pillars below refuse on. Runs no model; milliseconds | no |
 | `hyphaeon_dating` | The molecular clock: root-to-tip regression, rate `mu`, `t_mrca` with a Fieller / delta / linear interval, a restricted-cubic-spline alternative adjudicated against the line, an ensemble, and a per-taxon table of divergences, predicted dates, residuals, z-scores and outliers. **Model-free by default** and takes no tree (D34); `use_model: true` is a *different* estimator, not a better one | only with `use_model` |
 | `hyphaeon_temporal` | Per-site selection trajectories through calendar time: prevalence and sweep velocity over a dense grid, peak date and intensity, half-rise / half-fall, FWHM, area; a two-stage filter (energy floor, then a date-shuffling permutation null with BH q); an fPCA decomposition into four wave modes; a four-way classification against the static call. **Always a job**, and the record is read one `section` at a time | yes |
 | `hyphaeon_evaluate` | Concordance of a `hyphaeon meme` CSV with a HyPhy MEME JSON | no |
@@ -355,7 +355,45 @@ the contract for the web app's diagnostics panel and the Node server's `/validat
 - `DATING_MODEL_TOO_MANY_TAXA` (the runtime's refusal above 1,500 sequences for the model-based
   estimators) is unreachable through this server: `MAX_TAXA` is 1,000, so no admitted submission can
   reach the pillar's own ceiling. The mapping exists and is correct; the caps make it moot.
-- BEAST XML is refused (`DATES_BEAST_XML_UNSUPPORTED`); the reference reads one (dating.py:433-434).
+- BEAST XML is READ as `dates_file`, both dialects, by the port of `parse_beast_xml`
+  (dataset.py:84-233) in `runtime/src/dates/beast.js`: BEAST 1 `<taxon id="…"><date value="…"/>`
+  and BEAST 2 `<trait traitname="date" value="a=…,b=…"/>`, with the reference's own `seq_` name
+  reconciliation and a BEAST-only match tier (`seq_prefix_stripped`, inserted after `exact`).
+  **Only the dates are taken**, because `dates_file` is `-d` and `-d run.xml` upstream reads
+  `parse_beast_xml(...)['dates']` and nothing else (dating.py:433-442). `--beast`, the
+  whatever-it-has door that also fills the alignment and tree slots (dating.py:2455-2471, each only
+  `if … is None`), is deliberately not offered: it solves a drop-zone problem, and an MCP call
+  already names `alignment` and `tree` in the same object. An XML that carries sequences or a
+  starting tree has them reported in `date_review.beast` and in `DATES_BEAST_CARRIES_INPUTS`, never
+  substituted for what you passed. PrimAeon's `/time` page, which IS a drop zone, takes the other
+  door and can fill all three slots from one XML — so the same file gives the same DATES on both
+  surfaces and a different number of INPUTS. That difference is the reference's, not a gap.
+- **A BEAST date is not a decimal year, and that is the reference's arithmetic, not ours.**
+  `_parse_numeric_or_calendar_date` (dataset.py:62-81) makes `YYYY-MM-DD` into
+  `year + (month-1)/12 + (day-1)/365.25` and `YYYY-MM` into `year + (month-0.5)/12`; MEASURED
+  against the conversion every other source in this build uses, that is a mean 0.73 days and a
+  worst 2.815 days (2019-03-31). Its leading `float(s)` is ungated, so `1799`, `50`, `-3` and `1e9`
+  are all kept where every other source returns NaN. The value is carried in already parsed and is
+  never re-read by the library — re-reading it would destroy the reference's own answer — so a row
+  carries `beast_float`, `beast_ymd` or `beast_year_month`, the only rule ids here that are not the
+  library's. `DATES_BEAST_DATE_SCALE` and `DATES_BEAST_DATE_UNGATED` name both facts.
+  `hyphaeon dating --beast` agrees with these numbers; a CSV of the same dates will not.
+- Upstream bugs replicated and named, never corrected: `direction=` / `units=` on a `<date>` are
+  read by nothing (`DATES_BEAST_DIRECTION_IGNORED` — a backwards-dated file comes out mirrored in
+  time); the BEAST 2 trait test is a substring test, so `dateBackward` reads as forward years
+  (`DATES_BEAST_TRAIT_NOT_DATE`); one alignment block of many survives, chosen by taxon count with
+  the first winning a tie (`DATES_BEAST_MULTIPLE_ALIGNMENTS`); the `seq_` dance renames sequences
+  with no collision check and grows the date map (`DATES_BEAST_SEQ_PREFIX`); a namespaced document
+  matches nothing, because `parse_beast_xml` searches unqualified tags (`DATES_BEAST_NAMESPACED`).
+- Still refused, each with its own code: `DATES_XML_UNPARSABLE` (not well-formed — a `[&rate=…]`
+  annotation with a bare `&` is the usual cause, and the reference refuses the same file at
+  dataset.py:109-110), `DATES_XML_UNSAFE` (external or parameter entities, or past the reader's
+  size / depth / entity-expansion budget; refused before anything is read, and nothing is ever
+  fetched or opened), `DATES_BEAST_NOT_BEAST` (well-formed XML holding nothing a BEAST file holds,
+  a namespaced document included), `DATES_BEAST_NO_DATES` (a BEAST file with no sampling date — a
+  warning instead when the headers dated the run anyway, the `DATES_TABLE_NO_MATCH` precedent).
+  `dates_file` is TEXT in a JSON field, so a gzipped XML cannot reach this surface: decompress
+  first.
 - `hyphaeon dating`'s `--clock-model power`, `--loocv`, `--bootstrap` and its `poisson`,
   `residual-boot`, `site-boot` and `jackknife` interval methods are not ported and are refused by
   the schema rather than silently answered with a substitute. `record.primaeon.estimators_not_built`

@@ -11,6 +11,15 @@
  * codes. A library that gains a rule must gain a sentence in the same change, or the page would
  * print a bare identifier at a reader and call it an explanation.
  *
+ * THREE IDS ARE NOT THE LIBRARY'S AT ALL. `beast_float`, `beast_ymd` and `beast_year_month` come
+ * from `runtime/src/dates/beast.js`, because a BEAST date is converted by the REFERENCE's own
+ * `_parse_numeric_or_calendar_date` (dataset.py:62-81) and is never re-read by the library — its
+ * value would be destroyed if it were. Their notes therefore have one more job than the others:
+ * they name the arithmetic, and they name its measured distance from the decimal year every other
+ * row on the same table was converted with (0.73 days on average, 2.815 at worst). A reader
+ * comparing this page against `hyphaeon dating --beast` needs that, and needs it in the table
+ * rather than in a footnote.
+ *
  * TWO IDS CARRY A CLAIM AND ARE WORDED CAREFULLY. `out_of_range` is NOT "no date found": the
  * library separates it from `unparsed` precisely so a page can say *your date is fine, the
  * 1800–2100 gate rejected it* (library Q6), and losing that distinction here would put the two
@@ -44,7 +53,14 @@ export const RULE_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	dpi: 'days post infection',
 
 	flexible_numeric: 'number, ungated',
-	custom_pattern: 'custom pattern'
+	custom_pattern: 'custom pattern',
+
+	// The three ids that are NOT the library's. A BEAST date is converted by the reference's own
+	// `_parse_numeric_or_calendar_date` (dataset.py:62-81) and never re-read here, so it carries a
+	// rule id this repository defines. The labels say BEAST out loud for exactly that reason.
+	beast_float: 'BEAST number, no gate',
+	beast_ymd: 'BEAST calendar date',
+	beast_year_month: 'BEAST year and month'
 });
 
 /** Rule id → one sentence saying what was read and what, if anything, was invented. */
@@ -73,7 +89,14 @@ export const RULE_NOTES: Readonly<Record<string, string>> = Object.freeze({
 	dpi: 'Days post infection, returned raw. It is not a calendar year and nothing downstream converts it.',
 
 	flexible_numeric: 'A plain number with no year gate at all, the dating pillar’s own fallback.',
-	custom_pattern: 'Your pattern matched, and its first capturing group was read as the date.'
+	custom_pattern: 'Your pattern matched, and its first capturing group was read as the date.',
+
+	beast_float:
+		'The BEAST reader tried float() first and kept whatever it returned (dataset.py:67-69). There is no 1800–2100 gate and no gate at all on this path: 1799, 2150, 50, −3 and 1e9 are all accepted here and every one of them is rejected by every other source on this page.',
+	beast_ymd:
+		'A calendar date converted by the reference’s own arithmetic, year + (month−1)/12 + (day−1)/365.25 (dataset.py:73) — twelfths mixed with 365.25ths, and not the decimal year the rest of this page uses. Measured over 2019–2020 the two differ by 0.73 days on average and 2.815 days at worst. The month and day are never range-checked, so 2020-13-45 and 2020-00-00 both convert.',
+	beast_year_month:
+		'A year and month, converted as year + (month−0.5)/12 (dataset.py:79) — mid-month by twelfths, a third convention again. The day was never in the string and nothing was imputed for it; 2021-04 becomes 2021.2917, which is 2.46 days from what this page’s own ISO rule would give.'
 });
 
 /** The words for the Source column. `fallback` is a table run whose row came from the header. */
@@ -81,6 +104,7 @@ export const SOURCE_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	map: 'name-to-date JSON',
 	auspice: 'Auspice',
 	table: 'metadata',
+	beast: 'BEAST XML',
 	regex: 'pattern',
 	header: 'header',
 	none: 'none'
@@ -115,12 +139,21 @@ export function imputationLabel(entry: {
 	return parts.length === 0 ? '—' : parts.join(', ');
 }
 
-/** The Name match column. `null` on a header or pattern row; those were never matched to anything. */
-export function matchTierLabel(tier: string | null, tableLoaded: boolean): string {
-	if (!tier) return tableLoaded ? 'not in table' : '—';
+/**
+ * The Name match column. `null` on a header or pattern row; those were never matched to anything.
+ *
+ * `documentWord` is what the loaded date document is called in "not in …": a metadata table for
+ * every other source, the XML for a BEAST run. The default keeps every existing call site's words.
+ */
+export function matchTierLabel(tier: string | null, tableLoaded: boolean, documentWord = 'table'): string {
+	if (!tier) return tableLoaded ? `not in ${documentWord}` : '—';
 	switch (tier) {
 		case 'exact':
 			return 'exact';
+		// BEAST only (`BEAST_MATCH_TIERS`): dataset.py:194-200 and dating.py:438-442 both reconcile a
+		// `seq_` prefix, in opposite directions, so the tier strips it from either side.
+		case 'seq_prefix_stripped':
+			return 'seq_ prefix stripped';
 		case 'quote_stripped':
 			return 'quote-stripped';
 		case 'whitespace_collapsed':

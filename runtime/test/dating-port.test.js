@@ -72,6 +72,7 @@ import {
 	datingJsonText,
 	datingDownloads,
 	datingReferenceCommand,
+	DATE_DOCUMENT_SOURCES,
 	datingTaxonRecords,
 	rankTaxonRows,
 	runDating,
@@ -80,6 +81,7 @@ import {
 	verifyCodingAlignment
 } from '../src/dating/index.js';
 import { clockRegression } from '../src/clock.js';
+import { DATE_SOURCES, ingestDates } from '../src/dates/index.js';
 // The distance engine. `runDating` is synchronous and this loader is not, so every caller resolves
 // first and hands the options in; since @veg/hyphaeon-js's JavaScript TN93 was deleted a tn93-mode
 // run without them throws `Tn93EngineRequiredError` rather than computing the same numbers more
@@ -926,6 +928,106 @@ describe('the review findings this phase closed', () => {
 			const s = datingClockSignal(rec);
 			if (s.g == null) continue;
 			expect(s.hasSignal, `g ${s.g} against p ${s.p}`).toBe(s.g < 1);
+		}
+	});
+});
+
+/**
+ * B1 AND B2: THE TWO FALSE CLAIMS `datingReferenceCommand` MADE ABOUT A BEAST-SOURCED RUN.
+ *
+ * Both were reproduced on real documents before they were fixed, and both are assertions about a
+ * SENTENCE rather than a number — which is why they are tested at all: a reproduction claim that is
+ * wrong is worse than no claim, because a reader acts on it.
+ */
+describe('the reproduction claim on a BEAST-sourced run', () => {
+	/** A four-taxon BEAST 1 document: dates in `<taxon><date>`, sequences in an `<alignment>`. */
+	const BEAST1 =
+		'<beast version="1.10"><taxa>' +
+		'<taxon id="A"><date value="2019-01-01"/></taxon>' +
+		'<taxon id="B"><date value="2020-06-15"/></taxon>' +
+		'<taxon id="C"><date value="2021-03-02"/></taxon>' +
+		'<taxon id="D"><date value="2022-11-30"/></taxon>' +
+		'</taxa><alignment dataType="nucleotide">' +
+		'<sequence><taxon idref="A"/>ATGCATGCATGC</sequence>' +
+		'<sequence><taxon idref="B"/>ATGCATGCATGA</sequence>' +
+		'<sequence><taxon idref="C"/>ATGCATGCATGT</sequence>' +
+		'<sequence><taxon idref="D"/>ATGCATGCATGG</sequence>' +
+		'</alignment></beast>';
+
+	const RUN = { record: {}, distanceMode: 'tn93', pgls: false };
+
+	it('B1: `-d run.xml` IS the date document, so a BEAST source does not flip `reproduces`', () => {
+		const ing = ingestDates({ taxa: ['A', 'B', 'C', 'D'], source: BEAST1, sourceName: 'run.xml' });
+		// MEASURED: this is what the layer reports, and every date came from the file on the line.
+		expect(ing.sources_used).toEqual(['beast']);
+		expect(ing.coverage.from_beast).toBe(4);
+		expect(ing.coverage.from_header).toBe(0);
+		const ref = datingReferenceCommand(RUN, {}, { alignment: 'run.xml', dates: 'run.xml' }, ing);
+		expect(ref.reproduces).toBe(true);
+		// And not one word claiming the dates came from somewhere else.
+		expect(ref.caveats.join(' ')).not.toMatch(/not every date on this run came from it/);
+	});
+
+	it('B1: every source that names a FILE is the `-d` document, and the exclusion set is exhaustive', () => {
+		// `DATE_SOURCES` is the layer's own enumeration. A member that is neither a date document nor
+		// one of the two this build supplies itself would silently take the wrong branch, which is
+		// exactly how `'beast'` slipped past the three hard-coded exclusions it replaced.
+		const supplied = new Set(['regex', 'header']);
+		for (const source of DATE_SOURCES) {
+			if (source === 'none') continue;
+			expect(
+				DATE_DOCUMENT_SOURCES.has(source) || supplied.has(source),
+				`DATE_SOURCES member '${source}' is in neither set`
+			).toBe(true);
+		}
+	});
+
+	it('B1: a date this build read itself still flips it, and is counted as itself', () => {
+		// The claim must not become unfalsifiable: drop D's date and the header ladder fills it in.
+		const partial = BEAST1.replace('<taxon id="D"><date value="2022-11-30"/></taxon>', '<taxon id="D"/>');
+		const ing = ingestDates({ taxa: ['A', 'B', 'C', 'D_2022-11-30'], source: partial, sourceName: 'run.xml' });
+		expect(ing.sources_used).toEqual(['beast', 'header']);
+		const ref = datingReferenceCommand(RUN, {}, { alignment: 'a.fa', dates: 'run.xml' }, ing);
+		expect(ref.reproduces).toBe(false);
+		const caveat = ref.caveats.find((c) => c.includes('not every date on this run came from it'));
+		// The COUNT is the shortfall, not the dated total: "4 sequence(s) were dated from beast" was
+		// the whole alignment printed as if it were what the file had missed.
+		expect(caveat).toMatch(/1 from the sequence names/);
+		expect(caveat).not.toMatch(/4 sequence/);
+	});
+
+	it('B2: the fuzzy count and the ladder it prints are the same ladder', () => {
+		const xml =
+			'<beast><taxa><taxon id="seq_a"><date value="1980"/></taxon>' +
+			'<taxon id="b"><date value="1990"/></taxon><taxon id="c"><date value="2000"/></taxon></taxa></beast>';
+		const ing = ingestDates({ taxa: ['a', 'seq_b', 'c'], source: xml, sourceName: 's.xml' });
+		expect(ing.match_tiers.seq_prefix_stripped).toBe(2);
+		const ref = datingReferenceCommand(RUN, {}, { alignment: 'a.fa', dates: 's.xml' }, ing);
+		// `seq_prefix_stripped` is dating.py:438-442's own reconciliation — exact after a rule the
+		// REFERENCE applies — so it is not a fuzzy match and cannot cost a reproduction.
+		expect(ref.reproduces).toBe(true);
+		const fuzzy = ref.caveats.find((c) => c.includes('the reference\'s join does not have'));
+		expect(fuzzy).toBeUndefined();
+		// It is still reported, because the tier is visible in `match_tiers` and a reader must be
+		// able to find out why it is not in a count.
+		const note = ref.caveats.find((c) => c.includes('across the `seq_` prefix'));
+		expect(note).toMatch(/2 name\(s\)/);
+		expect(note).toMatch(/dating\.py:438-442/);
+	});
+
+	it('B2: a tier the reference really does not have still flips it, and prints a ladder containing it', () => {
+		const csv = 'strain,date\nA,2019-01-01\nb,2020-06-15\nC,2021-03-02\n';
+		const ing = ingestDates({ taxa: ['A', 'B', 'C'], source: csv, sourceName: 'meta.csv' });
+		expect(ing.match_tiers.case_insensitive).toBe(1);
+		const ref = datingReferenceCommand(RUN, {}, { alignment: 'a.fa', dates: 'meta.csv' }, ing);
+		expect(ref.reproduces).toBe(false);
+		const fuzzy = ref.caveats.find((c) => c.includes('the reference\'s join does not have'));
+		expect(fuzzy).toMatch(/^1 metadata name\(s\)/);
+		expect(fuzzy).toMatch(/case_insensitive/);
+		// THE INVARIANT THIS WHOLE TEST EXISTS FOR: every tier the count could have come from is in
+		// the ladder the sentence prints.
+		for (const [tier, n] of Object.entries(ing.match_tiers)) {
+			if (n > 0 && tier !== 'exact') expect(fuzzy).toContain(tier);
 		}
 	});
 });

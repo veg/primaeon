@@ -199,6 +199,61 @@ describe("hyphaeon_dating: the model-free clock, and what it refuses", () => {
     expect(body.provenance.preprocessing.date_gate.applied).toEqual([]);
   });
 
+  /**
+   * THE CLOCK OFF A BEAST XML, AGAINST THE SAME DATES AS A CSV.
+   *
+   * The XML is built from `H5N1_HA_metadata.csv` at test time in BEAST 1 shape, which is the one
+   * comparison that isolates the reader from its arithmetic: the CSV's dates are bare decimal
+   * years, so `_parse_numeric_or_calendar_date`'s `float(s)` branch returns them UNCHANGED
+   * (dataset.py:67-69) and the two runs must land on the same fit. A calendar date would not —
+   * the BEAST formula is `year + (month-1)/12 + (day-1)/365.25`, measured 0.73 days on average
+   * from the conversion the CSV path uses — and that difference is pinned in the runtime's own
+   * suite rather than hidden inside a clock fit here.
+   */
+  it("dates a run from a BEAST XML, and lands on the same clock as the CSV of the same dates", async () => {
+    const alignment = await example("H5N1_HA_geo.fasta");
+    const metadata = await example("H5N1_HA_metadata.csv");
+    const rows = metadata
+      .trim()
+      .split(/\r?\n/)
+      .slice(1)
+      .map((line) => line.split(","))
+      .filter((f) => f.length > 1);
+    expect(rows).toHaveLength(98);
+    // BEAST 1 shape, tests/test_dating.py:119-134: `<taxon id><date value=…/>` in a `<taxa>` block.
+    const beastXml =
+      '<?xml version="1.0" standalone="yes"?>\n<beast version="1.10.4">\n<taxa id="taxa">\n' +
+      rows.map(([taxon, date]) => `<taxon id="${taxon}"><date value="${date}" direction="forwards" units="years"/></taxon>`).join("\n") +
+      "\n</taxa>\n</beast>\n";
+
+    const fromXml = await call({ alignment, dates_file: beastXml, dates_file_name: "H5N1.xml" });
+    expect(fromXml.isError).toBe(false);
+    expect(fromXml.body.date_review.source).toBe("beast");
+    expect(fromXml.body.date_review.coverage.from_beast).toBe(98);
+    expect(fromXml.body.date_review.beast.version).toBe("BEAST 1");
+    // `-d` is still `-d`: the reproduction line names the file the caller passed.
+    expect(fromXml.body.provenance.reference_command.command).toMatch(/-d H5N1\.xml/);
+
+    const fromCsv = await call({ alignment, dates_file: metadata, dates_file_name: "H5N1_HA_metadata.csv" });
+    expect(fromCsv.isError).toBe(false);
+    expect(fromCsv.body.date_review.source).toBe("table");
+    // Same dates, same axis, same fit — to the digit, because the values never moved.
+    expect(fromXml.body.date_review.span.min).toBe(fromCsv.body.date_review.span.min);
+    expect(fromXml.body.date_review.span.max).toBe(fromCsv.body.date_review.span.max);
+    expect(fromXml.body.record.t_mrca).toBeCloseTo(fromCsv.body.record.t_mrca, 9);
+    expect(fromXml.body.record.mu).toBeCloseTo(fromCsv.body.record.mu, 12);
+    expect(fromXml.body.record.taxa_count).toBe(fromCsv.body.record.taxa_count);
+
+    // The XML carried dates and NOTHING else — no sequences, no starting tree — so the "this file
+    // carries more than dates" note must NOT fire. It is the note that would tell a reader their
+    // alignment had a rival in the same upload.
+    const codes = fromXml.body.date_review.warnings.map((w) => w.code);
+    expect(codes).not.toContain("DATES_BEAST_CARRIES_INPUTS");
+    // `direction=`/`units=` are on every one of these 98 <date> elements and are read by nothing
+    // upstream, so the run says so rather than letting the time axis be taken on trust.
+    expect(codes).toContain("DATES_BEAST_DIRECTION_IGNORED");
+  });
+
   it("refuses BOTH date gates before anything runs, with the code and the override named", async () => {
     // Undated sequences: korber leaves one, and without drop_undated the run is refused rather
     // than quietly fitted to 142 of 143.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DATE_RULES } from '@veg/hyphaeon-js';
-import { RULE_LABELS, RULE_NOTES, imputationLabel, matchTierLabel, ruleLabel, sourceLabel } from './ruleLabel';
-import { DATE_MATCH_TIERS, DATE_SOURCES } from '@veg/hyphaeon-runtime/dates';
+import { RULE_LABELS, RULE_NOTES, SOURCE_LABELS, imputationLabel, matchTierLabel, ruleLabel, sourceLabel } from './ruleLabel';
+import { BEAST_DATE_RULE_IDS, BEAST_MATCH_TIERS, DATE_MATCH_TIERS, DATE_SOURCES } from '@veg/hyphaeon-runtime/dates';
 
 describe('the rule map is total', () => {
 	// The same contract lib/diagnostics/panel.ts holds for diagnostic codes: a library that gains a
@@ -14,8 +14,38 @@ describe('the rule map is total', () => {
 		}
 	});
 
-	it('has a label for every DATE_SOURCES member', () => {
-		for (const source of DATE_SOURCES) expect(sourceLabel(source)).toBeTruthy();
+	// The three ids that are NOT the library's: a BEAST date is converted by the reference's own
+	// `_parse_numeric_or_calendar_date` (dataset.py:62-81), so `DATE_RULES` will never name them and
+	// the totality test above cannot see them. They need the same contract.
+	it('has a label and a note for every BEAST rule id', () => {
+		expect(BEAST_DATE_RULE_IDS.length).toBe(3);
+		for (const id of BEAST_DATE_RULE_IDS) {
+			expect(RULE_LABELS[id], `no label for rule ${id}`).toBeTruthy();
+			expect(RULE_NOTES[id], `no note for rule ${id}`).toBeTruthy();
+			expect(RULE_NOTES[id].length, `the note for ${id} is not a sentence`).toBeGreaterThan(20);
+			// Each one says BEAST out loud, because the whole point of the id is which parser produced
+			// the number the reader is looking at.
+			expect(RULE_LABELS[id]).toMatch(/BEAST/);
+		}
+	});
+
+	// `sourceLabel` falls back to the id, so "truthy" alone would pass for a source nobody has worded
+	// yet (it did, for `beast`). The contract is an ENTRY in the map; `header` and `none` are their
+	// own English words and are allowed to equal their ids.
+	it('has an explicit entry in SOURCE_LABELS for every DATE_SOURCES member', () => {
+		for (const source of DATE_SOURCES) {
+			expect(SOURCE_LABELS[source], `no label for source ${source}`).toBeTruthy();
+			expect(sourceLabel(source)).toBe(SOURCE_LABELS[source]);
+		}
+		expect(SOURCE_LABELS.beast).toBe('BEAST XML');
+	});
+
+	it('has a label for every BEAST_MATCH_TIERS member', () => {
+		for (const tier of BEAST_MATCH_TIERS) {
+			const label = matchTierLabel(tier, true);
+			expect(label).toBeTruthy();
+			if (tier !== 'exact') expect(label, `tier ${tier} printed its raw id`).not.toBe(tier);
+		}
 	});
 
 	it('has a label for every DATE_MATCH_TIERS member, none of them the raw id', () => {
@@ -75,5 +105,15 @@ describe('the source and imputation columns', () => {
 	it('says "not in table" for an unmatched row only while a table is loaded', () => {
 		expect(matchTierLabel(null, true)).toBe('not in table');
 		expect(matchTierLabel(null, false)).toBe('—');
+	});
+
+	// A BEAST run has no table; naming one would send a reader looking for a file they never dropped.
+	it('names the loaded document in "not in …" rather than always saying table', () => {
+		expect(matchTierLabel(null, true, 'the XML')).toBe('not in the XML');
+		expect(matchTierLabel(null, false, 'the XML')).toBe('—');
+	});
+
+	it('spells the BEAST-only seq_ tier rather than printing its id', () => {
+		expect(matchTierLabel('seq_prefix_stripped', true)).toBe('seq_ prefix stripped');
 	});
 });

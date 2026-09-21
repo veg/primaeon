@@ -67,10 +67,15 @@ import {
 	DATE_DIAGNOSTIC_CODES,
 	DATE_THRESHOLDS,
 	DATE_MESSAGES,
+	DATE_MATCH_TIERS,
+	BEAST_MATCH_TIERS,
+	BEAST_DATE_RULES,
 	nameSample,
 	fillMessage
 } from './codes.js';
 import { isAuspiceJson, walkAuspiceDates, readJsonDateMap } from './auspice.js';
+import { parseBeastXml } from './beast.js';
+import { XmlReadError } from './xml.js';
 import {
 	readDateTable,
 	tableDateMap,
@@ -103,6 +108,32 @@ function sortWarnings(warnings) {
 		.map((w, i) => ({ w, i }))
 		.sort((a, b) => rank(a.w) - rank(b.w) || a.i - b.i)
 		.map((x) => x.w);
+}
+
+/**
+ * A BEAST date in `DateParse` clothing: the value is the REFERENCE's, already converted by
+ * `_parse_numeric_or_calendar_date`, and it is never handed back to the library.
+ *
+ * `imputed` is true for the `YYYY-MM` branch alone, because dataset.py:79 invents the day as half a
+ * month (`year + (month-0.5)/12`); the `YYYY-MM-DD` branch invents nothing and the float branch
+ * reads a number. That is the same question `imputations` answers for every other source, asked of
+ * the reference's own arithmetic.
+ *
+ * @param {number} value
+ * @param {string|undefined} rule a `BEAST_DATE_RULES` id
+ * @param {string|null} raw
+ * @param {string} timeUnits
+ */
+function beastParseRecord(value, rule, raw, timeUnits) {
+	const monthOnly = rule === BEAST_DATE_RULES.YEAR_MONTH;
+	return {
+		value,
+		rule: rule ?? BEAST_DATE_RULES.FLOAT,
+		imputed: monthOnly,
+		imputations: { month: false, day: monthOnly, dayClamped: false },
+		matched: raw,
+		timeUnits
+	};
 }
 
 /** `{count, names, sample}` — the whole list kept, a capped sample for a message. */
@@ -154,7 +185,13 @@ export function detectDateSourceKind(text, fileName = '') {
 	const body = String(text ?? '');
 	const head = body.slice(0, 4096).trimStart();
 
-	if (name.endsWith('.xml') || head.startsWith('<?xml') || head.startsWith('<beast')) return 'beast';
+	// XML BY CONTENT, and only then by name. Until this phase the `.xml` SUFFIX alone was enough,
+	// which was the one place this function contradicted its own header: a metadata export named
+	// `dates.xml` that is actually a CSV was classified as BEAST and refused unread, and so was a
+	// truncated download. Now the bytes decide, and the name is the tie-break it says it is — a file
+	// whose content matches nothing else and whose name says `.xml` still comes back here (at the
+	// bottom of this function) so it refuses as unreadable XML rather than as an unknown kind.
+	if (head.startsWith('<')) return 'beast';
 
 	if (head.startsWith('{') || head.startsWith('[')) {
 		let json;
@@ -189,6 +226,7 @@ export function detectDateSourceKind(text, fileName = '') {
 	for (const sep of ['\t', ',', ';', '|']) {
 		if (first.split(sep).length >= 2) return 'table';
 	}
+	if (name.endsWith('.xml') || name.endsWith('.xml.gz')) return 'beast';
 	return 'unknown';
 }
 
@@ -353,7 +391,8 @@ export function datesVector(ingest, taxa) {
  *   source: string, sources_used: string[], source_name: string|null, source_kind: string|null,
  *   coverage: object, rows: DateRow[], unmatched_metadata: object, unmatched_taxa: object,
  *   match_tier: string|null, match_tiers: Record<string, number>, ambiguous: object[],
- *   span: object|null, table: object|null, auspice: object|null, regex: object|null,
+ *   span: object|null, table: object|null, auspice: object|null, beast: object|null,
+ *   regex: object|null,
  *   headers: object|null, warnings: Array<{code: string, severity: string, message: string,
  *   data: object}>}} DateIngest
  */
@@ -364,7 +403,8 @@ export function datesVector(ingest, taxa) {
  * @param {{
  *   taxa: readonly string[],
  *   headerOf?: Map<string,string>|Record<string,string>|null,
- *   source?: string|object|null,
+ *   source?: string|object|null, a text, a caller's map, an Auspice JSON, or a `parseBeastXml`
+ *     result the surface parsed once and is passing in rather than re-parsing per keystroke,
  *   sourceName?: string,
  *   sourceKind?: 'auspice'|'json-map'|'table'|'beast'|'map'|'auto',
  *   timeUnits?: string|null,
@@ -419,6 +459,8 @@ export function ingestDates(args = {}) {
 	let sourceParses = new Map();
 	let tableBlock = null;
 	let auspiceBlock = null;
+	/** A `parseBeastXml` result: its dates are read here, its alignment and tree are the caller's. */
+	let beastBlock = null;
 	let sourceFatal = false;
 
 	// The units must be known before a table cell or an Auspice attribute is parsed, and the
@@ -438,12 +480,97 @@ export function ingestDates(args = {}) {
 		}
 
 		if (sourceKind === 'beast') {
-			warnings.push(
-				warn('DATES_BEAST_XML_UNSUPPORTED', 'refuse', DATE_MESSAGES.BEAST_XML_UNSUPPORTED, {
-					file: sourceName
-				})
-			);
-			sourceFatal = true;
+			// A BEAST XML is the only date source that can also carry the ALIGNMENT and a STARTING
+			// TREE, and the reference composes those three by slot, not by argument order
+			// (dating.py:2467-2471: each is taken only `if … is None`). That composition is the
+			// SURFACE's — a drop zone has no argument order — so this arm reads the dates and hands
+			// the rest back in the `beast` block for the caller to place.
+			//
+			// THE VALUES ARE NEVER RE-READ. `_parse_numeric_or_calendar_date` (dataset.py:62-81) has
+			// already turned each string into a number, with its own arithmetic and no year gate, and
+			// putting that number back through the library would destroy the reference's own answer:
+			// measured, `1799`, `50`, `-3` and `1e9` all become NaN under the calendar gate and every
+			// calendar date moves by up to 2.815 days. So each one enters as an ALREADY-PARSED
+			// `DateParse` carrying a `BEAST_DATE_RULES` id; only the units evidence looks at the raw
+			// strings.
+			try {
+				const parsed =
+					typeof supplied === 'string'
+						? parseBeastXml(supplied, { fileName: sourceName ?? 'the XML' })
+						: /** @type {any} */ (supplied);
+				beastBlock = parsed;
+				const nSeq = parsed.sequences?.size ?? 0;
+				const nDates = parsed.dates?.size ?? 0;
+				const hasTree = Boolean(parsed.tree_newick);
+				if (timeUnits === null) {
+					const inferred = inferTimeUnits(Array.from(parsed.provenance.raws.values()), {
+						taxa: headerNames
+					});
+					timeUnits = inferred.timeUnits;
+					timeUnitsEvidence = inferred.evidence;
+				}
+				if (nSeq === 0 && nDates === 0 && !hasTree) {
+					warnings.push(
+						warn(
+							'DATES_BEAST_NOT_BEAST',
+							'refuse',
+							fillMessage(DATE_MESSAGES.BEAST_NOT_BEAST, { file: sourceName ?? 'The XML file' }),
+							{
+								file: sourceName,
+								version: parsed.version,
+								namespaced: parsed.provenance.namespaced,
+								elements: parsed.provenance.elements
+							}
+						)
+					);
+					sourceFatal = true;
+				} else {
+					const made = new Map();
+					for (const [name, value] of parsed.dates) {
+						made.set(
+							name,
+							beastParseRecord(
+								value,
+								parsed.provenance.rules.get(name),
+								parsed.provenance.raws.get(name) ?? null,
+								timeUnits
+							)
+						);
+					}
+					sourceDates = made;
+					sourceRaws = parsed.provenance.raws;
+					sourceParses = made;
+				}
+			} catch (err) {
+				if (err instanceof XmlReadError) {
+					const unsafe = err.reason !== 'malformed';
+					warnings.push(
+						warn(
+							unsafe ? 'DATES_XML_UNSAFE' : 'DATES_XML_UNPARSABLE',
+							'refuse',
+							fillMessage(unsafe ? DATE_MESSAGES.XML_UNSAFE : DATE_MESSAGES.XML_UNPARSABLE, {
+								file: sourceName ?? 'The XML file',
+								error: err.message
+							}),
+							{ file: sourceName, reason: err.reason, line: err.line, column: err.column }
+						)
+					);
+				} else {
+					warnings.push(
+						warn(
+							'DATES_SOURCE_UNREADABLE',
+							'refuse',
+							fillMessage(DATE_MESSAGES.SOURCE_UNREADABLE, {
+								file: sourceName ?? 'The file',
+								kind: 'a BEAST XML',
+								error: err?.message ?? String(err)
+							}),
+							{ file: sourceName, error: err?.message ?? String(err) }
+						)
+					);
+				}
+				sourceFatal = true;
+			}
 		} else if (sourceKind === 'unknown') {
 			warnings.push(
 				warn(
@@ -595,7 +722,15 @@ export function ingestDates(args = {}) {
 	}
 
 	const sourceLabel =
-		sourceKind === 'table' ? 'table' : sourceKind === 'auspice' ? 'auspice' : sourceKind ? 'map' : null;
+		sourceKind === 'table'
+			? 'table'
+			: sourceKind === 'auspice'
+				? 'auspice'
+				: sourceKind === 'beast'
+					? 'beast'
+					: sourceKind
+						? 'map'
+						: null;
 
 	// --- 2. match the source's names to the alignment's taxa ------------------------------------
 	// The match runs over every name the source OFFERED, not only the ones it dated: a taxon whose
@@ -605,7 +740,12 @@ export function ingestDates(args = {}) {
 		sourceParses.size > 0
 			? Array.from(sourceParses.keys())
 			: Array.from(sourceDates?.keys() ?? []);
-	const match = matchDateNames(sourceNames, taxa);
+	// The BEAST ladder is `DATE_MATCH_TIERS` with `seq_prefix_stripped` inserted after `exact`, which
+	// is dating.py:438-442's own correspondence and nothing weaker. Every other source keeps the
+	// seven-tier ladder exactly as it was.
+	const match = matchDateNames(sourceNames, taxa, {
+		tiers: sourceKind === 'beast' ? BEAST_MATCH_TIERS : DATE_MATCH_TIERS
+	});
 	if (sourceDates && sourceNames.length > 0) {
 		for (const taxon of taxa) {
 			const hit = match.assignments.get(taxon);
@@ -742,6 +882,7 @@ export function ingestDates(args = {}) {
 		from_map: 0,
 		from_auspice: 0,
 		from_table: 0,
+		from_beast: 0,
 		from_regex: 0,
 		from_header: 0,
 		imputed: 0,
@@ -822,6 +963,7 @@ export function ingestDates(args = {}) {
 		if (p.imputations?.dayClamped) coverage.day_clamped++;
 		if (p.rule === 'archival_1959') coverage.archival_1959++;
 		if (hit.source === 'table') coverage.from_table++;
+		else if (hit.source === 'beast') coverage.from_beast++;
 		else if (hit.source === 'auspice') coverage.from_auspice++;
 		else if (hit.source === 'map') coverage.from_map++;
 		else if (hit.source === 'regex') coverage.from_regex++;
@@ -833,6 +975,7 @@ export function ingestDates(args = {}) {
 	const dominant =
 		[
 			['table', coverage.from_table],
+			['beast', coverage.from_beast],
 			['auspice', coverage.from_auspice],
 			['map', coverage.from_map],
 			['header', coverage.from_header],
@@ -889,6 +1032,178 @@ export function ingestDates(args = {}) {
 						: `${tableBlock.duplicates.length} name(s) appear more than once in the table with the ` +
 							`same date.`,
 					{ duplicates: tableBlock.duplicates.slice(0, cap), total: tableBlock.duplicates.length }
+				)
+			);
+		}
+	}
+
+	if (beastBlock) {
+		const p = beastBlock.provenance;
+		const nSeq = beastBlock.sequences.size;
+		const nDates = beastBlock.dates.size;
+
+		// The reference reads NOTHING out of a namespaced document and says nothing about it: every
+		// search in dataset.py:123-186 is for an unqualified tag, and ElementTree names a namespaced
+		// element `{uri}data`. Measured against the reference on `<beast xmlns="http://beast2.org">`:
+		// 0 sequences, 0 dates, version 'BEAST 1'. We read it the same way and name it.
+		if (p.namespaced && nSeq === 0 && nDates === 0) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_NAMESPACED',
+					'warn',
+					`This document declares an XML namespace, and \`parse_beast_xml\` searches for ` +
+						`UNQUALIFIED tags (dataset.py:123-186), so it reads nothing from it — no sequences, ` +
+						`no dates, no tree. That is the reference's behaviour, replicated: removing the ` +
+						`\`xmlns=\` declaration from the root, or exporting the file from BEAUti without one, ` +
+						`makes the same file readable.`,
+					{ elements: p.elements }
+				)
+			);
+		}
+
+		// `DATES_BEAST_NOT_BEAST` has already refused a document that held nothing at all; this is the
+		// narrower case of a file that IS a BEAST file and simply carries no sampling date, which is
+		// a different sentence and a different fix.
+		if (nDates === 0 && (nSeq > 0 || beastBlock.tree_newick)) {
+			// The `DATES_TABLE_NO_MATCH` precedent: a refusal when the XML was the only date source,
+			// a warning when the headers (or a pattern) dated the run anyway.
+			const rescued = coverage.dated >= DATE_THRESHOLDS.minDatedTaxa;
+			warnings.push(
+				warn(
+					'DATES_BEAST_NO_DATES',
+					rescued ? 'warn' : 'refuse',
+					fillMessage(DATE_MESSAGES.BEAST_NO_DATES, {
+						file: sourceName ?? 'The XML file',
+						version: beastBlock.version,
+						sequences: nSeq
+					}) +
+						(rescued
+							? ' The dates shown came from the sequence names instead; the XML contributed none.'
+							: ''),
+					{ version: beastBlock.version, sequences: nSeq, rescued_by_headers: rescued }
+				)
+			);
+		}
+
+		if (nSeq > 0 || beastBlock.tree_newick) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_CARRIES_INPUTS',
+					'info',
+					`This XML carries more than dates: ${nSeq} sequence(s)` +
+						`${beastBlock.tree_newick ? ' and a starting tree' : ''}. The reference takes each of ` +
+						`those only when the corresponding input was not supplied separately ` +
+						`(dating.py:2467-2471); a file you dropped yourself always wins over the XML. A ` +
+						`starting tree with usable branch lengths makes the run tree-based rather than ` +
+						`tree-free (D22).`,
+					{
+						sequences: nSeq,
+						tree_present: Boolean(beastBlock.tree_newick),
+						tree_from: p.tree_from,
+						names_with_whitespace: p.names_with_whitespace.slice(0, cap)
+					}
+				)
+			);
+		}
+
+		if (p.alignments.seen > 1) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_MULTIPLE_ALIGNMENTS',
+					'warn',
+					`${p.alignments.seen} alignment blocks were found and exactly ONE was used: ` +
+						`dataset.py:152 is \`max(candidates, key=len)\`, which counts TAXA (not sites) and ` +
+						`keeps the FIRST maximal block on a tie. Block ${p.alignments.chosen_index} was ` +
+						`chosen, with sizes ${p.alignments.sizes.map((a) => a.size).join(', ')}. A ` +
+						`partitioned analysis therefore contributes one partition.`,
+					{ alignments: p.alignments }
+				)
+			);
+		}
+
+		if (p.reconciliation.renamed.length > 0 || p.reconciliation.dates_added.length > 0) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_SEQ_PREFIX',
+					'warn',
+					`${p.reconciliation.renamed.length} sequence(s) were RENAMED by dropping a leading ` +
+						`\`seq_\` to meet a dated taxon, and ${p.reconciliation.dates_added.length} date(s) ` +
+						`were copied onto the unprefixed name (dataset.py:192-202). The rename has no ` +
+						`collision check upstream, and the copy leaves the \`seq_\` key in place, so the ` +
+						`date count can exceed the number of dated sequences.`,
+					{ reconciliation: p.reconciliation }
+				)
+			);
+		}
+
+		if (p.direction_attrs > 0 || p.units_attrs > 0) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_DIRECTION_IGNORED',
+					'warn',
+					`${p.direction_attrs} \`direction=\` and ${p.units_attrs} \`units=\` attribute(s) were ` +
+						`found on <date> elements and NONE of them was read: \`grep -n 'direction'\` over ` +
+						`hyphaeon/dataset.py returns nothing, so the value is taken as a forward decimal ` +
+						`year whatever it says. Measured: \`<date value="10" direction="backwards" ` +
+						`units="days"/>\` is stored as the year 10. If this file dates backwards from the ` +
+						`present, its time axis is mirrored and every clock rate from it will be wrong.`,
+					{ direction_attrs: p.direction_attrs, units_attrs: p.units_attrs }
+				)
+			);
+		}
+
+		const looseTraits = p.traits.filter((t) => !t.exact && t.entries > 0);
+		if (looseTraits.length > 0) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_TRAIT_NOT_DATE',
+					'warn',
+					`${looseTraits.length} trait(s) were read as dates whose name is not \`date\`: ` +
+						`${looseTraits.map((t) => `'${t.name}'`).join(', ')}. dataset.py:177-178 is a ` +
+						`SUBSTRING test on the trait name, so \`dateBackward\` — ages before the present — ` +
+						`is read as a set of forward calendar years.`,
+					{ traits: looseTraits }
+				)
+			);
+		}
+
+		if (p.calendar_dates > 0) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_DATE_SCALE',
+					'warn',
+					fillMessage(DATE_MESSAGES.BEAST_DATE_SCALE, { n: p.calendar_dates }),
+					{ calendar_dates: p.calendar_dates, total: nDates }
+				)
+			);
+		}
+
+		if (p.ungated.length > 0 || p.nonfinite.length > 0) {
+			warnings.push(
+				warn(
+					'DATES_BEAST_DATE_UNGATED',
+					'warn',
+					`${p.ungated.length} date(s) fall outside the year range every other source in ` +
+						`PrimAeon is gated on, and ${p.nonfinite.length} are not finite at all. ` +
+						`dataset.py:67-69 tries \`float(s)\` first and keeps whatever it returns, with no ` +
+						`gate: measured, '1799', '2150', '50', '-3', '1e9', 'nan' and 'inf' are all ` +
+						`accepted. The out-of-range values are KEPT here, because they are the reference's ` +
+						`own answer; the non-finite ones cannot be used and their taxa are undated. ` +
+						`${nameSample([...p.nonfinite, ...p.ungated], cap)}.`,
+					{ ungated: p.ungated.slice(0, cap), nonfinite: p.nonfinite.slice(0, cap) }
+				)
+			);
+		}
+
+		const dupes = [...p.duplicates.dates, ...p.duplicates.sequences];
+		if (dupes.length > 0) {
+			warnings.push(
+				warn(
+					'DATES_DUPLICATE_METADATA',
+					'warn',
+					`${dupes.length} taxon name(s) appear more than once in this XML; both maps upstream ` +
+						`are plain dicts, so the LAST value silently won. ${nameSample(dupes, cap)}.`,
+					{ dates: p.duplicates.dates.slice(0, cap), sequences: p.duplicates.sequences.slice(0, cap) }
 				)
 			);
 		}
@@ -1210,6 +1525,7 @@ export function ingestDates(args = {}) {
 		span,
 		table: tableBlock ? tableSummary(tableBlock) : null,
 		auspice: auspiceBlock ? auspiceSummary(auspiceBlock) : null,
+		beast: beastBlock ? beastSummary(beastBlock) : null,
 		regex: regexBlock,
 		headers: headerBlock,
 		warnings: sorted
@@ -1242,6 +1558,42 @@ function describeTiers(tiers) {
 		if (n > 0) parts.push(`${n} at '${tier}'`);
 	}
 	return parts.join(', ');
+}
+
+/**
+ * The record-shaped half of a BEAST read. The SEQUENCES are deliberately absent: a record is stored
+ * in IndexedDB and sent over HTTP, and an alignment has its own slot on every surface — a caller
+ * that wants it keeps the `parseBeastXml` result it passed in, or calls `beastToFasta` on a fresh
+ * one. The starting TREE is kept, because it is small and because it is the other half of what the
+ * reference composes out of the same file (dating.py:2469-2471).
+ */
+function beastSummary(parsed) {
+	const p = parsed.provenance;
+	return {
+		version: parsed.version,
+		sequences: parsed.sequences.size,
+		dates: parsed.dates.size,
+		taxa: parsed.taxa.length,
+		tree_present: Boolean(parsed.tree_newick),
+		tree_newick: parsed.tree_newick,
+		tree_from: p.tree_from,
+		namespaced: p.namespaced,
+		alignments: p.alignments,
+		sequence_sources: p.sequence_sources,
+		traits: p.traits,
+		dates_from: p.dates_from,
+		direction_attrs: p.direction_attrs,
+		units_attrs: p.units_attrs,
+		calendar_dates: p.calendar_dates,
+		ungated: p.ungated,
+		nonfinite: p.nonfinite,
+		duplicates: p.duplicates,
+		reconciliation: p.reconciliation,
+		names_with_whitespace: p.names_with_whitespace,
+		entities: p.doctype_entities,
+		elements: p.elements,
+		depth: p.depth
+	};
 }
 
 /** The record-shaped, structured-clonable half of a table read (no `DateParse` objects). */

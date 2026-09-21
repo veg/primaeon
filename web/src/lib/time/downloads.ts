@@ -67,9 +67,23 @@ export interface DatesJson {
 	provenance: Record<string, unknown>;
 }
 
-/** The `{taxon: value}` map plus everything needed to reproduce it. */
+/**
+ * The `{taxon: value}` map plus everything needed to reproduce it.
+ *
+ * `entries` IS PROTOTYPE-FREE, AND THAT IS A MEASUREMENT. A taxon name is whatever the reader's
+ * file says — `runtime/src/dates/xml.js` makes every map in the BEAST reader prototype-free for the
+ * same reason — and a BEAST XML can declare `<taxon id="__proto__">`, which `fastaNameHazard`
+ * correctly lets through because it round-trips a FASTA header unchanged. On a plain `{}`,
+ * `entries['__proto__'] = 2001.5` sets the OBJECT'S PROTOTYPE rather than a key: measured, a
+ * two-taxon record wrote `{"A":2002}` and the `__proto__` taxon appeared in neither `entries` nor
+ * `undated` — it vanished from the file, silently, which is the same class of loss as a taxon
+ * whose name breaks a FASTA header. With `Object.create(null)` the key is an ordinary own property,
+ * `JSON.stringify` writes `{"__proto__":2001.5,"A":2002}`, and `JSON.parse` reads it back as an OWN
+ * property (measured, V8 22.22: `Object.keys` is `['__proto__','A']` and the prototype is
+ * untouched), so the file is honest at both ends.
+ */
 export function datesJson(record: TimeSetRecord, libraryVersion: string | null = null): string {
-	const entries: Record<string, number> = {};
+	const entries: Record<string, number> = Object.create(null);
 	const undated: string[] = [];
 	for (const e of record.dates.entries) {
 		if (e.value == null || !Number.isFinite(e.value)) undated.push(e.taxon);

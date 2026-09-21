@@ -70,7 +70,6 @@ import {
 import { diagnose, parseAlignment, treeSourceFrom, hasEmbeddedTree, NATIVE_ANALYSES } from "./validate.js";
 import { EngineError, createEngine } from "./engine.js";
 import {
-  DATE_MATCH_TIERS,
   DATING_CI_METHODS,
   TEMPORAL_CURVES_MAX_POINTS,
   TEMPORAL_SECTIONS,
@@ -82,6 +81,7 @@ import {
   dateReview,
   datingSummary,
   ingestFor,
+  matchLadderFor,
   refusalHint as refusalHintFor,
   temporalSection,
   temporalSummary
@@ -217,6 +217,33 @@ const seedSchema = z.number().int().min(0).max(2 ** 53 - 1).optional().describe(
  * and an option is copied into the job store and into `provenance.options`, where a caller's
  * Auspice JSON has no business being. The NAME is an option because it is the only source of `-d`
  * on the reproduction line.
+ *
+ * ── WHY A BEAST XML STILL ARRIVES AS `dates_file`, THOUGH IT IS NOT ONLY DATES ────────────────
+ * A BEAST XML is the one date source that can also carry the ALIGNMENT and a STARTING TREE, so the
+ * obvious objection is that `dates_file` is the wrong key for it. It is the right one, because the
+ * reference has TWO doors and this key is the first of them: `-d run.xml` (dating.py:433-442) reads
+ * `parse_beast_xml(...)['dates']` and NOTHING else — not the sequences, not the tree — while
+ * `--beast run.xml` (dating.py:2455-2471) is the whatever-it-has door that fills `alignment_path`,
+ * `dates_source` and `tree_path` one slot at a time, each only `if … is None`. `dates_file` IS
+ * `-d`, and it behaves as `-d` does.
+ *
+ * `--beast` is deliberately NOT offered here, and the reason is that the problem it solves does not
+ * exist on this surface. It exists in a drop zone, where files arrive with no argument names and
+ * the browser has to decide what an XML is for; an MCP call already names `alignment` and `tree`
+ * explicitly, in one object, so there is no slot to fill and no order to resolve. Letting a
+ * metadata key silently redefine what `alignment` means would buy nothing and cost the one property
+ * every other key here has — that an argument means what it is called. What the XML carried and
+ * this run did not use is REPORTED rather than dropped in silence: `date_review.beast` names the
+ * sequence count, the starting tree and the alignment block that was chosen, and
+ * DATES_BEAST_CARRIES_INPUTS says so in the warnings.
+ *
+ * SO THE TWO SURFACES DIFFER ON PURPOSE, AND A CLIENT MUST BE ABLE TO READ THAT HERE. PrimAeon's
+ * `/time` page IS a drop zone, so it takes the other door: one XML there can fill the alignment,
+ * the dates AND the starting tree, each slot only when the reader supplied nothing for it, which is
+ * `--beast`'s own `if … is None` (dating.py:2467-2471). This tool and the HTTP server take `-d`:
+ * dates only, every time, whatever else the document holds. The same file therefore produces the
+ * same DATES on all three surfaces and a different number of INPUTS, which is the reference's own
+ * distinction and not a gap between them.
  */
 const dateSourceSchema = {
   dates_file: z
@@ -225,15 +252,27 @@ const dateSourceSchema = {
     .optional()
     .describe(
       "-d/--dates: the date metadata's TEXT (a `file://` URL over stdio) — a Nextstrain Auspice JSON, a " +
-        "name-to-date JSON object, or a CSV/TSV with a name column and a date column. OMIT IT and the dates are " +
+        "name-to-date JSON object, a CSV/TSV with a name column and a date column, or a BEAST XML. OMIT IT and the dates are " +
         "read from the FASTA headers, which is the reference's own fallback; hyphaeon_dates says which rule read each one. " +
-        "BEAST XML is refused (DATES_BEAST_XML_UNSUPPORTED): the reference reads one (dating.py:433-434) and this build does not."
+        "BEAST: both dialects are read, as `parse_beast_xml` reads them (dataset.py:84-233) — BEAST 1 `<taxon id=\"…\"><date value=\"…\"/>` " +
+        "and BEAST 2 `<trait traitname=\"date\" value=\"a=…,b=…\"/>`, with the reference's own `seq_` name reconciliation. ONLY THE DATES " +
+        "ARE TAKEN, which is what `-d run.xml` does upstream (dating.py:433-442): an XML that also carries sequences or a starting tree " +
+        "has them reported in `date_review.beast` and in DATES_BEAST_CARRIES_INPUTS, never substituted for the `alignment` and `tree` you " +
+        "passed. (PrimAeon's /time page is a drop zone and takes the other upstream door, `--beast`: there one XML can fill the " +
+        "alignment, the dates and the starting tree, each only when nothing was supplied for it. Same dates on both surfaces; a " +
+        "different number of inputs, deliberately.) Two things to read before believing a BEAST number: the dates use the reference's OWN arithmetic, not a decimal year " +
+        "(`YYYY-MM-DD` is `year + (month-1)/12 + (day-1)/365.25`, measured 0.73 days from every other source in this build and up to " +
+        "2.815 days), and `direction=`/`units=` on a `<date>` are read by nothing upstream, so a backwards-dated file comes out mirrored " +
+        "in time — DATES_BEAST_DATE_SCALE and DATES_BEAST_DIRECTION_IGNORED say so when either applies. Still refused: XML that is not " +
+        "well-formed (DATES_XML_UNPARSABLE), XML with external or oversized entities (DATES_XML_UNSAFE, refused unread), XML holding " +
+        "nothing a BEAST file holds — a namespaced document included, because `parse_beast_xml` searches unqualified tags " +
+        "(DATES_BEAST_NOT_BEAST) — and a BEAST file with no sampling date in it (DATES_BEAST_NO_DATES)."
     ),
   dates_file_name: z.string().max(255).optional().describe("The metadata file's basename, recorded and printed as `-d <name>` on the reproduction line."),
   date_source_kind: z
-    .enum(["auto", "auspice", "json-map", "table"])
+    .enum(["auto", "auspice", "json-map", "table", "beast"])
     .optional()
-    .describe("How to read dates_file (default auto: the CONTENT is sniffed and the name is only a tie-break, because a metadata export named `.txt` is common and being wrong here costs a whole dataset)."),
+    .describe("How to read dates_file (default auto: the CONTENT is sniffed and the name is only a tie-break, because a metadata export named `.txt` is common and being wrong here costs a whole dataset). `beast` forces the BEAST XML reader."),
   strain_col: z.string().max(256).optional().describe("--strain-col: the metadata column holding sequence names (default: discovered; hyphaeon_dates reports which column and why)."),
   date_col: z.string().max(256).optional().describe("--date-col: the metadata column holding dates (default: discovered)."),
   delimiter: z.string().max(4).optional().describe("The table's column separator (default: sniffed from the file's own content over its first 20 lines)."),
@@ -1358,7 +1397,9 @@ export function registerTools(server, deps) {
           clock,
           gate,
           date_review: review,
-          match_tiers_available: DATE_MATCH_TIERS,
+          // The ladder THIS source ran: a BEAST document adds `seq_prefix_stripped`, and a count
+          // carrying a tier the published list omits is a disagreement the client cannot resolve.
+          match_tiers_available: matchLadderFor(ingest),
           next: ingest.ok
             ? (gate.ok
                 ? "hyphaeon_dating (the molecular clock; model-free by default) and, with 5+ dated sequences, hyphaeon_temporal (per-site selection through calendar time). Pass the same date arguments you passed here."

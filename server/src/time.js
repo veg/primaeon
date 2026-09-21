@@ -77,6 +77,7 @@ const MCP_TIME_URL = new URL("./time.js", pathToFileURL(createRequire(import.met
 
 export const {
   DATE_MATCH_TIERS,
+  matchLadderFor,
   DATES_BARE_NUMBER_MAJORITY,
   DATES_UNDATED_PRESENT,
   TEMPORAL_SECTIONS,
@@ -342,7 +343,8 @@ export function datesBody(task) {
     clock: clockReadiness(ingest),
     gate,
     date_review: dateReview(ingest, { rows: options.rows !== false, rowsMax: options.row_limit }),
-    match_tiers_available: DATE_MATCH_TIERS,
+    // The ladder THIS source ran; a BEAST document adds `seq_prefix_stripped` (see `matchLadderFor`).
+    match_tiers_available: matchLadderFor(ingest),
     next: gate.ok
       ? 'POST /api/v1/jobs {"analysis":"dating"} (the molecular clock; model-free by default) and, with 5+ dated sequences, {"analysis":"temporal"}. Pass the same date fields you passed here.'
       : "Read `gate.blocking`: a dating or temporal job is refused (422) with the named code until you pass the override beside it, or supply better metadata.",

@@ -60,12 +60,54 @@ They share one date layer and one set of refusals with `hyphaeon_dates` / `hypha
 reason with the same code.
 
 **The date layer is a second input.** `dates_file` is the metadata document's TEXT in the request
-body — a Nextstrain Auspice JSON, a name-to-date JSON object, or a CSV/TSV — never a server path,
-under the same 8 MiB field cap as the alignment, written into the job directory as submitted and
-recorded as `inputs.files.dates_file`. Omit it and the dates come from the FASTA headers, which is
-the reference's own fallback. Its options are the CLI's: `date_source_kind`, `strain_col`,
-`date_col`, `delimiter`, `date_pattern` (+`date_pattern_flags`), `time_units`, `archival_1959`,
-`header_fallback`. `names.dates_file` is what the reproduction line prints as `-d <name>`.
+body — a Nextstrain Auspice JSON, a name-to-date JSON object, a CSV/TSV, or a BEAST 1.x/2.x XML —
+never a server path, under the same 8 MiB field cap as the alignment, written into the job
+directory as submitted and recorded as `inputs.files.dates_file`. Omit it and the dates come from
+the FASTA headers, which is the reference's own fallback. Its options are the CLI's:
+`date_source_kind`, `strain_col`, `date_col`, `delimiter`, `date_pattern`
+(+`date_pattern_flags`), `time_units`, `archival_1959`, `header_fallback`. `names.dates_file` is
+what the reproduction line prints as `-d <name>`.
+
+**BEAST XML.** `dates_file` reads one, as `hyphaeon dating -d run.xml` does (dating.py:433-442, the
+runtime's port of `parse_beast_xml`): dates come from BEAST 1 `<taxon id><date value>` or a BEAST 2
+`<trait traitname="date" value="a=…,b=…">`. Only the dates are used — the sequences and the
+starting tree an XML may also carry are not substituted for what you passed, exactly as the
+reference's `-d` path leaves them, so `alignment` is still required and is still FASTA, NEXUS or
+PHYLIP. They are REPORTED, not dropped in silence: `date_review.beast` names the sequence count,
+the starting tree and which alignment block of how many was chosen, and `DATES_BEAST_CARRIES_INPUTS`
+(severity `info`) says so in the warnings. **This is deliberately not what PrimAeon's `/time` page
+does**, and a client comparing the two should know why: `/time` is a drop zone with no argument
+names, so it takes the reference's OTHER door — `--beast` (dating.py:2455-2471), which fills the
+alignment, the dates and the tree one slot at a time, each only `if … is None`. The same XML
+therefore yields the same DATES on both surfaces and a different number of INPUTS; the split is the
+reference's own, `-d` against `--beast`, and not a gap between the surfaces. An XML in the `alignment` field is `422 ALIGNMENT_IS_XML` naming the field that does read
+one; before that refusal existed the library parsed a BEAST XML as four "sequences" named `<?xml`,
+`<taxon`, `<alignment` and `<sequence><taxon` and the door let it through to a worker. Four
+refusals cover a document that cannot be read at all or carries no date, all `kind: "input"`:
+`DATES_XML_UNPARSABLE`, `DATES_XML_UNSAFE` (an external or oversized entity, refused before the
+document is read — this reader has no filesystem and no network), `DATES_BEAST_NOT_BEAST` (which
+includes a *namespaced* document, because `parse_beast_xml` searches unqualified tags and upstream
+reads such a file as empty) and `DATES_BEAST_NO_DATES` (a warning instead, when the sequence
+headers already dated the run). Two upstream behaviours are replicated and reported rather than
+fixed: the reference's calendar formula is not a decimal year and differs from this build's other
+date parsers by up to 2.815 days (`DATES_BEAST_DATE_SCALE`), and `direction=`/`units=` on a
+`<date>` are read by nothing, so a backwards-dated file comes out mirrored in time
+(`DATES_BEAST_DIRECTION_IGNORED`).
+
+**Size, measured, because an XML is a different size class from a CSV of dates.** Building BEAST 1
+and BEAST 2 documents around each bundled example's own FASTA plus a BEAUti-shaped model block
+(4,901 bytes of boilerplate), the XML is **1.03×–1.61× the FASTA it carries** — 1.61× on camelid
+(212 taxa × 288 sites, where per-record tag overhead is largest against short sequences), 1.03× on
+H1N1 (100 × 13,154) — and the largest bundled set is **1,358,708 bytes**, 16% of the field cap.
+JSON string escaping adds a further 0.1–0.4%. So the cap is not raised, and could not usefully be:
+`express.json` limits the whole body to the same 8 MiB and refuses first. What it does mean is that
+**`alignment` and a BEAST `dates_file` that repeats it are paid for twice out of one 8 MiB body**;
+the `413` says so, and the fix is to send the XML stripped to its `<taxa><taxon><date>` block —
+measured at 13,230 bytes against 441,444 for korber_env_gp160, 3% — or to export the dates as a CSV.
+Reading one costs 9–21 ms at the door on the bundled shapes against 4–6 ms for the equivalent CSV,
+and at the 8 MiB limit 70 ms (740 long records) to 504 ms (36,000 short ones, the element-densest
+shape a caller can build). That is not a new exposure: `POST /api/v1/validate` on an 8 MiB FASTA of
+many short records already costs 583 ms, with no XML anywhere.
 
 | Analysis | What it runs | Cost, measured on this machine |
 |---|---|---|
@@ -73,7 +115,8 @@ the reference's own fallback. Its options are the CLI's: `date_source_kind`, `st
 | `dating` | Root-to-tip molecular clock, t<sub>MRCA</sub> and interval, per-taxon residuals and outliers. **Takes no tree** (D34): always pairwise TN93 distances. `use_model: true` adds the `<variant>_taxa.onnx` pass and switches the estimator to `latent`. | H5N1 (98 × 566): **296 ms**. korber model-free **147 ms**; korber with `use_model` **8.3 s** at 4 threads |
 | `temporal` | Per-site prevalence trajectories and sweep velocity through calendar time, a two-stage filter with a refining date-shuffling null, four fPCA wave modes, and a four-way classification against the static call. | H5N1 (98 × 566) at `time_points: 60`, `n_permutations: 200`: **3.1 s**, 632 KB result |
 
-**Refusals happen at the door.** An unreadable metadata file, a date set with fewer than three
+**Refusals happen at the door.** An unreadable metadata file (a BEAST XML included), a date set
+with fewer than three
 dated sequences or no time axis, and a bad `date_pattern` are a synchronous `422` with the date
 layer's own code (`DATES_*`, `DATING_*`, `TEMPORAL_*` — all `kind: "input"`, each with a hint that
 names the metadata fix), before a worker is spent. `POST /api/v1/validate` with the same

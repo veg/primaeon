@@ -43,7 +43,8 @@
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { goto, replaceState } from '$app/navigation';
-	import { archival1959Candidates, compileDateRegex, ingestDates, taxaForDates } from '@veg/hyphaeon-runtime/dates';
+	import { archival1959Candidates, beastToFasta, compileDateRegex, ingestDates, parseBeastXml, taxaForDates } from '@veg/hyphaeon-runtime/dates';
+	import type { BeastDocument } from '@veg/hyphaeon-runtime/dates';
 	import DropZone from '$lib/analyze/DropZone.svelte';
 	import catalogue from '$lib/gallery/examples.json';
 	import type { DatedExample } from '$lib/gallery/types';
@@ -80,7 +81,16 @@
 	} from '$lib/time/dateReview';
 	import { DATES_CSV_COLUMNS, datesCsv, datesJson, saveText } from '$lib/time/downloads';
 	import { buildRecord, fromStored } from '$lib/time/record';
-	import { alignmentHeaders, classifyDropped, isDateSource } from '$lib/time/sources';
+	import { alignmentHeaders, classifyDropped, isMetadataSource, type DroppedKind } from '$lib/time/sources';
+	import {
+		beastProvenanceLines,
+		beastSummaryOfDocument,
+		dateScaleLine,
+		intake,
+		noAlignmentRefusal,
+		placeBeast,
+		type BeastPlacement
+	} from '$lib/time/beast';
 	import type { DatingResult, DatingRootChoice, TimeSetOptions, TimeSetRecord, TimeUnits } from '$lib/time/types';
 	import DateReviewTable from '$lib/time/DateReviewTable.svelte';
 	import CoverageFigure from '$lib/time/CoverageFigure.svelte';
@@ -105,6 +115,22 @@
 	let metadataText = $state<string | null>(null);
 	let metadataName = $state<string | null>(null);
 	let metadataDigest = $state<InputDigest | null>(null);
+
+	/**
+	 * THE BEAST XML, WHICH IS THE ONE DROPPED FILE THAT IS NOT ONE INPUT.
+	 *
+	 * It can carry the alignment, the dates and a starting tree at once (dataset.py:84-233), and the
+	 * reference composes those three BY SLOT, taking each only when the caller named nothing for it
+	 * (dating.py:2467-2471). `acceptFiles` does the same in two passes, and `placement` is what came
+	 * of it — kept so the page can SAY what it took, which is the whole difference between a feature
+	 * and a surprise.
+	 *
+	 * `$state.raw`, not `$state`: the parsed document is handed straight back to `ingestDates` and is
+	 * only ever replaced wholesale, so there is nothing for a deep proxy to do but wrap 98 taxa of
+	 * provenance on every read.
+	 */
+	let beastDoc = $state.raw<BeastDocument | null>(null);
+	let beastPlacement = $state.raw<BeastPlacement | null>(null);
 
 	let busy = $state(false);
 	let failure = $state<string | null>(null);
@@ -201,13 +227,27 @@
 	const pattern = $derived(customPattern.trim() ? compileDateRegex(customPattern.trim()) : null);
 	const patternError = $derived(pattern && !pattern.valid ? (pattern.error ?? 'That pattern could not be used.') : null);
 
+	/**
+	 * The date source handed to the layer: the PARSED BEAST document when the XML's dates were the
+	 * ones taken, the metadata text otherwise.
+	 *
+	 * Parsed once, in `acceptFiles`, and passed as an object — `ingestDates` accepts one. The ingest
+	 * is a `$derived` that re-runs on every units, column and pattern edit, so handing it the XML
+	 * TEXT would re-parse the whole document on every keystroke in the pattern field; on the
+	 * measured 98-taxon H5N1 form that is 183 kB of XML per edit.
+	 */
+	const dateSource = $derived(beastPlacement?.dateSource && beastDoc ? beastDoc : metadataText);
+
 	const ingest = $derived.by((): DateIngestLike | null => {
 		if (!alignmentText || taxa.length === 0) return null;
 		try {
 			return ingestDates({
 				taxa,
 				headerOf: names?.headerOf ?? null,
-				source: metadataText,
+				source: dateSource,
+				// An already-parsed document cannot be sniffed — `ingestDates` would read a plain object
+				// as a name-to-date map — so the kind is stated when it is one.
+				sourceKind: dateSource && typeof dateSource !== 'string' ? 'beast' : undefined,
 				sourceName: metadataName ?? undefined,
 				timeUnits: units,
 				strainCol: idColumn,
@@ -227,6 +267,20 @@
 	const gate = $derived(readyGate(ingest, dropUndated, acceptBareNumbers));
 	const viewState = $derived(pageState(ingest, failure, dropUndated, acceptBareNumbers));
 	const strip = $derived(ingest ? diagnosis(ingest) : null);
+	/** What the dropped XML supplied, what it did not, and why — the note above the review. */
+	const beastIntake = $derived(intake(beastPlacement));
+	const beastBlock = $derived(ingest?.beast ?? null);
+	/** Printed whenever a date came from a calendar string; see `beast.ts`'s header for the measure. */
+	const beastScale = $derived(dateScaleLine(beastBlock));
+	const beastProvenance = $derived(beastProvenanceLines(beastBlock, metadataName));
+	/**
+	 * The same provenance lines when there is NO ingest to carry them — a dropped XML that supplied
+	 * no alignment, which is what a namespaced BEAST 2 document is (0 sequences, 0 dates, the
+	 * reference's own answer). Without this the page said "Drop an alignment" and nothing else.
+	 */
+	const beastOnlyProvenance = $derived(
+		ingest ? [] : beastProvenanceLines(beastSummaryOfDocument(beastDoc), metadataName)
+	);
 	const unmatched = $derived(ingest ? unmatchedMetadataLine(ingest, metadataName) : null);
 	const anchors = $derived(taxa.length ? archival1959Candidates(taxa) : []);
 	const preview = $derived(clockPreview({ treeText, ingest }));
@@ -303,14 +357,32 @@
 	);
 
 	// ---- reading files ---------------------------------------------------------------------------
+	/**
+	 * THE DROP IS READ IN TWO PASSES, AND THE ORDER IS THE FEATURE.
+	 *
+	 * A BEAST XML can carry the alignment, the dates and a starting tree in one document, so a
+	 * one-pass loop would make the answer depend on which file the browser happened to enumerate
+	 * first: drop `seqs.fasta` before `run.xml` and the XML's sequences would replace the reader's
+	 * own. The reference has argument names and resolves the same collision with them — each slot is
+	 * filled from the XML only `if <slot> is None` (dating.py:2467-2471, cli.py:1591-1598) — and a
+	 * drop zone's analogue of a named argument is an explicitly-typed file. So: classify everything,
+	 * assign every file that IS one thing, then let the XML fill only what is still empty.
+	 *
+	 * The XML is parsed ONCE, here, and the parsed document is what the ingest is given.
+	 */
 	async function acceptFiles(list: FileList | File[] | null | undefined) {
 		if (!list || list.length === 0) return;
 		failure = null;
 		busy = true;
 		try {
+			const read: Array<{ file: File; text: string; kind: DroppedKind }> = [];
 			for (const file of Array.from(list).slice(0, 4)) {
 				const text = await readText(file);
-				const kind = classifyDropped(text, file.name);
+				read.push({ file, text, kind: classifyDropped(text, file.name) });
+			}
+
+			// PASS ONE: the files that are exactly one thing.
+			for (const { file, text, kind } of read) {
 				if (kind === 'alignment') {
 					alignmentText = text;
 					alignmentName = file.name;
@@ -318,20 +390,86 @@
 				} else if (kind === 'tree') {
 					treeText = text;
 					treeName = file.name;
-				} else if (isDateSource(kind)) {
+				} else if (isMetadataSource(kind)) {
 					metadataText = text;
 					metadataName = file.name;
 					metadataDigest = await digest(file.name, text);
 					idColumn = null;
 					dateColumn = null;
-				} else if (kind === 'beast') {
-					failure = `${file.name} is a BEAST XML file. The reference reads taxon dates from one; PrimAeon does not yet. Export the taxon dates as a two-column CSV, or supply the alignment with dated headers.`;
-				} else {
-					failure = `${file.name} is not an alignment, a Newick tree, a delimited table or a Nextstrain JSON, so nothing could be read from it.`;
+					// A named date file beats the XML for the dates slot, so it also clears a previous
+					// XML's claim on it; whatever else that XML supplied stays where it is.
+					if (beastPlacement?.dateSource) {
+						beastPlacement = {
+							...beastPlacement,
+							dateSource: false,
+							// Only a slot it actually FILLED becomes "you supplied one yourself"; one it never
+							// offered stays "not offered", which is the true thing about the file.
+							dates: beastPlacement.dates === 'taken' ? 'already-supplied' : beastPlacement.dates
+						};
+					}
+				} else if (kind !== 'beast') {
+					failure = `${file.name} is not an alignment, a Newick tree, a delimited table, a Nextstrain JSON or a BEAST XML, so nothing could be read from it.`;
 				}
 			}
+
+			// PASS TWO: the XML fills only the slots still empty.
+			for (const { file, text, kind } of read) {
+				if (kind !== 'beast') continue;
+				let parsed: BeastDocument;
+				try {
+					parsed = parseBeastXml(text, { fileName: file.name });
+				} catch (err) {
+					// The reader refuses malformed XML and an unsafe entity policy by throwing; the date
+					// layer refuses the same document with a structured code, so hand it the TEXT and let
+					// it be the one voice that says why.
+					metadataText = text;
+					metadataName = file.name;
+					metadataDigest = await digest(file.name, text);
+					beastDoc = null;
+					beastPlacement = null;
+					if (!alignmentText) failure = err instanceof Error ? err.message : String(err);
+					continue;
+				}
+				const placement = placeBeast(
+					parsed,
+					{ alignment: Boolean(alignmentText), tree: Boolean(treeText), dates: Boolean(metadataText) },
+					file.name
+				);
+				if (placement.alignment === 'taken') {
+					alignmentText = beastToFasta(parsed);
+					alignmentName = file.name;
+					// Over the XML the reader actually dropped, not over the FASTA we derived from it.
+					alignmentDigest = await digest(file.name, text);
+				}
+				if (placement.tree === 'taken') {
+					treeText = parsed.tree_newick;
+					treeName = file.name;
+				}
+				// `dateSource`, not `dates === 'taken'`: an XML that holds NO date still occupies an empty
+				// dates slot, so the date layer is the one voice that says so — with
+				// `DATES_BEAST_NO_DATES` or `DATES_BEAST_NOT_BEAST` — instead of the page falling
+				// through to a generic "nothing carries a time coordinate" that never mentions the file.
+				if (placement.dateSource) {
+					metadataText = text;
+					metadataName = file.name;
+					metadataDigest = await digest(file.name, text);
+					idColumn = null;
+					dateColumn = null;
+				}
+				beastDoc = parsed;
+				beastPlacement = placement;
+			}
+
 			if (!alignmentText) {
-				failure = failure ?? 'Drop an alignment (FASTA, NEXUS or PHYLIP) — the review is one row per sequence in it.';
+				// A DROPPED XML THAT SUPPLIED NOTHING MUST BE NAMED, NOT GENERALISED AWAY. With no
+				// alignment there is no ingest and therefore no date layer to carry
+				// `DATES_BEAST_NAMESPACED` or `DATES_BEAST_NOT_BEAST`, so the page was printing "Drop an
+				// alignment" about a file it had just read as BEAST 2 with 0 sequences. `noAlignmentRefusal`
+				// is that missing voice; `beastOnly` below puts the provenance lines under it.
+				failure =
+					failure ??
+					noAlignmentRefusal(beastSummaryOfDocument(beastDoc), metadataName ?? null) ??
+					'Drop an alignment (FASTA, NEXUS or PHYLIP) — the review is one row per sequence in it.';
 			}
 		} catch (err) {
 			failure = err instanceof Error ? err.message : String(err);
@@ -387,6 +525,16 @@
 		metadataDigest = null;
 		idColumn = null;
 		dateColumn = null;
+		// The cleared file may BE the XML. Its dates go with it; anything else it supplied — an
+		// alignment, a starting tree — is already in its own slot and stays there, and the intake note
+		// says the dates were discarded rather than pretending the file never carried any.
+		if (beastPlacement?.dateSource) {
+			beastPlacement = {
+				...beastPlacement,
+				dateSource: false,
+				dates: beastPlacement.dates === 'taken' ? 'discarded' : beastPlacement.dates
+			};
+		}
 	}
 
 	function applyChange(patch: {
@@ -497,6 +645,7 @@
 		}
 		const id = data.timeSetId;
 		if (!id || !storageAvailable()) return;
+		// (the stored review's own BEAST document is re-parsed below, from the text the record kept)
 		void (async () => {
 			const stored = fromStored(await getTimeSet(id));
 			if (!stored) return;
@@ -522,8 +671,35 @@
 			distanceMode = stored.options.distanceMode === 'tn93' ? 'tn93' : 'auto';
 			usedModel = stored.options.useModel;
 			dating = stored.dating;
+			restoreBeast();
 		})();
 	});
+
+	/**
+	 * A stored review whose date source was a BEAST XML: the record keeps the XML TEXT in the
+	 * metadata slot, so the document is re-parsed once on open and the placement re-derived from the
+	 * file names — which slots the XML filled is exactly which slots still carry its name. Nothing
+	 * extra is stored for this; a name comparison cannot drift from the record the way a second
+	 * copy of the same fact would.
+	 */
+	function restoreBeast() {
+		if (!metadataText || classifyDropped(metadataText, metadataName ?? '') !== 'beast') return;
+		try {
+			const parsed = parseBeastXml(metadataText, { fileName: metadataName ?? 'the XML' });
+			beastDoc = parsed;
+			beastPlacement = placeBeast(
+				parsed,
+				{ alignment: alignmentName !== metadataName, tree: treeName !== metadataName, dates: false },
+				metadataName ?? 'the XML'
+			);
+		} catch {
+			// A stored document that no longer parses is the date layer's refusal to report, not a
+			// reason to fail the reload: the text is still in the metadata slot and `ingestDates`
+			// refuses it with a code.
+			beastDoc = null;
+			beastPlacement = null;
+		}
+	}
 
 	/**
 	 * Whether this build ships a dating graph. One same-origin read of `models/manifest.json`
@@ -889,9 +1065,11 @@
 	<header class="head">
 		<h1>Dates</h1>
 		<p class="meta">
+			<!-- Deduplicated by name: one BEAST XML can be the alignment, the tree AND the dates, and a
+			     metadata line that printed `run.xml` three times would read as a bug. -->
 			<span>{alignmentName ?? 'no alignment loaded'}</span>
-			{#if treeName}<span>{treeName}</span>{/if}
-			{#if metadataName}<span>{metadataName}</span>{/if}
+			{#if treeName && treeName !== alignmentName}<span>{treeName}</span>{/if}
+			{#if metadataName && metadataName !== alignmentName && metadataName !== treeName}<span>{metadataName}</span>{/if}
 			{#if ingest}<span>{ingest.coverage.taxa_total} sequences</span><span>{ingest.coverage.dated} dated</span
 				><span>{ingest.time_units}</span>{/if}
 		</p>
@@ -906,12 +1084,13 @@
 		<div class="review" data-state={viewState}>
 			{#snippet dropHint()}
 				FASTA, NEXUS or PHYLIP, optionally gzipped. Add a metadata CSV/TSV or a Nextstrain JSON if your
-				dates are not in the headers, and a Newick tree with branch lengths if you have one. Or <u>choose files</u>.
+				dates are not in the headers, and a Newick tree with branch lengths if you have one. A BEAST 1.x
+				or 2.x XML can stand in for all three at once. Or <u>choose files</u>.
 			{/snippet}
 			<DropZone
 				title="Drop dated sequences here"
 				hint={dropHint}
-				accept=".fasta,.fa,.fna,.aln,.nex,.nexus,.phy,.phylip,.gz,.nwk,.newick,.tree,.tre,.csv,.tsv,.txt,.tab,.json"
+				accept=".fasta,.fa,.fna,.aln,.nex,.nexus,.phy,.phylip,.gz,.nwk,.newick,.tree,.tre,.csv,.tsv,.txt,.tab,.json,.xml"
 				multiple
 				{busy}
 				onFiles={(files) => void acceptFiles(files)}
@@ -938,14 +1117,45 @@
 				<p class="notice--error" role="alert"><strong>Refused.</strong> {failure}</p>
 			{/if}
 
+			<!-- HOW THE XML WAS READ, EVEN WHEN NOTHING CAME OUT OF IT. These are the same lines the
+			     `details` strip carries below; they are repeated here for the one state the strip
+			     cannot reach, a dropped BEAST file that left the page with no alignment and therefore
+			     no ingest. A namespaced BEAST 2 document is exactly that state. -->
+			{#if beastOnlyProvenance.length}
+				<ul class="beastprov">
+					{#each beastOnlyProvenance as line, i (i)}<li>{line}</li>{/each}
+				</ul>
+			{/if}
+
 			{#if ingest}
 				{#each refusals as w (w.code)}
 					<p class="notice--error" role="alert"><strong>Refused.</strong> {w.message}</p>
 				{/each}
 
+				<!-- WHAT CAME OUT OF THE XML, ABOVE THE REVIEW AND NOT INSIDE IT. One dropped file can
+				     become an alignment, 98 dates and a starting tree; a reader who is not told that
+				     has been handed three inputs they never chose. Not in the `details` strip: what the
+				     page did with your file is not a disclosure. -->
+				{#if beastIntake}
+					<p class="note note--intake">
+						<strong>{beastIntake.lead}</strong>{#if beastIntake.rest}{' '}{beastIntake.rest}{/if}
+						{#each beastIntake.notTaken as clause, i (i)}
+							<span class="intake__not">{clause}</span>
+						{/each}
+					</p>
+				{/if}
+
 				{#if strip}
 					<details class="strip">
 						<summary><b>What we read from your files.</b> {strip.sentence}</summary>
+						{#if beastProvenance.length}
+							<!-- How `parse_beast_xml` read the document: which alignment block won, which pass
+							     the dates came from, and the attributes it ignored. Every one of these is
+							     decided silently upstream and three of them can change every number above. -->
+							<ul class="beastprov">
+								{#each beastProvenance as line, i (i)}<li>{line}</li>{/each}
+							</ul>
+						{/if}
 						<table>
 							<!-- NOT `<b>`, and that is the fix for a counter bug this phase inherited. `app.css`'s
 							     `.numbered caption b::before` increments the table counter, but this caption lives
@@ -999,6 +1209,18 @@
 				/>
 
 				<DateReviewTable rows={rows} tableName={metadataName} units={ingest.time_units} onVisible={(r) => (visibleRows = r)} />
+
+				<!-- THE ONE SENTENCE A READER COMPARING THIS PAGE WITH A COMMAND LINE NEEDS, AND IT IS NOT
+				     IN A DISCLOSURE. A BEAST calendar date is converted by the reference's own arithmetic
+				     (dataset.py:71-80), not by the decimal year every other row on the same table used;
+				     measured, the two differ by 0.73 days on average and 2.815 at worst. Printed only when
+				     a calendar string was actually read, because a file of bare decimal years has no
+				     divergence to warn about. -->
+				{#if beastScale}
+					<p class="note note--warn">
+						<strong>These dates are on the BEAST reader's own time axis.</strong> {beastScale}
+					</p>
+				{/if}
 
 				{#if unmatched}
 					<p class="note note--warn">
@@ -1127,7 +1349,7 @@
 				<button type="button" class="button button--secondary" onclick={downloadDatingCsv}>Dating (CSV)</button>
 				<button type="button" class="button button--secondary" onclick={downloadDatingJson}>Dating (JSON)</button>
 			</div>
-			<p class="hint downloads__note">{datingDownloadNote(dating)}</p>
+			<p class="hint downloads__note">{datingDownloadNote(dating, { datesName: metadataName, ingest })}</p>
 		{:else}
 			<p class="note">
 				No estimate has been made yet. Section 3 starts one; this table is its per-sequence output —
@@ -1400,6 +1622,30 @@
 	}
 	.more {
 		display: inline;
+	}
+	/* The intake note carries a fact, not a warning: no mark, no tint, no rule — the bold opening is
+	   the only emphasis, in the text colour (DESIGN.md §3: the warning treatment is reserved for
+	   what changes the answer, and "this file supplied three inputs" does not). */
+	.note--intake {
+		margin: 0;
+	}
+	.note--intake strong {
+		color: var(--text);
+	}
+	.intake__not {
+		display: block;
+	}
+	/* How the XML was read, inside the strip: hairline rows, no bullets, the measure of the page. */
+	.beastprov {
+		list-style: none;
+		margin: var(--space-3) 0 0;
+		padding: 0;
+		max-width: var(--measure);
+	}
+	.beastprov li {
+		margin: 0;
+		padding: var(--space-2) 0;
+		border-top: 1px solid var(--hair);
 	}
 	.facts {
 		display: grid;

@@ -172,6 +172,29 @@ through `urn:ietf:wg:oauth:2.0:oob`.
   its only real cap is the 8 MiB body), and `dating`'s work term is `L·N` on its default model-free
   path, rising to `L·N²` only when `use_model: true` asks for the graph, which also brings its own
   ceiling of 1,500 sequences (a refusal, never a silent fallback to the other estimator).
+- **The 8 MiB body is ONE budget, and since Phase 6b a metadata file can fill it.** `dates_file`
+  reads a BEAST 1.x/2.x XML, and a BEAST XML carries its own alignment. MEASURED, building BEAST 1
+  and BEAST 2 documents around each bundled example's own FASTA plus a BEAUti-shaped model block:
+  the XML is **1.03×–1.61× the FASTA it carries** (1.61× on camelid, 212 taxa × 288 sites; 1.03× on
+  H1N1, 100 × 13,154), the largest bundled set is **1,358,708 bytes** — 16% of the cap — and JSON
+  string escaping adds 0.1–0.4%. So no cap moved: `express.json` limits the whole body to the same
+  8 MiB and would refuse first anyway, and Apache's `LimitRequestBody 10485760` still has the right
+  headroom. What changes for an operator reading a support ticket is that **`alignment` plus a BEAST
+  `dates_file` that repeats it pays for the sequences twice**, and the `413` hint now says so: the
+  caller's fix is to send the XML stripped to its `<taxa><taxon><date>` block (measured at 13,230
+  bytes against 441,444 for korber_env_gp160 — 3%) or to export the dates as a two-column CSV. An
+  XML sent in the `alignment` field is `422 ALIGNMENT_IS_XML`, not a spent worker.
+- **Reading a BEAST XML is work on the HTTP thread, and it is bounded by the body limit.** The date
+  check runs at the door, before a worker is spent, and a `.xml` used to be refused there on its
+  NAME for free. MEASURED now: 9–21 ms on the bundled shapes (182 KB to 1.34 MB of XML) against 4–6
+  ms for the equivalent CSV, and at the 8 MiB body limit — the largest document that can arrive —
+  70 ms for 740 long records, 504 ms for 36,000 short ones, the element-densest shape a caller can
+  build. That is not a new exposure: `POST /api/v1/validate` on an 8 MiB FASTA of many short records
+  already costs **583 ms** today with no XML anywhere, so the body limit and `HYPHAEON_RATE_API`
+  (120/min per IP) are what bound this, exactly as they bounded the alignment parse. Turn
+  `HYPHAEON_RATE_API` down if a deployment is single-process and public. The XML reader itself has
+  no filesystem and no network: an external or parameter entity is `422 DATES_XML_UNSAFE`, refused
+  before the document is read and without opening or fetching what it named.
 - **`temporal` is capped on its GRID as well as on its work, because the caps' work term is
   grid-blind.** `L·N²` sizes the forward pass, and the forward pass is the same size whatever
   `--time-points` says; everything after it — the smoothing, the null and the wave decomposition —

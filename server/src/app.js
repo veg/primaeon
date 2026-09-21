@@ -32,12 +32,13 @@
  * this server starts no subprocess and needs no Python.
  *
  * PHASE 6 ADDS THE TIME PILLARS, as first-class analyses beside the rest: `dates` (the date review
- * — reads a sampling date for every sequence from the FASTA headers, an Auspice JSON, a JSON map
- * or a CSV/TSV, runs NO model and needs no models directory), `dating` (the molecular clock and
- * MRCA estimate; takes no tree, D34) and `temporal` (per-site selection through calendar time with
- * a refining permutation null). The metadata document rides as `dates_file`, the phenotype table's
- * precedent: TEXT in the body, never a server path, under the same 8 MiB field cap. Three rules
- * follow from what those pillars are and are enforced here rather than discovered later:
+ * — reads a sampling date for every sequence from the FASTA headers, an Auspice JSON, a JSON map,
+ * a CSV/TSV or a BEAST 1.x/2.x XML, runs NO model and needs no models directory), `dating` (the
+ * molecular clock and MRCA estimate; takes no tree, D34) and `temporal` (per-site selection through
+ * calendar time with a refining permutation null). The metadata document rides as `dates_file`, the
+ * phenotype table's precedent: TEXT in the body, never a server path, under the same 8 MiB field
+ * cap. Three rules follow from what those pillars are and are enforced here rather than discovered
+ * later:
  *
  *   - THE DATE LAYER IS CHECKED AT THE DOOR. An unreadable metadata file, a date set with no time
  *     axis, and the two confirmation gates the browser puts to a human (dates read mostly as a
@@ -68,7 +69,9 @@
  *     re-serialised whole on the HTTP event loop.
  *
  * Boundaries, all from PLAN.md 3.5: JSON bodies up to 8 MiB (the alignment cap, so the limit and
- * the cap refuse the same files), per-IP rate limits (src/config.js), no accounts, 128-bit ids,
+ * the cap refuse the same files — and note that the limit covers EVERY field together, which since
+ * Phase 6b matters because a BEAST `dates_file` carries its own alignment; see the field's own
+ * comment for the measurements), per-IP rate limits (src/config.js), no accounts, 128-bit ids,
  * same-origin only (an Origin header that is present and not the issuer is refused; a same-origin
  * browser and a curl without Origin both pass), `Content-Security-Policy: default-src 'none'` on
  * API responses (they are data, never documents), the OOB page excepted.
@@ -141,10 +144,39 @@ const JobRequest = z
     phenotype_file: textField("phenotype_file"),
     /**
      * The date metadata's TEXT (hyphaeon dating/temporal -d/--dates): a Nextstrain Auspice JSON, a
-     * name-to-date JSON object, or a CSV/TSV. Never a server path — the same rule as
-     * `phenotype_file`, and for the same reason: this process must not read a caller's disk over
-     * HTTP. Omit it and the dates are read from the FASTA headers, which is the reference's own
+     * name-to-date JSON object, a CSV/TSV, or a BEAST 1.x/2.x XML. Never a server path — the same
+     * rule as `phenotype_file`, and for the same reason: this process must not read a caller's disk
+     * over HTTP. Omit it and the dates are read from the FASTA headers, which is the reference's own
      * fallback; `analysis: "dates"` says which rule read each one.
+     *
+     * A BEAST XML IS THE ONE METADATA DOCUMENT THAT CAN BE ALIGNMENT-SIZED, and the field cap was
+     * chosen for a CSV of dates. MEASURED here, building BEAST 1 and BEAST 2 documents around each
+     * bundled example's own FASTA plus a BEAUti-shaped model/operator/prior block (4,901 bytes of
+     * boilerplate): the XML is 1.03x-1.61x the FASTA it carries — 1.61x on camelid (212 taxa x 288
+     * sites, where the per-record tag overhead is largest against short sequences), 1.03x on H1N1
+     * (100 x 13,154), and the largest bundled set is 1,358,708 bytes as a BEAST 1 XML, 16% of this
+     * cap. JSON string escaping adds 0.1-0.4% on top (measured on the same three bodies), because a
+     * BEAST document is mostly sequence characters that need no escape.
+     *
+     * So the cap is NOT raised, and could not usefully be: `express.json({limit: bodyLimitBytes})`
+     * is the same 8 MiB and refuses the body first, so a larger field cap would only move the
+     * refusal from 400 to 413. What the cap DOES mean here is that `alignment` and a BEAST
+     * `dates_file` that repeats it are paid for twice out of one 8 MiB body — the 413 hint below
+     * says so, because "submit fewer sequences" is the wrong advice to someone whose alignment
+     * simply arrived twice. A BEAST XML sent as a DATE SOURCE needs none of its alignment: measured
+     * on korber_env_gp160, 13,230 bytes with only `<taxa><taxon><date>` against 441,444 with the
+     * sequences, and the reference's own `-d file.xml` path reads `beast['dates']` and nothing else
+     * (dating.py:433-442).
+     *
+     * WHAT THE XML ALSO CARRIED IS REPORTED, NOT SUBSTITUTED, AND `/time` DIFFERS ON PURPOSE. This
+     * field is `-d`: the dates and nothing else, whatever else the document holds, with the
+     * sequence count, the starting tree and the chosen alignment block named in
+     * `date_review.beast` and in the `DATES_BEAST_CARRIES_INPUTS` info warning. The browser's
+     * `/time` page is a drop zone — files arrive with no argument names — so it takes the
+     * reference's other door, `--beast` (dating.py:2455-2471), and one XML there can fill the
+     * alignment, the dates AND the tree, each only when nothing was supplied for it. Same dates on
+     * both surfaces, a different number of inputs; the split is upstream's and is documented in
+     * `server/README.md` where a caller reads it.
      */
     dates_file: textField("dates_file"),
     variant: z.string().max(64).optional(),
@@ -171,7 +203,7 @@ const ValidateRequest = z
     /** D22: force the tree-free TN93 path even when a usable tree was supplied. */
     use_tn93: z.boolean().optional(),
     max_species: z.number().int().min(2).optional(),
-    /** The date metadata's TEXT, for a rehearsal of the time pillars' door checks. */
+    /** The date metadata's TEXT (BEAST XML included), for a rehearsal of the time pillars' door checks. */
     dates_file: textField("dates_file"),
     /** The job's options, so a validate answers the caps and the gates the job would meet. */
     options: z.record(z.string(), z.unknown()).optional()
@@ -563,7 +595,25 @@ export function createApp(config = loadConfig(), deps = {}) {
   api.use((err, req, res, _next) => {
     if (err instanceof HttpError) return res.status(err.status).json(errorBody(err));
     if (err && err.type === "entity.too.large") {
-      return res.status(413).json({ error: { kind: "input", code: "PAYLOAD_TOO_LARGE", message: "The request body is above the 8 MiB cap.", hint: "Submit fewer sequences or fewer sites." } });
+      // THE WHOLE BODY IS ONE 8 MiB BUDGET, AND SINCE PHASE 6b `dates_file` CAN BE ALIGNMENT-SIZED.
+      // A BEAST XML carries its own alignment, so a caller who sends `alignment` and the XML that
+      // contains it pays for the sequences twice, and "submit fewer sequences" is then exactly the
+      // wrong fix — the data is not too big, it arrived twice. MEASURED: a BEAST XML is 1.03x-1.61x
+      // the FASTA it carries (seven bundled examples, BEAST 1 and BEAST 2 forms, with a BEAUti-shaped
+      // model block), while the same file stripped to `<taxa><taxon><date>` is 13,230 bytes against
+      // 441,444 on korber_env_gp160 — 3% — and is all the date layer reads from it anyway
+      // (dating.py:433-442 takes `beast['dates']` and discards the sequences and the starting tree).
+      return res.status(413).json({
+        error: {
+          kind: "input",
+          code: "PAYLOAD_TOO_LARGE",
+          message: "The request body is above the " + MAX_ALIGNMENT_CHARS + "-byte (8 MiB) cap, which covers every field together.",
+          hint:
+            "Submit fewer sequences or fewer sites. If `dates_file` is a BEAST XML carrying the same alignment as `alignment`, " +
+            "the sequences are counted twice: send the XML stripped to its <taxa><taxon><date> block (measured at 3% of the full " +
+            "file), or export the taxon dates as a two-column CSV."
+        }
+      });
     }
     if (err && (err.type === "entity.parse.failed" || err.type === "charset.unsupported" || err.status === 400)) {
       return res.status(400).json({ error: { kind: "input", code: "BAD_JSON", message: "The request body is not valid JSON." } });

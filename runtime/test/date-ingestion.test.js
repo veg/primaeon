@@ -692,9 +692,15 @@ suite('the refusals are returned, never thrown, and ok says so', () => {
 		expect(pick(ing, 'DATES_NO_SPAN').severity).toBe('refuse');
 	});
 
-	it('DATES_BEAST_XML_UNSUPPORTED names the reference line it is not implementing', () => {
+	it('a BEAST XML is READ now; an empty one refuses as DATES_BEAST_NOT_BEAST, not as unsupported', () => {
+		// This case used to assert the blanket refusal `DATES_BEAST_XML_UNSUPPORTED`, which is retired:
+		// the same document is now parsed (`beast.js`, a port of dataset.py:84-233) and refused for
+		// what is actually wrong with it. `beast-xml.test.js` is where the reader itself is asserted.
 		const ing = ingestDates({ taxa: THREE, source: '<?xml version="1.0"?><beast/>', sourceName: 'b.xml' });
-		expect(pick(ing, 'DATES_BEAST_XML_UNSUPPORTED').message).toMatch(/dating\.py:433-434/);
+		expect(ing.ok).toBe(false);
+		expect(pick(ing, 'DATES_BEAST_NOT_BEAST').severity).toBe('refuse');
+		expect(pick(ing, 'DATES_BEAST_XML_UNSUPPORTED')).toBeUndefined();
+		expect(DATE_DIAGNOSTIC_CODES).not.toContain('DATES_BEAST_XML_UNSUPPORTED');
 	});
 
 	it('DATES_SOURCE_KIND_UNKNOWN for a file that is none of the three shapes', () => {
@@ -1086,9 +1092,10 @@ suite('the layer opens nothing and re-implements nothing', () => {
 	/** Strip block and line comments: every one of these files EXPLAINS the rules it does not hold. */
 	const code = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-	it('there are seven leaves plus a barrel, and every one opens with WHY THIS FILE EXISTS', () => {
+	it('there are nine leaves plus a barrel, and every one opens with WHY THIS FILE EXISTS', () => {
 		expect(sources.map((s) => s.file).sort()).toEqual([
 			'auspice.js',
+			'beast.js',
 			'codes.js',
 			'headers.js',
 			'index.js',
@@ -1096,7 +1103,8 @@ suite('the layer opens nothing and re-implements nothing', () => {
 			'library.js',
 			'match.js',
 			'regex.js',
-			'table.js'
+			'table.js',
+			'xml.js'
 		]);
 		for (const s of sources) expect(s.text, s.file).toMatch(/WHY THIS FILE EXISTS/);
 	});
@@ -1120,7 +1128,18 @@ suite('the layer opens nothing and re-implements nothing', () => {
 			// allowed: `codes.js` shows the reader an example pattern (`_(\\d{4}-\\d{2}-\\d{2})$`)
 			// in the message that refuses a pattern with no capturing group, and a message is not a
 			// parser.
-			expect(body, `${s.file}: a date regex`).not.toMatch(/\/[^/\n]*\\d\{\d[^/\n]*\//);
+			//
+			// ONE NAMED EXEMPTION: `beast.js`. `_parse_numeric_or_calendar_date` (dataset.py:62-81) is
+			// a SECOND date parser IN THE REFERENCE — the reference has two, and they disagree, so
+			// mirroring `parse_date_to_decimal` alone (which is what the library does) cannot read a
+			// BEAST file the way `hyphaeon dating --beast` reads it. The exemption is not a waiver:
+			// `beast-xml.test.js` asserts the divergence in both directions — 2019-03-31 is
+			// 2019.2488021902807 here against the library's 2019.2410958904109, a 2.815-day gap, and
+			// '1799', '50' and '1e9' are values this parser keeps and the library's gate destroys. The
+			// guard still holds for every other file in this directory, `xml.js` included.
+			if (s.file !== 'beast.js') {
+				expect(body, `${s.file}: a date regex`).not.toMatch(/\/[^/\n]*\\d\{\d[^/\n]*\//);
+			}
 			// A month TABLE: an array of month names, or a run of month lengths. The names may appear
 			// in prose — `ingest.js` explains that temporal.py:144's clamp reads 31 January as 30
 			// January — and explaining a rule is not holding one.

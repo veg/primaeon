@@ -13,7 +13,8 @@
       "phase1": "hyphaeon-app PHASE1.md, parity table and known gaps",
       "phase2a": "veg/HyphAeon PHASE2A.md, 'Epistasis end to end' and 'Python quirks replicated'",
       "phase3a": "veg/HyphAeon PHASE3A.md, 'Tree-free parity, the D22 probe', 'The phenotype pillar end to end' and 'Python quirks replicated in this phase'",
-      "issues": "GitHub issues veg/HyphAeon #7, #8, #9, #13, #33"
+      "issues": "GitHub issues veg/HyphAeon #7, #8, #9, #13, #33",
+      "beast": "hyphaeon-app runtime/src/dates/beast.js, the statement-by-statement port of hyphaeon/dataset.py:84-233, and runtime/test/beast-xml.test.js, whose measurements against hyphaeon/dataset.py:62-81 produced every number quoted here"
     },
     "model_card": {
       "what_it_is": "A ~1.9M-parameter axial transformer that reads a codon alignment and a metric tree as four tensors (codon tokens, amino-acid tokens, patristic distance matrix, 4-D classical-MDS coordinates) and emits a per-site MEME-style LRT through a 16-threshold ordinal head.",
@@ -98,6 +99,19 @@
         "detail": "On a six-dataset grid (18-212 taxa, shallow to deep, 26-100% variable sites) the model fails the permutation, star-tree and zero-distance sensitivity gates on most datasets, fails the x0.1, x10 and x100 branch-scaling invariance gates, and passes duplicate-taxon invariance exactly through the default haplotype pruning. What matters is therefore what the checks look at: branch-length units, reading frame, U versus T, taxa missing from the tree (zeroed silently upstream, refused here), a maximum patristic distance above 10 (rescaled upstream, warned here), fewer than three taxa (refused).",
         "table": "invariance_gates",
         "source": "model_eval"
+      },
+      {
+        "id": "beast-xml-date-arithmetic",
+        "pillars": ["general", "diagnostics"],
+        "headline": "A date read from a BEAST XML is not on the same time axis as a date read from anything else, and it is not gated.",
+        "detail": "The date layer reads BEAST 1.x and 2.x XML because the reference does (hyphaeon/dataset.py:84-233). Its date strings then go through the reference's own converter (dataset.py:62-81), which is not the decimal-year conversion every other source on the page uses, and PrimAeon replicates it rather than correcting it. 'YYYY-MM-DD' becomes year + (month-1)/12 + (day-1)/365.25 and 'YYYY-MM' becomes year + (month-0.5)/12 -- a third convention again -- so the same calendar day entered as a BEAST date and as a CSV date gets two different numbers. And the plain-number branch has no gate at all: 1799, 2150, 50, -3, 1e9 and Python's 1_000 are all accepted as sampling dates where the ordinary date parser returns NaN, and 'nan' and 'inf' are stored as dates because the reference's guard is 'is not None'. There is no calendar validation either: 2020-13-45 reads as 2021.12 and a masked 2020-00-00 reads as 2019.91, a date in the previous year. Every one of these is announced in the report rather than silently applied: DATES_BEAST_DATE_SCALE when a calendar string was converted, DATES_BEAST_DATE_UNGATED when a value outside the ordinary gate was kept, DATES_BEAST_DIRECTION_IGNORED because direction= and units= on a BEAST date element are read by nothing upstream, so a backwards-dated file comes out mirrored in time. The point of replicating all of it is that 'hyphaeon dating --beast' and PrimAeon agree on your numbers; the same dates in a CSV will not agree with either.",
+        "numbers": [
+          { "label": "BEAST vs decimal year, mean over all 731 days of 2019-2020", "value": "0.001988 yr = 0.726 days" },
+          { "label": "BEAST vs decimal year, worst of those days (2019-03-31)", "value": "0.007706 yr = 2.815 days" },
+          { "label": "'YYYY-MM', a third convention (2021-04)", "value": "2021.2916666666667, 2.460 days off the decimal year" },
+          { "label": "Values the float branch keeps that the ordinary parser rejects", "value": "1799, 2150, 50, -3, 1e9, 1_000, nan, inf" }
+        ],
+        "source": "beast"
       },
       {
         "id": "variant",
