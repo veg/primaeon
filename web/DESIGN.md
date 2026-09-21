@@ -18,7 +18,7 @@ Read §6 before touching a component. It is the list of class names and strings 
 A HyphAeon report is a fixed sequence of analyses over one gene, so it is set like the results section
 of a paper: numbered sections, captioned figures and captioned tables, one system sans with tabular
 figures, hairline rules, generous left-aligned margins, and hierarchy carried by size and position
-rather than by colour or a second face. Colour is information: the DataMonkey purple `#5B3FA0`
+rather than by colour or a second face. Colour is information: the DataMonkey purple `#7C3AED`
 appears only on the brand mark, links, the one primary action, and the sites the model called — the
 same 0.5 em purple square means "called" in the Manhattan track, in the site table's Call column, on
 a network node and on a coherence track, so a reader learns the glyph once; the DataMonkey orange
@@ -88,7 +88,7 @@ blocks rather than a rename.
 	--text-faint: #6e6e6e; /* tertiary: qualifiers, severity labels, disabled */
 	--text-muted: #555555; /* captions, metadata, labels, nav, tick labels */
 	--text: #111111; /* body, headings, table head rules */
-	--brand: #5b3fa0; /* DataMonkey purple: mark, links, primary action, called sites */
+	--brand: #7c3aed; /* DataMonkey purple (DM3 brand-royal): mark, links, primary action, called sites */
 	--on-brand: #ffffff;
 	--warn: #a85200; /* warning TEXT (the raw orange fails AA on white) */
 	--warn-mark: #d9721b; /* DataMonkey orange: the warning square, marks only */
@@ -125,7 +125,7 @@ html {
 		--text-faint: #8a8a8a;
 		--text-muted: #b0b0b0;
 		--text: #ededed;
-		--brand: #a48be0;
+		--brand: #a78bfa;
 		--on-brand: #111111;
 		--warn: #e5a15a;
 		--warn-mark: #d9721b;
@@ -153,7 +153,7 @@ on `--bg` **and** on `--surface-2`; `--warn-mark` clears the 3:1 non-text thresh
 | `--text` | `#111111` | 18.88 | 17.17 | text |
 | `--text-muted` | `#555555` | 7.46 | 6.78 | text |
 | `--text-faint` | `#6E6E6E` | 5.10 | 4.64 | text |
-| `--brand` | `#5B3FA0` | 7.88 | 7.17 | text + mark; `--on-brand` on it 7.88 |
+| `--brand` | `#7C3AED` | 5.70 | 5.18 | text + mark; `--on-brand` on it 5.70 |
 | `--warn` | `#A85200` | 5.42 | 4.93 | text |
 | `--warn-mark` | `#D9721B` | 3.30 | 3.00 | mark only (≥ 3:1) |
 | `--rule` | `#D0D0D0` | 1.54 | 1.40 | hairline, never text |
@@ -167,7 +167,7 @@ on `--bg` **and** on `--surface-2`; `--warn-mark` clears the 3:1 non-text thresh
 | `--text` | `#EDEDED` | 16.13 | 14.71 | text |
 | `--text-muted` | `#B0B0B0` | 8.71 | 7.94 | text |
 | `--text-faint` | `#8A8A8A` | 5.47 | 4.99 | text |
-| `--brand` | `#A48BE0` | 6.61 | 6.03 | text + mark; `--on-brand` on it 6.61 |
+| `--brand` | `#A78BFA` | 6.94 | 6.33 | text + mark; `--on-brand` on it 6.94 |
 | `--warn` | `#E5A15A` | 8.61 | 7.86 | text |
 | `--warn-mark` | `#D9721B` | 5.73 | 5.23 | mark |
 | `--rule` | `#3A3A3A` | 1.66 | 1.51 | hairline |
@@ -178,7 +178,7 @@ on `--bg` **and** on `--surface-2`; `--warn-mark` clears the 3:1 non-text thresh
 > reads 4.13:1 on a `--surface-2` hovered row — below AA. `#6E6E6E` clears both grounds (5.10 / 4.64)
 > and is otherwise indistinguishable. Dark `#8A8A8A` already cleared both and is unchanged.
 
-`#5B3FA0` is **never** a text colour on a dark ground (2.39:1) and never a fill behind text in either
+`#7C3AED` is **never** a text colour on a dark ground (3.31:1) and never a fill behind text in either
 scheme except the primary button. There is no `--brand-soft`, no `--accent-soft`, no tinted panel, no
 `--ok` green, no `--danger` red, and no tier ramp: called / not called is the only distinction the
 surrogate score supports, and the tier *label* ("Top 2 %" vs "Top 5 %") carries the grade the engine
@@ -903,17 +903,17 @@ from 5 to 6 (which also corrected `DATING_DOWNLOAD_NOTE`, whose last clause name
 | Light | `--text` | `#111111` | 18.88 | 17.17 |
 | Light | `--text-muted` | `#555555` | 7.46 | 6.78 |
 | Light | `--text-faint` | `#6E6E6E` | 5.10 | 4.64 |
-| Light | `--brand` | `#5B3FA0` | 7.88 | 7.17 |
+| Light | `--brand` | `#7C3AED` | 5.70 | 5.18 |
 | Light | `--warn` | `#A85200` | 5.42 | 4.93 |
 | Light | `--warn-mark` (mark) | `#D9721B` | 3.30 | 3.00 |
-| Light | `--on-brand` on `--brand` | | 7.88 | |
+| Light | `--on-brand` on `--brand` | | 5.70 | |
 | Dark | `--text` | `#EDEDED` | 16.13 | 14.71 |
 | Dark | `--text-muted` | `#B0B0B0` | 8.71 | 7.94 |
 | Dark | `--text-faint` | `#8A8A8A` | 5.47 | 4.99 |
-| Dark | `--brand` | `#A48BE0` | 6.61 | 6.03 |
+| Dark | `--brand` | `#A78BFA` | 6.94 | 6.33 |
 | Dark | `--warn` | `#E5A15A` | 8.61 | 7.86 |
 | Dark | `--warn-mark` (mark) | `#D9721B` | 5.73 | 5.23 |
-| Dark | `--on-brand` on `--brand` | | 6.61 | |
+| Dark | `--on-brand` on `--brand` | | 6.94 | |
 
 Every text token clears 4.5:1 on both grounds in both schemes; the orange mark clears 3:1.
 `grep -rn 'border-radius\|box-shadow\|text-transform\|letter-spacing\|linear-gradient' web/src`
