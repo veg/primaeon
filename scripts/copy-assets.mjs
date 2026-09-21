@@ -72,6 +72,11 @@ const engineDir = process.env.HYPHAEON_ENGINE_DIR ?? resolve(repo, '..', 'HyphAe
 
 const log = (tag, msg) => console.log(`[copy-assets] ${tag}: ${msg}`);
 const warn = (tag, msg) => console.warn(`[copy-assets] ${tag}: WARNING ${msg}`);
+/** A missing asset the site cannot work without: say so and stop, rather than ship a broken build. */
+const fail = (tag, msg) => {
+	console.error(`[copy-assets] ${tag}: FATAL ${msg}`);
+	process.exit(1);
+};
 
 const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
@@ -176,8 +181,25 @@ function findOrtPackage() {
 	const vendor = join(repo, 'runtime', 'vendor', 'tn93');
 	const manifestPath = join(vendor, 'MANIFEST.json');
 	if (!existsSync(manifestPath)) {
-		warn('tn93', `${vendor} has no MANIFEST.json; skipping. Tree-free runs will use the library's JavaScript.`);
+		// NOT A DEGRADED BUILD — A BROKEN ONE. veg/tn93's compiled build is the only TN93 in the
+		// product (@veg/hyphaeon-js computes no distance of its own), so a site built without these
+		// three files refuses every tree-free run: no report on an alignment whose tree has no branch
+		// lengths, and no date on /time at all. The build is failed here rather than shipping a site
+		// that looks complete and cannot analyse half the bundled examples.
+		fail('tn93', `${vendor} has no MANIFEST.json. The vendored veg/tn93 WebAssembly build is the only TN93 engine this product has, so a site built without it cannot run ANY tree-free analysis — not the report on a tree-free upload, and nothing at all on /time. Restore runtime/vendor/tn93/ (it is tracked, not downloaded).`);
 	} else {
+		// A MANIFEST with a file missing beside it is the same broken build, and it used to fail here
+		// as a raw ENOENT from copyFileSync — a stack trace instead of the sentence above, for a
+		// cause the reader can act on just as directly. Every file the site needs is checked by name
+		// first, so the message is the same whichever one is absent.
+		for (const name of ['tn93.wasm', 'tn93.cjs']) {
+			if (!existsSync(join(vendor, name))) {
+				fail(
+					'tn93',
+					`${vendor} has MANIFEST.json but no ${name}. The vendored veg/tn93 WebAssembly build is the only TN93 engine this product has, so a site built without it cannot run ANY tree-free analysis — not the report on a tree-free upload, and nothing at all on /time. Restore runtime/vendor/tn93/ (it is tracked, not downloaded).`
+				);
+			}
+		}
 		const dest = join(staticDir, 'tn93');
 		mkdirSync(dest, { recursive: true });
 		let total = copy(join(vendor, 'tn93.wasm'), join(dest, 'tn93.wasm'));

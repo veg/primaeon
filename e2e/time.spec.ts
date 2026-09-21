@@ -223,7 +223,18 @@ test.describe('flow 1 — korber_env_gp160.fasta, the flagship', () => {
 		await expect(taxa.locator('.note--warn')).toContainText('The predicted dates are not dates here.');
 		await expect(taxa.locator('.note--warn')).toContainText('running out of curve');
 
-		// Nothing heavy, on the whole flow — the estimate included, which is the claim.
+		// THE DISTANCES CAME FROM veg/tn93's OWN CODE, and the page says so rather than the run
+		// quietly falling back. Root-to-tip divergence here IS a TN93 distance, and until this was
+		// fixed the dating worker computed it with the library's JavaScript port on every surface.
+		// Two assertions, because either alone could pass on a silent fallback: the 250 KB build was
+		// actually FETCHED, and the section names the engine the record says ran.
+		await expect(dating).toContainText("veg/tn93's compiled code");
+		const tn93 = requests.matching(/\/tn93\/tn93\.(wasm|mjs)(\?|$)/i);
+		expect(tn93, 'the compiled TN93 was never fetched, so the port ran').not.toEqual([]);
+
+		// Nothing heavy, on the whole flow — the estimate included, which is the claim. The compiled
+		// TN93 is 250 KB and is not one of the assets PLAN.md §4.4 names: HEAVY_ASSET is a graph or
+		// an ORT binary, and this route's claim is that it costs no MODEL byte.
 		expect(requests.offOrigin(new URL(baseURL!).origin)).toEqual([]);
 		const heavy = requests.matching(HEAVY_ASSET);
 		expect(heavy, `heavy assets during the korber flow: ${heavy.join(', ')}`).toEqual([]);

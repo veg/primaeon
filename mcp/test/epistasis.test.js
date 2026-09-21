@@ -190,7 +190,8 @@ describe("hyphaeon_epistasis in-process on Smc6 vs fixtures/e2e/epistasis_Smc6_n
     expect(r1.isError).toBe(true);
     expect(parseText(r1).kind).toBe("input");
     expect(parseText(r1).error).toMatch(/canonical/);
-    // Before Phase 3 this was an input-class refusal; the library computes the distances now.
+    // Before Phase 3 this was an input-class refusal; the distances are computed in this process
+    // now (veg/tn93's vendored compiled build, or the library's JavaScript port if it will not load).
     const r2 = await ctx.client.callTool({ name: "hyphaeon_epistasis", arguments: { alignment, use_tn93: true, n_permutations: 10, no_dms: true, summary_only: true } });
     if (r2.isError) throw new Error(r2.content[0].text);
     const treeFree = parseText(r2);

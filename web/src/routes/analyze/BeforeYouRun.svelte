@@ -3,7 +3,8 @@
 	line, the variant suggestion, the tree plan, the prescreen band, and the cost estimate.
 
 	WHY THIS FILE EXISTS. PLAN.md §4.3 lists the checks and their outcomes; the library computes
-	them (`diagnose`, in the prep worker) and lib/diagnostics/panel.ts decides what they mean for
+	them (the prep worker calls the runtime's `diagnoseUpload`, which is the library's `diagnose`
+	with this product's own TN93 engine handed in) and lib/diagnostics/panel.ts decides what they mean for
 	the app (which refusals block, which the tree tools handle, which variant to suggest). This
 	component only renders that model. Two rules from the plan are visible in the markup: a
 	refuse-severity row that the runtime cannot recover from is shown with the reason the Run

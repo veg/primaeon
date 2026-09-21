@@ -57,7 +57,14 @@
 	import { datingClient, datingModelClient, temporalClient, workersAvailable } from '$lib/workers/clients';
 	import type { DatingModelRequest, DatingRequest, DatingResponse, TemporalRequest, TemporalResponse } from '$lib/workers/protocol';
 	import TemporalSection from '$lib/time/TemporalSection.svelte';
-	import { codonCeiling, recordAfterAbort, TEMPORAL_MAX_SPECIES, temporalGate, type TemporalRecord } from '$lib/time/temporal';
+	import {
+		codonCeiling,
+		recordAfterAbort,
+		TEMPORAL_MAX_SPECIES,
+		temporalGate,
+		type TemporalPreprocessing,
+		type TemporalRecord
+	} from '$lib/time/temporal';
 	import { DATING_NEURAL_MAX_TAXA } from '@veg/hyphaeon-runtime/dating';
 	import {
 		diagnosis,
@@ -172,6 +179,14 @@
 	let temporalProgress = $state({ phase: '', done: 0, total: 0, message: '' });
 	let temporalReference = $state<{ command: string; reproduces: boolean; caveats: string[] } | null>(null);
 	let temporalNotes = $state<string[]>([]);
+	/**
+	 * `prepareRun`'s own preprocessing block for this run, which the record does not carry. It is
+	 * held for one field — `tn93_engine`, which TN93 computed the distances the model was given — and
+	 * the page prints the run's answer rather than the request it made. `auto` is veg/tn93's compiled
+	 * build; there is no JavaScript port left to fall back to, so a build that will not load refuses
+	 * the run instead of answering it differently.
+	 */
+	let temporalPreprocessing = $state<TemporalPreprocessing | null>(null);
 	let temporalAbort: AbortController | null = null;
 	/** `null` walks the runtime's rounds (200 -> 500 -> 1,000) under its own work budget. */
 	let temporalDraws = $state<number | null>(null);
@@ -607,7 +622,11 @@
 			excludedTaxa: [...excludedTaxa],
 			clockModel: 'auto',
 			ciMethod: 'fieller',
-			timeUnits: ingest.time_units
+			timeUnits: ingest.time_units,
+			// Root-to-tip divergence here is a TN93 distance, so the worker gets the same compiled
+			// engine the report and the temporal run already use; `primaeon.tn93_engine` records
+			// which one actually ran.
+			tn93Base: absolute('/tn93/')
 		};
 		try {
 			const response = await datingClient().call<DatingResponse>(request, {
@@ -654,6 +673,9 @@
 			manifestUrl: absolute('/models/manifest.json'),
 			modelsBase: absolute('/models/'),
 			ortBase: absolute('/ort/'),
+			// Both matrices this run builds — the pass's square one, which is a model INPUT, and the
+			// rectangular root-to-tip one — come from the compiled engine.
+			tn93Base: absolute('/tn93/'),
 			numThreads: Math.max(1, Math.min(16, navigator?.hardwareConcurrency ?? 1)),
 			distanceMode
 		};
@@ -707,6 +729,7 @@
 		temporalRecord = null;
 		temporalReference = null;
 		temporalNotes = [];
+		temporalPreprocessing = null;
 		temporalProgress = { phase: 'temporal-prepare', done: 0, total: 0, message: 'Preparing the model…' };
 		temporalState = 'running';
 		temporalAbort = new AbortController();
@@ -768,6 +791,9 @@
 					if (p.record) temporalRecord = p.record;
 				}
 			});
+			// Before the branch: a refused run prepared an alignment too, and which engine computed its
+			// distances is part of why it refused.
+			temporalPreprocessing = response.preprocessing ?? null;
 			if (response.refusal) {
 				temporalRefusal = { code: response.refusal.code, message: response.refusal.message };
 				temporalRecord = null;
@@ -1129,6 +1155,7 @@
 				units={ingest.time_units}
 				{taxa}
 				reference={temporalReference}
+				preprocessing={temporalPreprocessing}
 				downloadNotes={temporalNotes}
 				workersAvailable={workersAvailable()}
 				bind:draws={temporalDraws}

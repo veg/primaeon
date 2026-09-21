@@ -37,12 +37,19 @@
 import { loadManifest, modelLocation, pickVariant, runDatingModelPass } from '@veg/hyphaeon-runtime';
 import type { Manifest } from '@veg/hyphaeon-runtime';
 import { runDating } from '@veg/hyphaeon-runtime/dating';
+import { resolveTn93Options } from '@veg/hyphaeon-runtime/tn93-wasm';
 import { isSessionLoaded, loadTaxaGraph } from '@veg/hyphaeon-runtime/web';
 import { serve } from './serve';
 import type { DatingModelRequest, DatingResponse } from './protocol';
 
 let manifestPromise: Promise<Manifest> | null = null;
 let manifestUrlLoaded: string | null = null;
+
+/** Where the page serves the compiled TN93 from; strings only, as temporal.worker.ts does. */
+function tn93Sources(base: string): { glueUrl: string; wasmUrl: string; manifestUrl: string } {
+	const prefix = base.replace(/\/+$/, '');
+	return { glueUrl: `${prefix}/tn93.mjs`, wasmUrl: `${prefix}/tn93.wasm`, manifestUrl: `${prefix}/MANIFEST.json` };
+}
 
 function manifestFor(url: string): Promise<Manifest> {
 	if (!manifestPromise || manifestUrlLoaded !== url) {
@@ -91,6 +98,28 @@ serve<DatingModelRequest, DatingResponse>(async (payload, ctx) => {
 	);
 	const session = await loadTaxaGraph(sessionOptions);
 
+	// TWO RESOLUTIONS, BECAUSE THERE ARE TWO SHAPES. The forward pass builds a SQUARE TN93 matrix
+	// and feeds it to the graph as an input (datingNeural.js note 4 — the substitution moves the
+	// model, so the distances do too); `runDating` measures RECTANGULAR root-to-tip divergences.
+	// The library calls the two hooks with different argument lists, so one object cannot serve
+	// both and `tn93-wasm.js` refuses the wrong call shape rather than mis-indexing a matrix.
+	// MEASURED (korber, 143 x 981): the square matrix is 44.4 ms compiled against 198.7 ms in the
+	// deleted port, so this is where the compiled engine earned its 250 KB on this route — and since
+	// that port is gone from both packages, the 250 KB is no longer a trade at all: without these
+	// three files this route computes no distance and produces no date. A missing base is refused
+	// here by name, and a failed fetch or a hash mismatch is refused by the loader with its stage,
+	// the vendored release and both hashes.
+	const wasmSources = payload.tn93Base ? tn93Sources(payload.tn93Base) : null;
+	if (!wasmSources) {
+		throw new Error(
+			'No TN93 engine URLs were given (tn93Base), so neither the model pass\'s square distance ' +
+				'matrix nor the root-to-tip divergences can be computed: veg/tn93\'s compiled build is the ' +
+				'only TN93 in this product. The page serves it from static/tn93/ (tn93.mjs, tn93.wasm, ' +
+				'MANIFEST.json); check that the build copied them.'
+		);
+	}
+	const tn93Cross = await resolveTn93Options({ shape: 'cross', wasm: wasmSources });
+
 	const pass = await runDatingModelPass({
 		// The RAW text, not a parsed map: `*` is rewritten to `-` inside the pass because the TN93
 		// matrix it builds is a model INPUT, and the two conventions are two different forward passes
@@ -99,6 +128,7 @@ serve<DatingModelRequest, DatingResponse>(async (payload, ctx) => {
 		alignmentText: payload.alignmentText,
 		session,
 		manifest,
+		tn93Wasm: wasmSources,
 		progress: ctx.progress,
 		signal: ctx.signal
 	});
@@ -114,6 +144,8 @@ serve<DatingModelRequest, DatingResponse>(async (payload, ctx) => {
 		distanceMode: payload.distanceMode,
 		neural: pass,
 		timeUnits: payload.timeUnits,
+		tn93Options: tn93Cross.tn93Options,
+		tn93Engine: tn93Cross.tn93Engine,
 		progress: ctx.progress,
 		signal: ctx.signal,
 		provenance: {

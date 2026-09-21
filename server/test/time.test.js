@@ -269,6 +269,13 @@ describe("analysis: dating — the molecular clock", () => {
     // D34: no tree, on any surface. The record says so rather than leaving it to be inferred.
     expect(doc.provenance.preprocessing.tree_source).toBe("tn93");
     expect(doc.provenance.preprocessing.branch_lengths_estimated).toBe(false);
+    // THE SERVER NEEDS NO CODE OF ITS OWN FOR THIS, and that is what is being asserted: dating runs
+    // through `@veg/hyphaeon-mcp/engine` (runner.js), so the engine's resolution of the compiled
+    // TN93 is the server's too. `js` here would mean the distances came from the library's
+    // JavaScript port while the record named veg/tn93's compiled code — the defect this field
+    // exists to close, and the one that made every dating run on every surface use the port.
+    expect(doc.record.primaeon.tn93_engine).toBe("wasm");
+    expect(doc.provenance.preprocessing.tn93_engine).toBe("wasm");
   });
 
   it.skipIf(!HAVE_EXAMPLES)("carries the reproduction line as an OBJECT that refuses to over-promise", async () => {
@@ -1005,21 +1012,24 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
   });
 
   it.skipIf(!HAVE_EXAMPLES)("keeps the projection small even with the honesty block on every payload", () => {
-    const sections = events.filter((e) => e.event === "section");
-    // What the projection GUARANTEES is PER-PAYLOAD: every section event carries a projected section
-    // (a summary or a permutations chunk) instead of the runtime's interim WHOLE record, which is
-    // 6.7 MiB apiece. The bound is therefore on EACH event, with no dependence on how many there are.
+    // WHAT IS ACTUALLY BOUNDED HERE IS THE PAYLOAD, NOT THE STREAM, and the first version of this
+    // test asserted the stream. It summed every `section` event's bytes and checked `total < 512
+    // KiB`, but the NUMBER of those events is a function of how many null chunks finish and how many
+    // progress refreshes fire — which grows with wall-clock, so a loaded machine emits more events
+    // for the same run and the sum rises with it. It failed at ~564 KB under a four-workspace run
+    // and passed in isolation, the signature of an assertion on something unbounded rather than of
+    // a flake. PHASE6 §3 called it "the bound that protects the server"; it never was one.
     //
-    // The old assertion bounded the SUM of every section's bytes (< 512 KiB). But the number of
-    // interim `permutations` events is a count of null-progress ticks — timing-dependent, and
-    // neither bounded by the projection nor something it should bound (measured: 11 / 13 / 14 events
-    // over three runs, stream total 564,469 / 665,651 / 715,152 B). So the sum crept over 512 KiB on
-    // about half the nightlies (562,360 / 564,205 / 564,730 / 565,737 B) while nothing was actually
-    // wrong: the largest single section is a stable ~51.8 KB, and EVERY section is a projection, not
-    // the whole record. Asserting the per-event cap on all of them is the invariant the projection
-    // enforces, and it cannot flake on a count that timing decides.
+    // The real invariant is PER-EVENT: every section is a projected section (a summary or a
+    // permutations chunk, whose rows TEMPORAL_PERM_ROWS_MAX already bounds), never the runtime's
+    // interim WHOLE record, which is 6.7 MiB apiece. So the bound is asserted on EACH event, with no
+    // dependence on how many there are. A per-event check cannot be defeated by one oversized payload
+    // the way a mean or a sum can, and it catches the regression this test exists for — a payload
+    // that starts carrying the whole record, off by two orders of magnitude.
+    const PER_EVENT_MAX = 128 * 1024;
+    const sections = events.filter((e) => e.event === "section");
     expect(sections.length).toBeGreaterThan(0);
-    for (const s of sections) expect(s.bytes).toBeLessThan(128 * 1024);
+    for (const s of sections) expect(s.bytes).toBeLessThan(PER_EVENT_MAX);
   });
 });
 

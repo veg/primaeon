@@ -336,7 +336,7 @@ export function createApp(config = loadConfig(), deps = {}) {
     try {
       const parsed = ValidateRequest.safeParse(req.body);
       if (!parsed.success) throw new HttpError(400, "input", "Invalid request body.", { code: "BAD_REQUEST", details: parsed.error.issues });
-      const out = validate(Object.assign({ analysis: "analyze" }, parsed.data));
+      const out = await validate(Object.assign({ analysis: "analyze" }, parsed.data));
       res.status(200).json(out);
     } catch (err) {
       next(err);
