@@ -394,10 +394,51 @@ function diagnoseDates(alignment, analysis, options) {
   return { warnings, summary };
 }
 
-export function diagnose({ alignment, tree, analysis = "meme", use_tn93 = false, max_species, dates = null }) {
+/**
+ * `diagnoseUpload` (runtime/src/pipeline.js) is `diagnose()` with the distance engine this product
+ * actually runs handed in, and it is reached by a MEMOISED DYNAMIC IMPORT for two reasons.
+ *
+ * COST: the runtime's main entry is NOT in this module's static graph, and MEASURED here it adds
+ * 132.6 ms to it. An MCP session that only reviews dates, or only lists models, must not pay that
+ * at start-up; a session that asks for a diagnosis pays it once, against the hundreds of
+ * milliseconds the diagnosis itself takes on any alignment large enough to care.
+ *
+ * DEGRADATION: `src/engine.js` resolves every runtime entry point through `optional()` so that an
+ * old runtime checkout yields a named error rather than a link failure, and a static import here
+ * would break that for `hyphaeon_validate` specifically — the one tool a client calls to find out
+ * whether anything works. A checkout without `diagnoseUpload` falls back to the library's own
+ * `diagnose` and reports `tn93_engine: null`, so the loss is visible in the answer rather than
+ * silent.
+ *
+ * @returns {Promise<{ok: boolean, warnings: object[], summary: object}>}
+ */
+let diagnoseUploadPromise;
+async function upload(args) {
+  if (diagnoseUploadPromise === undefined) {
+    diagnoseUploadPromise = import("@veg/hyphaeon-runtime")
+      .then((m) => (typeof m.diagnoseUpload === "function" ? m.diagnoseUpload : null))
+      .catch(() => null);
+  }
+  const fn = await diagnoseUploadPromise;
+  if (!fn) return Object.assign({}, libraryDiagnose(args), { tn93_engine: null });
+  return await fn(args);
+}
+
+/**
+ * ASYNC BECAUSE THE DIAGNOSIS RUNS THE SAME TN93 A RUN WOULD. A tree-free diagnosis does a full
+ * model-level load of its own, so it computes the whole N x N distance matrix on every call — and
+ * it computed it with the library's JavaScript port while every tool that ran afterwards used
+ * veg/tn93's compiled build. MEASURED per process, median of 7, this machine, alignment only and
+ * no tree: korber 143 taxa 200 ms compiled against 373 ported, HIV1_RT 475 taxa 981 ms against
+ * 2,776 — with an IDENTICAL diagnosis either way (same warning codes and severities,
+ * byte-identical summary, checked on all five bundled examples). Below the measured break-even the
+ * compiled engine's fixed load costs more than the matrix (bat_oas1, 18 taxa: 44 ms against 14),
+ * so `auto` sizes the job and takes the port there; `summary.tn93_engine` reports which ran.
+ */
+export async function diagnose({ alignment, tree, analysis = "meme", use_tn93 = false, max_species, dates = null }) {
   const treeGiven = typeof tree === "string" && tree.trim().length > 0;
   const maxSpecies = Number.isInteger(max_species) && max_species >= 2 ? Math.min(max_species, TAXON_CAP) : TAXON_CAP;
-  const lib = libraryDiagnose({
+  const lib = await upload({
     alignmentText: typeof alignment === "string" ? alignment : "",
     treeText: treeGiven ? tree : null,
     maxSpecies,
@@ -420,6 +461,10 @@ export function diagnose({ alignment, tree, analysis = "meme", use_tn93 = false,
       treeFree: treeFree !== null
     }),
     tree_free: treeFree ? treeFree.data.reason : null,
+    // Which TN93 computed the matrix this diagnosis was made from: 'wasm' | 'js' | 'custom' on a
+    // tree-free check, null when a tree supplied the distances, nothing could be loaded, or this
+    // runtime checkout predates `diagnoseUpload`.
+    tn93_engine: lib.tn93_engine ?? null,
     distance_rescaled: lib.warnings.some((w) => w.code === "DISTANCE_RESCALED"),
     work: 0,
     mode: null,
@@ -449,7 +494,9 @@ export function diagnose({ alignment, tree, analysis = "meme", use_tn93 = false,
       // analysis that makes one. `dates` makes none at all and `dating`'s default path makes none
       // either (`use_model` is opt-in and hyphaeon_validate has no flag for it, so it sizes the
       // default), and quoting the meme figure for them promises a forward pass neither runs —
-      // measured, the date layer is 3-24 ms and the model-free clock 85 ms on the bundled examples.
+      // measured, the date layer is 3-24 ms and the model-free clock 43 ms on korber (median of 9,
+      // date ingest plus `runDating`, with veg/tn93's compiled build computing the root-to-tip
+      // distances; 36 ms with the library's JavaScript port — src/caps.js carries the same figures).
       const runsTheModel = analysis !== "dates" && analysis !== "dating";
       // `temporal` runs the model AND a permutation null whose cost the library's figure knows
       // nothing about, so it takes src/caps.js's own branch too: on H5N1_HA_geo the library's

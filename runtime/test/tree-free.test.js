@@ -219,6 +219,48 @@ describe.skipIf(!ready)('busted --use-tn93 on Smc6: the statistical half', () =>
 	}, 300_000);
 });
 
+describe.skipIf(!ready)('a prepareRun result survives a postMessage, engine and all', () => {
+	it('carries the resolved TN93 engine without putting a function in anything that is cloned', async () => {
+		// THE BUG THIS PINS, MEASURED. The report's FILTER section re-loads the cleaned alignment and
+		// computes a SECOND TN93 matrix (filter.js:618); since @veg/hyphaeon-js's JavaScript TN93 was
+		// deleted that load throws without an engine, so `prepareRun` hands its resolved
+		// `tn93Options` back for `analyze.js` to forward. The first version of that returned it as an
+		// ordinary property — and `analyze.js` passes the whole prep result to `runMeme` as
+		// `options.prepared`, which `submittedOptions` copies into `provenance.options`, which the
+		// browser's analyze worker then posts. Chromium refused the entire report with "Failed to
+		// execute 'postMessage' ... (...)=>{...} could not be cloned", and both tree-free e2e flows
+		// failed after four minutes with the sites section marked `failed`. The property is
+		// non-enumerable now. This test is the cheap version of that four-minute failure.
+		const { alignmentText, treeText } = example('camelid');
+		const prep = await prepareRun({
+			alignmentText,
+			treeText,
+			options: { maxSpecies: Infinity, diagnose: false },
+			defaultMaxSpecies: null
+		});
+		// The engine really is there, readable by name, and really is the compiled one.
+		expect(prep.useTn93).toBe(true);
+		expect(typeof prep.tn93Options.pairwiseDistances).toBe('function');
+		expect(prep.tn93Options.tn93Engine).toBe('wasm');
+		// And it is invisible to every serialiser a record passes through.
+		expect(Object.keys(prep)).not.toContain('tn93Options');
+		expect(Object.keys({ ...prep })).not.toContain('tn93Options');
+		expect(JSON.parse(JSON.stringify({ prepared: prep })).prepared.tn93Options).toBeUndefined();
+		// The one that actually broke: structuredClone is what postMessage runs.
+		expect(() => structuredClone({ prepared: prep })).not.toThrow();
+		// A run that USED a tree resolves no engine at all, and says so rather than naming one.
+		const withTree = await prepareRun({
+			alignmentText: example('bat_oas1').alignmentText,
+			treeText: example('bat_oas1').treeText,
+			options: { maxSpecies: Infinity, diagnose: false },
+			defaultMaxSpecies: null
+		});
+		expect(withTree.useTn93).toBe(false);
+		expect(withTree.tn93Options).toBeNull();
+		expect(withTree.preprocessing.tn93_engine).toBeNull();
+	}, 300_000);
+});
+
 describe.skipIf(!ready)('epistasis --use-tn93 on Smc6: edges and sectors exact', () => {
 	it('finds the reference\'s 6 edges and 3 sectors — not the 5 and 2 the tree gives', async () => {
 		const { backbone } = await session();

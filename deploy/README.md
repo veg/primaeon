@@ -39,6 +39,14 @@ Two consequences worth stating, because they used to be true and are not any mor
   (`user` | `embedded` | `tn93`). Nothing on the host estimates branch lengths, so a job that used
   to fail for want of a tree now succeeds, and `POST /api/v1/validate` reports a missing tree as
   `TREE_FREE_TN93` at *info* level rather than refusing it.
+  **Those distances come from `runtime/vendor/tn93/`** — veg/tn93's own compiled build, tracked in
+  the repository and checked against the sha256 in its `MANIFEST.json` before it is instantiated —
+  and there is no second implementation anywhere in the product, so if that directory is missing or
+  its bytes do not verify, every tree-free job fails with `TN93_ENGINE_UNAVAILABLE` (a *server*
+  error naming the stage, the vendored release and both hashes) and `/validate` refuses at that code
+  instead of diagnosing. A job whose tree carries branch lengths is unaffected. Check it with
+  `POST /api/v1/validate` on an alignment with no tree, or read `list_models`'s `tree_free` line
+  over `/mcp`.
 - **`analysis: "phenotype"` is a normal job**, and `analysis: "analyze"` with an
   `options.phenotype` trait block fills the report's phenotype section from the run's own forward
   pass. Neither needs anything extra installed.

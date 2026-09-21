@@ -378,6 +378,9 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		batchSize: number;
 		calls: number;
 		starsRewritten: number;
+		/** Who computed the square TN93 matrix the pass fed the graph: 'wasm' | 'custom'. There is no
+		 * 'js': a pass that could not reach the compiled engine threw instead of substituting one. */
+		tn93Engine: 'wasm' | 'custom';
 		elapsedSeconds: number;
 	}
 	export interface DatingWarning {
@@ -417,6 +420,8 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		spline: Record<string, unknown> | null;
 		distanceMode: 'tn93' | 'latent';
 		distanceModeReason: string;
+		/** Who computed the root-to-tip distances; null in latent mode, where none were computed. */
+		tn93Engine: 'wasm' | 'custom' | null;
 		pagelLambda: number | null;
 		printedRidge: number | null;
 		active: Record<string, unknown>;
@@ -449,6 +454,16 @@ declare module '@veg/hyphaeon-runtime/dating' {
 		 * root is a position in the MODEL'S space and there is nothing to approximate it with.
 		 */
 		distanceMode?: 'auto' | 'tn93' | 'latent';
+		/**
+		 * An ALREADY-RESOLVED options object for the library's RECTANGULAR `tn93CrossDistanceMatrix`
+		 * — `resolveTn93Options({shape: 'cross'})`'s `tn93Options`, which puts veg/tn93's own compiled
+		 * code behind the hook. It arrives resolved because `runDating` is synchronous and the loader
+		 * is not. It is REQUIRED on a tn93-mode run: @veg/hyphaeon-js computes no distance of its
+		 * own, so without it the first matrix throws `Tn93EngineRequiredError`.
+		 */
+		tn93Options?: Record<string, unknown> | null;
+		/** What that object actually is; derived from it when absent, never assumed. */
+		tn93Engine?: 'wasm' | 'custom' | null;
 		/** What `runDatingModelPass` returned, or null. Its absence is a fact, not an error. */
 		neural?: DatingModelPass | null;
 		/** Why `neural` is absent, when the caller knows; reported as DATING_MODEL_GRAPH_ABSENT. */

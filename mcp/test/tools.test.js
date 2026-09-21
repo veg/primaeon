@@ -206,6 +206,18 @@ describe("tool registry", () => {
     // D22 / Phase 3: no estimator, no second engine.
     expect(body.native.branch_length_estimator).toBeNull();
     expect(body.native.tree_free).toMatch(/tn93/);
+    // AND IT NAMES THE ENGINE THAT ACTUALLY ANSWERED. This line read "tn93 (library)" while every
+    // tree-free run on this surface had gone through veg/tn93's vendored compiled build, which is
+    // a capability block stating the opposite of what the process does. `status()` resolves the
+    // engine now, and since the library's JavaScript TN93 was deleted there are only two outcomes:
+    // the vendored compiled build answered, or nothing can and `tree_free_unavailable` says so with
+    // a stage and a hint. A string mentioning a JavaScript port would be a claim about code that no
+    // longer exists, so it is refused here rather than accepted as the other branch.
+    expect(body.native.tree_free).toMatch(/compiled build/);
+    expect(body.native.tree_free).toMatch(/veg\/tn93/);
+    expect(body.native.tree_free).not.toMatch(/JavaScript port/);
+    // Present only when the engine could NOT be reached, so its absence is the success signal.
+    expect(body.native.tree_free_unavailable).toBeUndefined();
     expect(body.bridge).toBeUndefined();
   });
 });

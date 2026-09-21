@@ -22,8 +22,10 @@
  *
  * EXAMPLES. korber_env_gp160.fasta (143 sequences, 981 codons) is the right one: it is the only
  * bundled example that exercises an undated sequence, imputation, the archival-1959 offer and an
- * explicit root taxon at once, and it is fast — measured in this session at 85 ms model-free
- * through the runtime and 75 ms through the tool.
+ * explicit root taxon at once, and it is fast — re-measured 2026-09-13, after the pillar reached
+ * veg/tn93's compiled build, at 43 ms model-free through the runtime (median of 9, date ingest plus
+ * `runDating`; 36 ms with the library's JavaScript port, the rectangular hook being the one shape
+ * where the compiled engine is marginally slower).
  *
  * THE SLOW BLOCK. `use_model: true` runs one forward pass over EVERY codon through
  * `<variant>_taxa.onnx`: measured at 10.0 s end to end through the tool on this machine at 4
@@ -98,6 +100,24 @@ describe("hyphaeon_dating: the model-free clock, and what it refuses", () => {
     expect(body.provenance.preprocessing.date_gate.applied).toContain("DATES_UNDATED_PRESENT");
 
     console.log("[dating] korber model-free through the tool: " + ms + " ms, t_mrca " + record.t_mrca.toFixed(2) + ", mu " + record.mu.toExponential(3) + ", active " + record.active_model);
+  });
+
+  it("computes its divergences with veg/tn93's compiled code, and says so in two places", async () => {
+    // THE BUG THIS PINS. Divergence in this pillar IS a TN93 distance, and the MCP called
+    // `runDating` with no distance options at all: the library fell to its JavaScript port while
+    // the product's provenance panel stood ready to name the compiled engine. Nothing failed,
+    // because a missing hook is a slower run with the same numbers. Node needs no URLs — the
+    // loader finds runtime/vendor/tn93/ and verifies its sha256 — so `wasm` is the only honest
+    // answer here, and `js` would mean the engine is silently not being used again.
+    const { body, isError } = await call({ alignment: korber, root_taxon: "CONSENSUS", drop_undated: true });
+    expect(isError).toBe(false);
+    expect(body.record.primaeon.tn93_engine).toBe("wasm");
+    expect(body.provenance.preprocessing.tn93_engine).toBe("wasm");
+    // A pair the compiled tool declines to write at its 1.0 threshold is imputed rather than
+    // measured, and is the one condition under which the two engines may differ. Counted, not
+    // assumed: korber has none.
+    expect(body.record.primaeon.tn93_pairs_omitted).toBe(0);
+    expect(body.warnings.some((w) => w.code === "DATING_TN93_ENGINE_FALLBACK")).toBe(false);
   });
 
   it("reference_command is {command, reproduces, caveats}, and reproduces is FALSE on header dates", async () => {

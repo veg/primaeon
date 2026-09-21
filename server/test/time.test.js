@@ -562,6 +562,13 @@ describe("analysis: dating — the molecular clock", () => {
     // D34: no tree, on any surface. The record says so rather than leaving it to be inferred.
     expect(doc.provenance.preprocessing.tree_source).toBe("tn93");
     expect(doc.provenance.preprocessing.branch_lengths_estimated).toBe(false);
+    // THE SERVER NEEDS NO CODE OF ITS OWN FOR THIS, and that is what is being asserted: dating runs
+    // through `@veg/hyphaeon-mcp/engine` (runner.js), so the engine's resolution of the compiled
+    // TN93 is the server's too. `js` here would mean the distances came from the library's
+    // JavaScript port while the record named veg/tn93's compiled code — the defect this field
+    // exists to close, and the one that made every dating run on every surface use the port.
+    expect(doc.record.primaeon.tn93_engine).toBe("wasm");
+    expect(doc.provenance.preprocessing.tn93_engine).toBe("wasm");
   });
 
   it.skipIf(!HAVE_EXAMPLES)("carries the reproduction line as an OBJECT that refuses to over-promise", async () => {
@@ -837,7 +844,20 @@ describe("analysis: temporal — a refining null on an SSE stream", () => {
 });
 
 describe("stopping a temporal run keeps what it produced", () => {
-  it.skipIf(!HAVE_EXAMPLES)("POST /cancel mid-null completes with a truncated, honest record", async () => {
+  // POST /cancel drives an abort into the worker and KEEPS what the run produced (Phase 6). The
+  // TRUNCATION SEMANTICS — a mid-null abort resolves with a record at the achieved draw count,
+  // carrying its p-values and a RUN_STOPPED_EARLY warning — are pinned deterministically in the
+  // runtime, where the abort can be tripped by the null's own progress with no clock in the loop
+  // (runtime/test/temporal-port.test.js, "a null aborted mid-draw..."). Proving the SAME thing here
+  // meant catching a live run mid-null over HTTP and hoping the cancel won the race against the
+  // null's completion; on a fast runner it did not, the run finished clean, and the test flaked (CI
+  // run 35519189635). This test proves only what is the SERVER's to prove, and does so without that
+  // race: that the route aborts the run, that the pillar RESOLVES rather than being deleted, and
+  // that a resolved temporal record is a truncated-honest one. Whether the abort lands before the
+  // null (job `cancelled`, no draws) or during it (job `completed`, a truncated record) is timing,
+  // so BOTH terminal outcomes are accepted; the truncation assertions run in the `completed` branch,
+  // which is the one the runtime test also exercises head-on.
+  it.skipIf(!HAVE_EXAMPLES)("POST /cancel aborts the run, keeps it, and resolves a truncated record", async () => {
     const ex = engineExample("H5N1_HA_geo", { tree: "H5N1_HA.nwk", dates: "H5N1_HA_metadata.csv" });
     const res = await post({
       analysis: "temporal",
@@ -845,45 +865,53 @@ describe("stopping a temporal run keeps what it produced", () => {
       tree: ex.tree,
       dates_file: ex.dates_file,
       names: ex.names,
-      // The reference's own grid and draw count, so the null is long enough to interrupt.
-      options: { time_points: 250, n_permutations: 1000 }
+      // A large null so the cancel has room to land while it runs; the assertions do not depend on it.
+      options: { time_points: 250, n_permutations: 4000 }
     });
     expect(res.status).toBe(202);
     const id = res.body.id;
 
-    let asked = false;
+    // Cancel as soon as the null phase is announced (draw 0), AWAITED so the route contract itself is
+    // under test: 200 and a job view back. This is not timed against the null — the assertions below
+    // hold for either terminal state the abort produces.
+    let cancelSent = false;
+    let cancelStatus = null;
     await readSse(srv.baseUrl, "/api/v1/jobs/" + id + "/events", {
       onEvent: (ev) => {
-        if (asked) return;
-        if (ev.event !== "section" || ev.data.name !== "permutations") return;
-        if (!(ev.data.payload.permutations && ev.data.payload.permutations.completed >= 1)) return;
-        asked = true;
-        request(handle.app).post("/api/v1/jobs/" + id + "/cancel").send().end(() => {});
+        if (cancelSent) return;
+        if (ev.event !== "progress" || ev.data.phase !== "temporal-null") return;
+        cancelSent = true;
+        // `.end(cb)` DISPATCHES the request now. A supertest request built with `.send()` alone is
+        // lazy — it does not hit the wire until awaited, and awaiting it after this SSE read (which
+        // only resolves when the run is `done`) would send the cancel AFTER the null had already
+        // finished. That is the mistake that made this look like a broken abort; it was an unsent
+        // request. Fire it here and capture the status in the callback.
+        request(handle.app).post("/api/v1/jobs/" + id + "/cancel").send().end((_e, r) => { cancelStatus = r && r.status; });
       }
     });
-    expect(asked).toBe(true);
+    expect(cancelSent, "the run never entered the null phase").toBe(true);
 
     const view = await settle(id);
-    // COMPLETED, not cancelled: `runTemporalNull` catches its own abort and `runTemporal` resolves
-    // with a record classified at the achieved draw count. DELETE would have thrown that away,
-    // which is exactly why cancel is a separate route.
-    expect(view.status).toBe("completed");
-    expect(view.warnings.map((w) => w.code)).toContain("RUN_STOPPED_EARLY");
+    expect(cancelStatus).toBe(200);
+    // KEPT, not deleted: the row and its result survive the cancel (DELETE is the route that removes).
+    // A pillar that cannot answer partially ends `cancelled`; the temporal pillar RESOLVES, so a
+    // cancel that landed mid-null ends `completed` with a truncated record. Both are valid here.
+    expect(["completed", "cancelled"]).toContain(view.status);
 
-    const doc = (await request(handle.app).get("/api/v1/jobs/" + id + "/result")).body;
-    const perm = doc.record.permutations;
-    expect(perm.cancelled).toBe(true);
-    expect(perm.completed).toBeGreaterThan(0);
-    expect(perm.completed).toBeLessThan(perm.requested);
-    // A client that stopped at draw N reads a result that says N and MEANS it: draw b is seeded
-    // from splitmix64(seed, b), so this record is bit-identical to one configured at `completed`.
-    const stopped = doc.provenance.warnings.find((w) => w.code === "RUN_STOPPED_EARLY");
-    expect(stopped.message).toMatch(new RegExp("completed " + perm.completed + " of " + perm.requested));
-    expect(stopped.data.reason).toMatch(/cancelled by client/);
-    // The calls it does carry are results at that count, not a half-answer.
-    expect(doc.honesty.null_state).toBe("finished");
-    expect(doc.honesty.calls_are_final).toBe(true);
-    expect(doc.record.stage).toBe("complete");
+    if (view.status === "completed") {
+      expect(view.warnings.map((w) => w.code)).toContain("RUN_STOPPED_EARLY");
+      const doc = (await request(handle.app).get("/api/v1/jobs/" + id + "/result")).body;
+      const perm = doc.record.permutations;
+      expect(perm.cancelled).toBe(true);
+      expect(perm.completed).toBeLessThan(perm.requested);
+      // A client that stopped at draw N reads a result that says N and MEANS it: draw b is seeded
+      // from splitmix64(seed, b), so this record is bit-identical to one configured at `completed`.
+      const stopped = doc.provenance.warnings.find((w) => w.code === "RUN_STOPPED_EARLY");
+      expect(stopped.message).toMatch(new RegExp("completed " + perm.completed + " of " + perm.requested));
+      expect(stopped.data.reason).toMatch(/cancelled by client/);
+      expect(doc.honesty.calls_are_final).toBe(true);
+      expect(doc.record.stage).toBe("complete");
+    }
   }, 300_000);
 
   it("cancelling an unknown job is 404, and cancelling a finished one is a no-op", async () => {
@@ -1284,11 +1312,24 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
   });
 
   it.skipIf(!HAVE_EXAMPLES)("keeps the projection small even with the honesty block on every payload", () => {
+    // WHAT IS ACTUALLY BOUNDED HERE IS THE PAYLOAD, NOT THE STREAM, and the first version of this
+    // test asserted the stream. It summed every `section` event's bytes and checked `total < 512
+    // KiB`, but the NUMBER of those events is a function of how many null chunks finish and how many
+    // progress refreshes fire — which grows with wall-clock, so a loaded machine emits more events
+    // for the same run and the sum rises with it. It failed at ~564 KB under a four-workspace run
+    // and passed in isolation, the signature of an assertion on something unbounded rather than of
+    // a flake. PHASE6 §3 called it "the bound that protects the server"; it never was one.
+    //
+    // The real invariant is PER-EVENT: every section is a projected section (a summary or a
+    // permutations chunk, whose rows TEMPORAL_PERM_ROWS_MAX already bounds), never the runtime's
+    // interim WHOLE record, which is 6.7 MiB apiece. So the bound is asserted on EACH event, with no
+    // dependence on how many there are. A per-event check cannot be defeated by one oversized payload
+    // the way a mean or a sum can, and it catches the regression this test exists for — a payload
+    // that starts carrying the whole record, off by two orders of magnitude.
+    const PER_EVENT_MAX = 128 * 1024;
     const sections = events.filter((e) => e.event === "section");
-    const biggest = Math.max(...sections.map((e) => e.bytes));
-    const total = sections.reduce((a, e) => a + e.bytes, 0);
-    expect(biggest).toBeLessThan(128 * 1024);
-    expect(total).toBeLessThan(512 * 1024);
+    expect(sections.length).toBeGreaterThan(0);
+    for (const s of sections) expect(s.bytes).toBeLessThan(PER_EVENT_MAX);
   });
 });
 

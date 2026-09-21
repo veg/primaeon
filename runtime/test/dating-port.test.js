@@ -82,6 +82,13 @@ import {
 } from '../src/dating/index.js';
 import { clockRegression } from '../src/clock.js';
 import { DATE_SOURCES, ingestDates } from '../src/dates/index.js';
+// The distance engine. `runDating` is synchronous and this loader is not, so every caller resolves
+// first and hands the options in; since @veg/hyphaeon-js's JavaScript TN93 was deleted a tn93-mode
+// run without them throws `Tn93EngineRequiredError` rather than computing the same numbers more
+// slowly. Importing it HERE is fine and is not what the import-boundary suite below forbids: that
+// rule is about `src/dating/` itself, which must stay free of sessions, manifests and WebAssembly
+// so the /time route loads no model byte. A 250 KB tn93 build in a test file is not a model.
+import { resolveTn93Options } from '../src/tn93-wasm.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNTIME = join(HERE, '..');
@@ -209,6 +216,9 @@ const MEASURED_VS_PREVIEW = Object.freeze({
 // Helpers
 // =================================================================================================
 
+/** Resolved once for the whole file; every `runDating` call below is handed this object. */
+const TN93 = (await resolveTn93Options({ shape: 'cross' })).tn93Options;
+
 function runExample(fasta, rootTaxon = 'CONSENSUS', options = {}) {
 	const text = readFileSync(join(EXAMPLES, fasta), 'utf8');
 	const raw = LIB.parseAlignmentSequences(text);
@@ -216,7 +226,7 @@ function runExample(fasta, rootTaxon = 'CONSENSUS', options = {}) {
 	// The date layer's own default for this example is the header fallback with the 1959 anchor ON,
 	// which is what the reference applies unconditionally (dating.py:330-332, DATES_ARCHIVAL_1959).
 	const dates = new Map([...seqs.keys()].map((t) => [t, LIB.parseHeaderTimestamp(t, { archival1959: true })]));
-	return { text, seqs, dates, run: runDating({ alignmentText: text, dates, rootTaxon, alignmentName: `examples/${fasta}`, ...options }) };
+	return { text, seqs, dates, run: runDating({ alignmentText: text, dates, rootTaxon, alignmentName: `examples/${fasta}`, tn93Options: TN93, ...options }) };
 }
 
 function referenceRecord(name) {
@@ -705,26 +715,26 @@ suite('runDating refuses rather than returning a number it cannot defend', () =>
 	]);
 
 	it('too few dated sequences', () => {
-		const out = runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', NaN]]) });
+		const out = runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', NaN]]), tn93Options: TN93 });
 		expect(out.ok).toBe(false);
 		expect(out.refusal).toBe(DATING_REFUSALS.TOO_FEW_DATED);
 		expect(out.warnings.at(-1).message).toContain('at least 3');
 	});
 
 	it('no span on the time axis', () => {
-		const out = runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', 2000], ['c', 2000]]) });
+		const out = runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', 2000], ['c', 2000]]), tn93Options: TN93 });
 		expect(out.refusal).toBe(DATING_REFUSALS.NO_TIME_SPAN);
 	});
 
 	it('a ragged alignment, before any distance is attempted', () => {
-		const out = runDating({ sequences: new Map([['a', 'ACGACG'], ['b', 'ACG']]), dates: new Map([['a', 2000], ['b', 2001]]) });
+		const out = runDating({ sequences: new Map([['a', 'ACGACG'], ['b', 'ACG']]), dates: new Map([['a', 2000], ['b', 2001]]), tn93Options: TN93 });
 		expect(out.refusal).toBe(DATING_REFUSALS.ALIGNMENT_RAGGED);
 	});
 
 	it('an interval method it has not ported — rather than silently giving Fieller', () => {
 		// dating.py:1244-1258's chain ends in an `else` that makes any unknown string Fieller. A
 		// page that offered "Poisson" and got Fieller would be lying about what it computed.
-		expect(() => runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', 2001], ['c', 2002]]), ciMethod: 'poisson' })).toThrow(
+		expect(() => runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', 2001], ['c', 2002]]), ciMethod: 'poisson', tn93Options: TN93 })).toThrow(
 			RangeError
 		);
 	});
@@ -732,7 +742,7 @@ suite('runDating refuses rather than returning a number it cannot defend', () =>
 	it('a cancelled run, with the name every worker in this package checks', () => {
 		const controller = new AbortController();
 		controller.abort();
-		expect(() => runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', 2001], ['c', 2002]]), signal: controller.signal })).toThrow(
+		expect(() => runDating({ sequences: seqs, dates: new Map([['a', 2000], ['b', 2001], ['c', 2002]]), signal: controller.signal, tn93Options: TN93 })).toThrow(
 			expect.objectContaining({ name: 'AbortError' })
 		);
 	});
@@ -740,7 +750,7 @@ suite('runDating refuses rather than returning a number it cannot defend', () =>
 	it('names an excluded sequence rather than quietly conditioning the estimate on it', () => {
 		const dates = new Map([['a', 2000], ['b', 2001], ['c', 2002], ['d', 2003]]);
 		const four = new Map([...seqs, ['d', 'ACGACTATG']]);
-		const out = runDating({ sequences: four, dates, excludedTaxa: ['d'] });
+		const out = runDating({ sequences: four, dates, excludedTaxa: ['d'], tn93Options: TN93 });
 		expect(out.taxa).not.toContain('d');
 		expect(out.record.primaeon.excluded_taxa).toEqual(['d']);
 		expect(codes(out)).toContain('DATING_TAXA_EXCLUDED');

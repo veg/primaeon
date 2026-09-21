@@ -321,7 +321,12 @@ The library's (js/src/diagnostics.js, thresholds and sources in its header): `FO
 server's: `CAPS_EXCEEDED` (refuse) and `RUN_MODE` (info). Severity is `info`, `warn` or `refuse`;
 `ok` is false when anything refuses. **D22 retired three codes**: `TREE_MISSING` and
 `BRANCH_LENGTHS_MISSING` became `TREE_FREE_TN93` at *info* level with the reason, and
-`TN93_UNAVAILABLE` is gone because the library computes the distances. The same library codes are
+`TN93_UNAVAILABLE` is gone because the distances are computed in this process — veg/tn93's own
+compiled build, vendored in the runtime, and nothing else. There is no JavaScript port to fall back
+to: it was deleted so that the one implementation this product runs is the one that arrives from
+veg/tn93 itself, and a build that will not load is a refusal (`TN93_ENGINE_UNAVAILABLE`) rather than
+a quietly different number. `list_models` reports the engine under `native.tree_free`. The same
+library codes are
 the contract for the web app's diagnostics panel and the Node server's `/validate`.
 
 ## Known gaps

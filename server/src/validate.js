@@ -31,7 +31,12 @@
  * summary}` with the summary keys in snake_case as the CLI prints them.
  */
 
-import { diagnose as libraryDiagnose, parseAlignmentSequences, sniffAlignmentFormat, extractTree } from "@veg/hyphaeon-js";
+import { parseAlignmentSequences, sniffAlignmentFormat, extractTree } from "@veg/hyphaeon-js";
+// `diagnoseUpload` is `diagnose()` with the distance engine this product actually runs handed in
+// (runtime/src/pipeline.js). A STATIC import, unlike the MCP's, because the runtime's main entry is
+// already in this process's module graph by the time validate.js is linked — MEASURED at 0.7 ms
+// incremental against 331.8 ms for validate.js's own graph, so there is nothing to defer.
+import { diagnoseUpload } from "@veg/hyphaeon-runtime";
 import { DATING_MODEL_MAX_TAXA, MAX_ALIGNMENT_CHARS, MAX_TAXA, TAXON_CAP, classifyRun, probeSequences, workFor } from "@veg/hyphaeon-mcp/caps";
 import { ANALYSES } from "./runner.js";
 import { clockReadiness, dateGate, dateHeadline, dateReview, ingestFor, refusalHint, temporalGridCheck } from "./time.js";
@@ -48,8 +53,11 @@ export function capsAnalysisFor(analysis) {
 /**
  * The caps options an analysis's own request implies. `dating`'s work term switches on `use_model`
  * (mcp/src/caps.js `workFor`): the default path is a root-to-tip regression over pairwise TN93
- * distances, O(N x L) and measured at 85-122 ms on korber's 143 x 981, while `use_model: true`
- * adds one forward pass over every codon and is the ordinary L x N^2 — and brings the pillar's own
+ * distances, O(N x L) and measured at 43 ms on korber's 143 x 981 (median of 9, date ingest plus
+ * `runDating`, with veg/tn93's compiled build; 36 ms with the JavaScript port that has since been
+ * deleted), while
+ * `use_model: true` adds one forward pass over every codon and is the ordinary L x N^2 — and
+ * brings the pillar's own
  * DATING_MODEL_MAX_TAXA ceiling with it, which refuses rather than downsampling into it.
  */
 export function capsOptionsFor(analysis, options = {}) {
@@ -285,10 +293,27 @@ export function dateCheck(analysis, alignment, datesFile, options = {}, names = 
 /**
  * The validate endpoint's body.
  *
+ * ASYNC BECAUSE THE DIAGNOSIS RUNS THE SAME TN93 THE JOB WILL. A tree-free diagnosis does a full
+ * model-level load of its own, so it computes the whole N x N distance matrix before any job is
+ * accepted — and it computed it with the library's JavaScript port while every accepted job used
+ * veg/tn93's compiled build. `diagnoseUpload` resolves the engine (loading a WebAssembly module,
+ * hence the promise) and hands it to the same load. MEASURED per process, median of 7, this
+ * machine, alignment only and no tree: korber 143 taxa 200 ms compiled against 373 in the port,
+ * HIV1_RT 475 taxa 981 ms against 2,776 — and the diagnosis was IDENTICAL either way (same warning
+ * codes and severities, byte-identical summary, checked on all five bundled examples), which is
+ * why swapping it was allowed to be invisible. That port is now deleted, so the compiled engine's
+ * fixed load is paid on a small upload too (bat_oas1, 18 taxa: 44 ms against 14) and
+ * `summary.tn93_engine` reports which engine ran.
+ *
+ * AND IT CAN NOW SAY "NO ENGINE". `diagnoseUpload` never throws: a deployment whose vendored build
+ * is missing or does not verify gets a `refuse`-level TN93_ENGINE_UNAVAILABLE row here, so
+ * `/validate` tells an operator what is wrong with the INSTALLATION before a job is submitted and
+ * fails in a worker.
+ *
  * @param {{alignment: string, tree?: string, analysis?: string, use_tn93?: boolean,
  *   max_species?: number, dates_file?: string, options?: object}} input
  */
-export function validate({ alignment, tree, analysis = "analyze", use_tn93 = false, max_species, dates_file, options = {} }) {
+export async function validate({ alignment, tree, analysis = "analyze", use_tn93 = false, max_species, dates_file, options = {} }) {
   const treeGiven = typeof tree === "string" && tree.trim().length > 0;
   const maxSpecies = Number.isInteger(max_species) && max_species >= 2 ? Math.min(max_species, TAXON_CAP) : TAXON_CAP;
   // AN XML IS NOT DIAGNOSED AS AN ALIGNMENT, it is refused as the wrong field (ALIGNMENT_IS_XML).
@@ -299,7 +324,10 @@ export function validate({ alignment, tree, analysis = "analyze", use_tn93 = fal
   // on. Diagnosing the empty string instead gives the one honest answer (`FORMAT_UNKNOWN`, and a
   // summary of nulls) and leaves the sentence that says what to do to the refusal below it.
   const alignmentIsXml = looksLikeXml(alignment);
-  const lib = libraryDiagnose({
+  // `diagnoseUpload` (not the library's `diagnose` directly) so the compiled TN93 engine is threaded
+  // through the tree-free path here exactly as a job would run it, and so a missing/unverified
+  // vendored build is caught at the door (TN93_ENGINE_UNAVAILABLE) rather than in a worker.
+  const lib = await diagnoseUpload({
     alignmentText: alignmentIsXml ? "" : typeof alignment === "string" ? alignment : "",
     treeText: treeGiven ? tree : null,
     maxSpecies,
@@ -327,6 +355,11 @@ export function validate({ alignment, tree, analysis = "analyze", use_tn93 = fal
     // about a run that will not happen.
     tree_source: treeSourceFor({ treeGiven, embedded: !treeGiven && !alignmentIsXml && hasEmbeddedTree(alignment), treeFree: treeFree !== null }),
     tree_free: treeFree ? treeFree.data.reason : null,
+    // Which TN93 computed the matrix this diagnosis was made from: 'wasm' (the vendored compiled
+    // build) or 'custom' on a tree-free check, null when a tree supplied the distances, when the
+    // upload was too large to load, or when no engine could be reached — in which case the
+    // TN93_ENGINE_UNAVAILABLE refusal is in `warnings`.
+    tn93_engine: lib.tn93_engine,
     distance_rescaled: lib.warnings.some((w) => w.code === "DISTANCE_RESCALED"),
     work: 0,
     mode: null,

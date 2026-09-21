@@ -58,6 +58,7 @@ import type {
 } from '$lib/api';
 import type { PhenotypeSection } from '$lib/report/types';
 import type { TaxonDatingRow } from '$lib/time/types';
+import type { TemporalPreprocessing } from '$lib/time/temporal';
 import type { PrescreenResult } from '$lib/diagnostics/panel';
 
 // ---- envelope ---------------------------------------------------------------------------------
@@ -119,10 +120,26 @@ export interface PrepRequest {
 	treeSource: string;
 	/** Whether to run the XGBoost prescreen (skipped while the tree is being estimated). */
 	prescreen: boolean;
+	/**
+	 * Where `static/tn93/` is served from, as the analyze, temporal and dating requests already
+	 * carry it. `diagnose()` does a model-level load of its own, so a tree-free check computes the
+	 * WHOLE N x N TN93 matrix — before every run, on every upload — and veg/tn93's compiled build is
+	 * the only thing that can compute it: @veg/hyphaeon-js has no TN93 of its own. Without these
+	 * URLs a tree-free upload gets a TN93_ENGINE_UNAVAILABLE refusal in the panel rather than a
+	 * diagnosis; an upload whose tree carries branch lengths is unaffected.
+	 */
+	tn93Base?: string;
 }
 
 export interface PrepResponse {
 	diagnosis: DiagnosisSnapshot;
+	/**
+	 * Which TN93 computed the distances this diagnosis was made from: `'wasm'` (the vendored
+	 * compiled build) or `'custom'` (a provider handed in) on a tree-free check, `null` when a tree
+	 * supplied them, when the upload was too large to load, or when no engine could be reached — in
+	 * which case `diagnosis.warnings` carries the refusal. The run's own answer, never the request's.
+	 */
+	tn93Engine: string | null;
 	/** Sequence names in file order, from the library's parser (the reference dropdown). */
 	names: string[];
 	prescreen: PrescreenResult | null;
@@ -261,6 +278,16 @@ export interface DatingRequest {
 	clockModel: 'auto' | 'linear' | 'spline';
 	ciMethod: 'fieller' | 'delta';
 	timeUnits: string;
+	/**
+	 * Absolute URL prefix of the vendored compiled TN93 (`.../tn93/`), as the analyze and temporal
+	 * requests already carry. The dating pillar's root-to-tip divergences are TN93 distances, and
+	 * veg/tn93's compiled code is the only thing that computes one — the library's JavaScript port
+	 * was deleted, so `tn93DistanceMatrix` and `tn93CrossDistanceMatrix` now THROW without an engine.
+	 * This field is therefore effectively required for any tree-free dating run: without it the
+	 * worker has nothing to hand the library and the run refuses with `TN93_ENGINE_UNAVAILABLE`
+	 * rather than computing a second implementation's number.
+	 */
+	tn93Base?: string;
 }
 
 /** `runDating`'s result minus its typed arrays; see dating.worker.ts for why they are dropped. */
@@ -410,6 +437,16 @@ export type TemporalStagePayload =
 export interface TemporalResponse {
 	/** The `TemporalRecord`, or null when the run refused (never thrown; runtime `codes.js`). */
 	record: Record<string, unknown> | null;
+	/**
+	 * `prepareRun`'s preprocessing block, which the record does not carry and the page has no other
+	 * way to reach. It is here for one field above all: `tn93_engine`, the run's own answer to which
+	 * TN93 computed its pairwise distances on a tree-free run. The worker asks for the compiled
+	 * engine and the library falls back to its JavaScript port when the module will not load, so the
+	 * request is not the answer — and this worker used to drop the answer, leaving `/time`'s temporal
+	 * provenance unable to name the engine its own run had chosen. Sent on a refusal too: an
+	 * alignment that refused still had its distances computed by one of them.
+	 */
+	preprocessing: TemporalPreprocessing | null;
 	refusal: { code: string; message: string; warnings: Array<{ code: string; severity: string; message: string }> } | null;
 	numThreads: number;
 	crossOriginIsolated: boolean;

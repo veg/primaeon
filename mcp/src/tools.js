@@ -1122,7 +1122,7 @@ export function registerTools(server, deps) {
         const alignment = (await resolveText(args.alignment, "alignment", allowFilePaths)).text;
         const tree = (await resolveText(args.tree, "tree", allowFilePaths)).text;
         const datesFile = await resolveText(args.dates_file, "dates_file", allowFilePaths);
-        const out = diagnose({
+        const out = await diagnose({
           alignment,
           tree,
           analysis: args.analysis || "meme",
@@ -1815,7 +1815,9 @@ export function registerTools(server, deps) {
       "of 143 by a rule the reference does not have). `record.primaeon.estimators_not_built` names what this build " +
       "does not estimate (the power-law clock, LOOCV/jackknife, and without the graph the attention PGLS and the " +
       "latent root search) so no flag for them is ever printed. " +
-      "Answers inside the call: measured at 85 ms on the 143-sequence korber example model-free; with use_model the " +
+      "Answers inside the call: measured at 43 ms on the 143-sequence korber example model-free (median of 9, with " +
+      "veg/tn93's compiled build computing the root-to-tip distances; 36 ms with the library's JavaScript port); " +
+      "with use_model the " +
       "graph pass dominates (about 9 s on the same file).",
     inputSchema: Object.assign(
       { alignment: alignmentSchema },
@@ -2271,7 +2273,10 @@ export function registerTools(server, deps) {
         "The weights manifest (model_version, variants with training regime and artifact hashes, " +
         "taxon caps, ONNX contract, PRNG) read through the runtime's manifest reader, and the " +
         "engine's status: the models directory, onnxruntime-node, the MDS sign convention, how " +
-        "distances are obtained without a usable tree (TN93 in the library), and which runtime " +
+        "distances are obtained without a usable tree (pairwise TN93 — `tree_free` names the engine " +
+        "that answered the probe: veg/tn93's vendored compiled build, which is the only " +
+        "implementation there is. There is no JavaScript fallback; if that build will not load, " +
+        "tree-free analysis refuses), and which runtime " +
         "entry points this build provides. Every pillar runs in this process; nothing is shelled " +
         "out and no Python is involved.",
       inputSchema: {},

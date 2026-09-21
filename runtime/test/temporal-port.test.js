@@ -247,11 +247,17 @@ const MEASURED = {
 	/** darwin 8.7e-8, linux 8.835e-8 — passed one Linux run, failed the next. CLASS 1e-6, a real decade. */
 	waves: { abs: 2e-7 },
 	/**
-	 * abs: darwin/x64 Rosetta 4.8e-6, linux/x64 5.020e-6.
-	 * rel: darwin/x64 Rosetta 1.29e-5, linux/x64 1.390e-5.
-	 * 1.5x the larger of each. CLASS.loadingsRel is 1e-3, so both stay two decades inside the gate.
+	 * abs: darwin/x64 Rosetta 4.8e-6, linux/x64 5.020e-6 — bound 7.5e-6.
+	 * rel: darwin/x64 Rosetta 1.29e-5, linux/x64 1.390e-5, and 3.810e-5 on this dev host (x64 Rosetta,
+	 * measured stably across four runs — the same value every time, so it is a platform difference in
+	 * the SVD/flip reduction, not run-to-run jitter). The old rel bound was 1.5x the larger of the
+	 * first two (2.1e-5) and never covered a third environment; the nightly `matches every loading
+	 * column` case hit it at 3.810e-5. Bound raised to 6e-5 — ~1.6x the widest observed and still
+	 * 17x inside CLASS.loadingsRel (1e-3), where the second tier is nominal (see the header: loadings
+	 * rel is one of the decade-plus gaps). The CLASS gate did not move and passes untouched at line
+	 * 760; this is the regression tripwire above the environment's noise, not the scientific gate.
 	 */
-	loadings: { abs: 7.5e-6, rel: 2.1e-5 },
+	loadings: { abs: 7.5e-6, rel: 6e-5 },
 	/** The reference against ITSELF, MPS vs CPU, over the same 4,384 rows. */
 	deviceSpread: { lrt: 6.4e-6, r2: 2.7e-7, energy: 5.6e-7, wave1Loading: 1.71e-4 },
 	sweeps: { ours: 32, disagreeing: 18, worstDistanceFromCut: 0.0392, withinOneDraw: 11 },
@@ -1681,5 +1687,92 @@ describe('the review findings this phase closed', () => {
 		// An unknown surface gets the runtime's policy, never the browser's: a caller that silently
 		// downsampled because it misspelled its own name is the failure this guards.
 		expect(temporalTaxonPlan({ surface: 'nope', taxa: 900, codons: 566 }).cap).toBeNull();
+	});
+});
+
+// =================================================================================================
+// Cancellation, deterministically — the abort is tripped by the null's OWN progress
+// =================================================================================================
+//
+// The server used to prove "a stopped null keeps its answer" over HTTP: submit, watch the SSE
+// stream, POST /cancel when a chunk arrived, hope the abort landed before the run finished. That is
+// a race — on a fast runner the null completes before the cancel round-trips, stamps no
+// RUN_STOPPED_EARLY, and the test flakes (CI run 35519189635). The wire path is not where the
+// SEMANTICS live: `runTemporalNull` catches its own abort and `runTemporal` resolves with a record
+// classified at the achieved draw count, and THAT is what a surface depends on.
+//
+// So the semantics are pinned here with no clock in the loop. `progress` fires synchronously from
+// inside the null, once per chunk, carrying (`temporal-null`, done, total); the moment `done`
+// crosses a small threshold this aborts the controller. `runTemporalNull` calls `throwIfAborted`
+// at the top of the NEXT chunk (null.js), so the run stops at a deterministic point — a couple of
+// chunks in, always strictly before `requested` — regardless of how fast draws are. There is no
+// "did the cancel win" question: the cancel is caused by the draw count, not a timer.
+const cancellation = describe.skipIf(!(HAS_GRAPH && HAS_EXAMPLE));
+cancellation('a null aborted mid-draw resolves with a truncated, honest record', () => {
+	/** @type {object} */
+	let record;
+	/** @type {number} */
+	let abortedAtLeast;
+	const REQUESTED = 4000; // large enough that a couple of early chunks cannot exhaust it on any runner
+
+	beforeAll(async () => {
+		const alignmentText = readFileSync(join(EXAMPLES, 'H1N1_2009_pandemic.fasta'), 'utf8');
+		const treeText = readFileSync(join(EXAMPLES, 'H1N1_2009_pandemic.nwk'), 'utf8');
+		const prep = await prepareRun({ alignmentText, treeText, options: { maxSpecies: 1000 } });
+		const dates = ingestDates({ taxa: taxaForDates(alignmentText) });
+		const session = await createSession({ modelsBase: MODELS, variant: 'general', threads: 4 });
+		const controller = new AbortController();
+		abortedAtLeast = 0;
+		record = await runTemporal({
+			loaded: prep.loaded,
+			dates,
+			session: session.backbone,
+			options: { numTimePoints: 60, permutations: REQUESTED },
+			inputs: { alignment: 'examples/H1N1_2009_pandemic.fasta', tree: 'examples/H1N1_2009_pandemic.nwk' },
+			// The abort is TRIPPED BY THE NULL, not by a timer: the first chunk to report at least one
+			// completed draw aborts the controller. The next chunk boundary sees it and stops the run.
+			progress: (phase, done) => {
+				if (phase === 'temporal-null' && done >= 1 && !controller.signal.aborted) {
+					abortedAtLeast = done;
+					controller.abort(new Error('cancelled by test'));
+				}
+			},
+			signal: controller.signal
+		});
+	}, 300_000);
+
+	afterAll(async () => {
+		if (HAS_GRAPH) await releaseSessions();
+	});
+
+	it('resolves rather than rejecting: a stopped temporal run still has an answer', () => {
+		expect(record).toBeTruthy();
+		expect(record.permutations).toBeTruthy();
+	});
+
+	it('records the null as cancelled at fewer than the requested draws', () => {
+		const perm = record.permutations;
+		expect(perm.cancelled).toBe(true);
+		expect(perm.requested).toBe(REQUESTED);
+		expect(perm.completed).toBeGreaterThan(0);
+		expect(perm.completed).toBeLessThan(REQUESTED);
+		// It stopped no earlier than the draw that tripped the abort — the abort cannot rewind work
+		// already done — and the achieved count is a whole number of draws, never a fraction of one.
+		expect(perm.completed).toBeGreaterThanOrEqual(abortedAtLeast);
+		expect(Number.isInteger(perm.completed)).toBe(true);
+	});
+
+	it('carries the p-values it did compute, at the count it says, not a half-answer', () => {
+		// The run RESOLVED — the record is a complete one, classified at the achieved draw count, not
+		// a rejection. Draw b is seeded from splitmix64(seed, b), so a null stopped at N is bit-identical
+		// to one configured at N: `grid_step` is `1/(N+1)`, the real estimator's own grid, and `tested`
+		// is true because draws did complete. (The `honesty.null_state`/`RUN_STOPPED_EARLY` wording is
+		// the SURFACE layer's — mcp/src/time.js, server/src/time.js — and is asserted in their suites;
+		// this test pins the runtime SEMANTICS the surfaces read.)
+		const perm = record.permutations;
+		expect(record.stage).toBe('complete');
+		expect(record.complete).toBe(true);
+		expect(perm.tested).toBe(true);
+		expect(perm.grid_step).toBeCloseTo(1 / (perm.completed + 1), 12);
 	});
 });
