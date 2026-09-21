@@ -14,8 +14,9 @@
  * other weight and a synthesised 600 would make the page differ by platform (§2.4). Tabular
  * numerals are set once on <body> so every digit on the site aligns.
  *
- * COLOUR. Seven greys, two signal colours, nothing else. The DataMonkey purple #5B3FA0 (lightened
- * to #A48BE0 on dark grounds, where the raw purple is only 2.4:1) is the one signal: the brand
+ * COLOUR. Seven greys, two signal colours, nothing else. The DataMonkey purple #7C3AED (DM3
+ * brand-royal; lightened to the same violet family #A78BFA on dark grounds, where the raw purple
+ * is only ~3.4:1) is the one signal: the brand
  * mark, links, the primary action, and the sites the model called. The DataMonkey orange #D9721B
  * keeps its DataMonkey role as the attention colour and marks warnings only; as text it is
  * darkened to #A85200 (light) / lightened to #E5A15A (dark) because the raw orange fails AA on
@@ -65,7 +66,7 @@
 	--text-faint: #6e6e6e; /* tertiary: qualifiers, severity labels, disabled */
 	--text-muted: #555555; /* captions, metadata, labels, nav, tick labels */
 	--text: #111111; /* body, headings, table head rules */
-	--brand: #5b3fa0; /* DataMonkey purple: mark, links, primary action, called sites */
+	--brand: #7c3aed; /* DataMonkey purple (DM3 brand-royal): mark, links, primary action, called sites */
 	--on-brand: #ffffff;
 	--warn: #a85200; /* warning TEXT (the raw orange fails AA on white) */
 	--warn-mark: #d9721b; /* DataMonkey orange: the warning square, marks only */
@@ -95,7 +96,7 @@
 		--text-faint: #8a8a8a;
 		--text-muted: #b0b0b0;
 		--text: #ededed;
-		--brand: #a48be0;
+		--brand: #a78bfa;
 		--on-brand: #111111;
 		--warn: #e5a15a;
 		--warn-mark: #d9721b;
@@ -110,7 +111,7 @@
 	--text-faint: #8a8a8a;
 	--text-muted: #b0b0b0;
 	--text: #ededed;
-	--brand: #a48be0;
+	--brand: #a78bfa;
 	--on-brand: #111111;
 	--warn: #e5a15a;
 	--warn-mark: #d9721b;
