@@ -92,7 +92,12 @@ export { silentLogger };
  * Read an SSE stream from a listening server until `done` (or the connection closes).
  * @returns {Promise<Array<{event: string, data: any}>>}
  */
-export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000, onEvent } = {}) {
+// `onEvent(ev, events)` is a synchronous observer. `onEventAsync(ev, events)` is awaited before the
+// next frame is consumed, and the socket is PAUSED across the await — so a test that reads job state
+// from inside it holds the stream still: the worker may post more frames, but this reader does not
+// advance past the frame under inspection, which is what makes a "while the null runs" assertion
+// deterministic rather than a race against the run finishing.
+export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000, onEvent, onEventAsync } = {}) {
   return new Promise((resolve, reject) => {
     const events = [];
     const req = http.get(baseUrl + pathname, { headers: { Accept: "text/event-stream" } }, (res) => {
@@ -102,6 +107,15 @@ export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000,
       }
       let buf = "";
       res.setEncoding("utf8");
+      // A promise chain so async handlers run in order and the stream is paused across each.
+      let pump = Promise.resolve();
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        req.destroy();
+        resolve(events);
+      };
       res.on("data", (chunk) => {
         buf += chunk;
         let i;
@@ -117,16 +131,23 @@ export function readSse(baseUrl, pathname, { until = "done", timeoutMs = 90_000,
           if (!data) continue;
           // `bytes` is what actually crossed the wire for this event, which is the thing a test
           // about a streaming null has to be able to assert on.
-          events.push({ event, data: JSON.parse(data), bytes: data.length });
-          if (onEvent) onEvent(events[events.length - 1], events);
+          const ev = { event, data: JSON.parse(data), bytes: data.length };
+          events.push(ev);
+          if (onEvent) onEvent(ev, events);
+          if (onEventAsync) {
+            res.pause();
+            pump = pump.then(() => onEventAsync(ev, events)).then(
+              () => { if (!done) res.resume(); },
+              (err) => { if (!done) { done = true; req.destroy(); reject(err); } }
+            );
+          }
           if (event === until) {
-            req.destroy();
-            resolve(events);
+            pump.then(finish);
             return;
           }
         }
       });
-      res.on("end", () => resolve(events));
+      res.on("end", () => pump.then(() => { if (!done) resolve(events); }));
       res.on("error", reject);
     });
     req.on("error", (err) => (err.code === "ECONNRESET" ? resolve(events) : reject(err)));
