@@ -1202,31 +1202,38 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     id = res.body.id;
 
+    // THE READ IS AWAITED FROM INSIDE THE STREAM, NOT FIRED AND FORGOTTEN. The earlier version
+    // launched `GET /jobs/:id` + `GET ?section=summary` with `.then().catch()` and never awaited
+    // them, so `readSse` ran on to `done` (the run finished) and the two reads resolved AFTER the
+    // null had advanced to `temporal-waves` — a race that failed on a fast runner
+    // (`expected 'temporal-waves' to be 'temporal-null'`, nightly run 36240742640). `readSse` now
+    // takes `onEventAsync` and awaits it before consuming the next SSE frame, so the run's own
+    // progress is paused behind this read: while the test holds the event loop between the frame and
+    // the read's resolution, the worker can post more frames but the stream does not advance, and
+    // the phase cannot move past `temporal-null` under the reading. Triggered on the FIRST
+    // `temporal-null` progress event (draw 0), the earliest point the null is provably live.
+    //
+    // REPRODUCED before the ORIGINAL fix: at phase `temporal-null` with done > 400, `?section=
+    // summary` answered `{null_state: 'not-started'}` — a live null reported as not begun. That is
+    // the bug this test guards; the state, not the timing, is the subject.
     let asked = false;
     events = await readSse(srv.baseUrl, "/api/v1/jobs/" + id + "/events", {
-      onEvent: (ev) => {
+      onEventAsync: async (ev) => {
         if (asked) return;
-        if (ev.event !== "section" || ev.data.name !== "permutations") return;
-        const perm = ev.data.payload.permutations;
-        if (!(perm && perm.completed >= 1) || ev.data.final) return;
+        // A `temporal-null` progress event with at least one draw DONE: `done >= 1` is what makes
+        // the null `running` rather than `not-started` (the scored payload exists only once a draw
+        // has completed), and the phase check keeps it before `temporal-waves`. `done === 0` (the
+        // phase's opening tick) would read `not-started` — the very state this test proves the
+        // summary no longer wrongly reports mid-run — so it is explicitly skipped.
+        if (ev.event !== "progress" || ev.data.phase !== "temporal-null" || !(ev.data.done >= 1)) return;
         asked = true;
-        // REPRODUCED before this change: at phase `temporal-null` with done > 400 of 9,000 this
-        // answered `{null_state: 'not-started', calls_are_final: false}` — a null in flight
-        // reported as one that had not begun. The section payload is only ever emitted at the
-        // scored payload, so it never learned that the null had started.
-        request(handle.app)
-          .get("/api/v1/jobs/" + id)
-          .then((v) => {
-            liveSummaryProgress = v.body.progress;
-            return request(handle.app).get("/api/v1/jobs/" + id + "/result?section=summary");
-          })
-          .then((s) => {
-            liveSummary = s.body;
-          })
-          .catch(() => {});
+        const v = await request(handle.app).get("/api/v1/jobs/" + id);
+        liveSummaryProgress = v.body.progress;
+        const s = await request(handle.app).get("/api/v1/jobs/" + id + "/result?section=summary");
+        liveSummary = s.body;
       }
     });
-    expect(asked).toBe(true);
+    expect(asked, "the run never entered the null phase").toBe(true);
     expect(events.at(-1).data.status, JSON.stringify(events.at(-1).data.error || {})).toBe("completed");
     // The grid this run was sized at is ON the job, beside the codon and sequence counts the caps
     // already recorded — T is part of what sized the run now, not an option nobody measured.
