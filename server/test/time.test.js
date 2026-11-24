@@ -1213,6 +1213,15 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
     // the phase cannot move past `temporal-null` under the reading. Triggered on the FIRST
     // `temporal-null` progress event (draw 0), the earliest point the null is provably live.
     //
+    //
+    // PAUSING THE STREAM DOES NOT PAUSE THE WORKER, so that was not enough either: frames the
+    // socket had already buffered could be stale by the time the read ran, and the null finished
+    // under it (`expected 'temporal-waves' to be 'temporal-null'` again, nightly run 42662102227).
+    // The read is now SANDWICHED: job progress, then the summary, then job progress again, and it
+    // counts only when both progress reads are mid-null (`temporal-null`, draws left to do). The
+    // phase only moves forward, so the summary between them was taken while the null was live.
+    // Otherwise the sample is discarded and the next `temporal-null` frame tries again.
+    //
     // REPRODUCED before the ORIGINAL fix: at phase `temporal-null` with done > 400, `?section=
     // summary` answered `{null_state: 'not-started'}` — a live null reported as not begun. That is
     // the bug this test guards; the state, not the timing, is the subject.
@@ -1226,14 +1235,18 @@ describe("S3, S4, S6 — one envelope, a live null that says it is live, and no 
         // phase's opening tick) would read `not-started` — the very state this test proves the
         // summary no longer wrongly reports mid-run — so it is explicitly skipped.
         if (ev.event !== "progress" || ev.data.phase !== "temporal-null" || !(ev.data.done >= 1)) return;
-        asked = true;
-        const v = await request(handle.app).get("/api/v1/jobs/" + id);
-        liveSummaryProgress = v.body.progress;
+        const midNull = (p) => !!p && p.phase === "temporal-null" && p.done >= 1 && p.done < p.total;
+        const before = (await request(handle.app).get("/api/v1/jobs/" + id)).body.progress;
+        if (!midNull(before)) return;
         const s = await request(handle.app).get("/api/v1/jobs/" + id + "/result?section=summary");
+        const after = (await request(handle.app).get("/api/v1/jobs/" + id)).body.progress;
+        if (!midNull(after)) return;
+        asked = true;
+        liveSummaryProgress = after;
         liveSummary = s.body;
       }
     });
-    expect(asked, "the run never entered the null phase").toBe(true);
+    expect(asked, "no summary could be read between two mid-null progress reads").toBe(true);
     expect(events.at(-1).data.status, JSON.stringify(events.at(-1).data.error || {})).toBe("completed");
     // The grid this run was sized at is ON the job, beside the codon and sequence counts the caps
     // already recorded — T is part of what sized the run now, not an option nobody measured.

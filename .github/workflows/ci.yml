@@ -314,14 +314,20 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
+      # Both installs go through apt, whose mirrors drop out now and then ("Some index files failed
+      # to download", exit 100, run 43043201141), so each is tried three times before the job fails.
       - name: Install Chromium and its system libraries
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
+        run: |
+          for i in 1 2 3; do npx playwright install --with-deps chromium && exit 0; sleep 30; done
+          exit 1
 
       # The browser binary came from the cache; only the apt packages are missing on a fresh VM.
       - name: Install Chromium's system libraries
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium
+        run: |
+          for i in 1 2 3; do npx playwright install-deps chromium && exit 0; sleep 30; done
+          exit 1
 
       # e2e/playwright.config.ts serves web/build under `vite preview` and uses the `github`
       # reporter under CI; `html` is added here so a failure leaves a report to download.
