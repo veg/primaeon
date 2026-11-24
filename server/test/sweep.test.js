@@ -33,6 +33,12 @@ function fakePool(behaviour = "resolve") {
           if (behaviour === "resolve") {
             hooks.onSection && hooks.onSection("sites", { sites: [{ site: 1, hyphaeon_lrt: 2 }] }, { final: true });
             setTimeout(() => resolve({ analysis: task.analysis, sites: [{ site: 1, hyphaeon_lrt: 2 }], provenance: { surface: "node-server", warnings: [{ code: "X", severity: "info", message: "m", data: {} }] } }), 5);
+          } else if (behaviour === "late") {
+            // a worker that is told to stop and answers anyway, as a real one can mid-graph-call
+            hooks.late = () => {
+              hooks.onSection && hooks.onSection("sites", { sites: [] }, { final: true });
+              resolve({ analysis: task.analysis, sites: [], provenance: {} });
+            };
           } else if (behaviour === "fail") {
             setTimeout(() => reject(Object.assign(new Error("bad alignment"), { kind: "input", hint: "fix it" })), 5);
           } else {
@@ -45,7 +51,8 @@ function fakePool(behaviour = "resolve") {
         id,
         promise,
         cancel(reason) {
-          if (cancelled) cancelled(reason);
+          if (hooks.late) setTimeout(hooks.late, 10);
+          else if (cancelled) cancelled(reason);
           else cancelled = () => {};
         }
       };
@@ -128,6 +135,18 @@ describe("job manager", () => {
     expect(m.get(job.id).status).toBe("cancelled");
     expect(v.status).toBe("running"); // the cancel is acknowledged asynchronously
     expect(m.get(job.id).error.kind).toBe("cancelled");
+  });
+
+  it("drops the late answer of a job deleted while it ran, writing nothing", async () => {
+    const { m, config } = manager("late", { jobTimeoutMs: 60_000 });
+    const job = m.create({ analysis: "meme", alignment: ">a\nATG\n" });
+    await sleep(30);
+    expect(m.get(job.id).status).toBe("running");
+    expect(m.delete(job.id)).toBe(true);
+    // before the guard, finish() wrote result.json into the removed directory: an unhandled ENOENT
+    await sleep(40);
+    expect(m.get(job.id)).toBeNull();
+    expect(existsSync(path.join(config.jobsDir, job.id))).toBe(false);
   });
 
   it("times a hung job out with a JOB_TIMEOUT failure", async () => {

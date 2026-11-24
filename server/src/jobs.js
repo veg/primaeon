@@ -290,6 +290,7 @@ export function createJobManager({ config, pool, logger }) {
       };
       entry.handle = pool.run(task, {
         onStart: () => {
+          if (entry.deleted) return;
           entry.status = "running";
           entry.startedAt = nowIso();
           db.start(id, entry.startedAt);
@@ -303,20 +304,26 @@ export function createJobManager({ config, pool, logger }) {
           if (entry.timer.unref) entry.timer.unref();
         },
         progress: (phase, done, total, message) => {
+          if (entry.deleted) return;
           entry.progress = { phase, done, total, message, at: nowIso() };
           db.progress(id, entry.progress);
           emit(id, "progress", entry.progress);
         },
         onSection: (name, payload, meta) => {
+          if (entry.deleted) return;
           const final = !!(meta && meta.final);
           entry.sections.set(name, { payload, final });
           if (final) writeJson(path.join(dir, "sections", name + ".json"), payload);
           emit(id, "section", { name, final, payload });
         }
       });
+      // A job DELETEd while it runs has no row and no directory left, but its worker is only asked
+      // to stop and can still answer afterwards; writing result.json into the removed directory
+      // was an unhandled ENOENT (CI run 45244097197). The answer goes nowhere.
       entry.handle.promise.then(
-        (result) => finish(id, "completed", { result: stampStop(entry, result) }),
+        (result) => entry.deleted || finish(id, "completed", { result: stampStop(entry, result) }),
         (err) => {
+          if (entry.deleted) return;
           if (entry.timedOut) {
             finish(id, "failed", { error: { kind: "timeout", code: "JOB_TIMEOUT", message: "The job exceeded the " + Math.round(config.jobTimeoutMs / 1000) + " s limit and was stopped." } });
           } else if (err && err.kind === "cancelled") {
@@ -403,6 +410,7 @@ export function createJobManager({ config, pool, logger }) {
       if (!TERMINAL.includes(row.status)) manager.cancel(sid, "deleted by client");
       const l = live.get(sid);
       if (l) {
+        l.deleted = true;
         clearTimeout(l.timer);
         live.delete(sid);
       }
