@@ -35,8 +35,10 @@ on:
 env:
   # Must match ci.yml's. It drifted to phase-5c once and the consequence is not a stale build but a
   # failed one: `js/src/temporal.js` does not exist before phase-5d, and the web build's named
-  # imports of it fail at module link, taking the whole deployment with them.
-  ENGINE_REF: phase-5d
+  # imports of it fail at module link, taking the whole deployment with them. It drifted again at
+  # phase-5g, and that one failed nothing: the site stayed green and went on shipping the JavaScript
+  # TN93 port that tag deletes. The `scope` job in ci.yml now fails when the two values differ.
+  ENGINE_REF: phase-5g
   ONNXRUNTIME_NODE_INSTALL: skip
   HYPHAEON_ENGINE_DIR: ${{ github.workspace }}/HyphAeon
   HYPHAEON_MODELS_DIR: ${{ github.workspace }}/HyphAeon/models

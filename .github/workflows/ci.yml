@@ -158,6 +158,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # pages.yml carries its own copy of ENGINE_REF. A mismatch can pass unnoticed: at phase-5d the
+      # deployed site stayed green while shipping the TN93 port phase-5g deletes.
+      - name: ENGINE_REF matches pages.yml
+        run: |
+          ci="$(sed -n 's/^  ENGINE_REF: *//p' .github/workflows/ci.yml)"
+          pages="$(sed -n 's/^  ENGINE_REF: *//p' .github/workflows/pages.yml)"
+          if [ -z "$ci" ] || [ "$ci" != "$pages" ]; then
+            echo "::error::ENGINE_REF differs: ci.yml '$ci', pages.yml '$pages'"
+            exit 1
+          fi
+
       - name: Decide
         id: decide
         env:
